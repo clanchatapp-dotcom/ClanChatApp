@@ -1,56 +1,69 @@
-import { useEffect } from "react";
-import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import "./App.css";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import AppShell from "./components/AppShell";
+import Landing from "./pages/Landing";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
+import AuthCallback from "./pages/AuthCallback";
+import Feed from "./pages/Feed";
+import NewPost from "./pages/NewPost";
+import Search from "./pages/Search";
+import { Messages, MessageThread } from "./pages/Messages";
+import Profile from "./pages/Profile";
+import EditProfile from "./pages/EditProfile";
+import Settings from "./pages/Settings";
+import Notifications from "./pages/Notifications";
+import InnerCircle from "./pages/InnerCircle";
+import BoardView from "./pages/BoardView";
+import TagView from "./pages/TagView";
+import { Toaster } from "sonner";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+function Protected({ children }) {
+  const { user } = useAuth();
+  const loc = useLocation();
+  if (user === undefined) return <div className="p-10 text-zinc-500 text-sm">Loading…</div>;
+  if (!user) return <Navigate to="/login" state={{ from: loc.pathname }} replace />;
+  return children;
+}
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
+function AppRouter() {
+  // Sync session_id handler at the top level (synchronous detection)
+  if (typeof window !== "undefined" && window.location.hash?.includes("session_id=")) {
+    return <AuthCallback />;
+  }
   return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
+    <Routes>
+      <Route element={<AppShell />}>
+        <Route path="/" element={<Landing />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/feed" element={<Protected><Feed /></Protected>} />
+        <Route path="/compose" element={<Protected><NewPost /></Protected>} />
+        <Route path="/search" element={<Protected><Search /></Protected>} />
+        <Route path="/messages" element={<Protected><Messages /></Protected>} />
+        <Route path="/m/:userId" element={<Protected><MessageThread /></Protected>} />
+        <Route path="/me" element={<Protected><Profile /></Protected>} />
+        <Route path="/u/:handle" element={<Protected><Profile /></Protected>} />
+        <Route path="/edit-profile" element={<Protected><EditProfile /></Protected>} />
+        <Route path="/settings" element={<Protected><Settings /></Protected>} />
+        <Route path="/notifications" element={<Protected><Notifications /></Protected>} />
+        <Route path="/inner" element={<Protected><InnerCircle /></Protected>} />
+        <Route path="/b/:boardId" element={<Protected><BoardView /></Protected>} />
+        <Route path="/t/:tag" element={<Protected><TagView /></Protected>} />
+        <Route path="*" element={<Navigate to="/feed" replace />} />
+      </Route>
+    </Routes>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <Toaster theme="dark" position="top-center" toastOptions={{ style: { background: "#18181B", color: "#FAFAFA", border: "1px solid #27272A" } }} />
+        <AppRouter />
+      </AuthProvider>
+    </BrowserRouter>
+  );
+}

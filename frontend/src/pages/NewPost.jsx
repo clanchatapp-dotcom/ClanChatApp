@@ -1,0 +1,195 @@
+import { useState, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import api, { formatApiError, fileUrl } from "../lib/api";
+import { Sparkles, X, ImagePlus, AlertTriangle } from "lucide-react";
+import { toast } from "sonner";
+
+const TIERS = [
+  { id: "public", label: "Public", desc: "Everyone can see" },
+  { id: "followers", label: "Followers", desc: "Approved followers only" },
+  { id: "inner", label: "Inner Circle", desc: "Invisible to others" },
+];
+
+export default function NewPost() {
+  const nav = useNavigate();
+  const [content, setContent] = useState("");
+  const [tier, setTier] = useState("public");
+  const [tags, setTags] = useState([]);
+  const [tagDraft, setTagDraft] = useState("");
+  const [media, setMedia] = useState([]); // [{path, content_type}]
+  const [isAi, setIsAi] = useState(false);
+  const [nsfw, setNsfw] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+
+  const addTagFromDraft = (raw) => {
+    const clean = raw.toLowerCase().trim().replace(/^#/, "").replace(/[^a-z0-9]/g, "");
+    if (!clean) return;
+    if (tags.includes(clean)) return;
+    if (tags.length >= 10) { toast.error("Max 10 tags"); return; }
+    setTags([...tags, clean]);
+  };
+
+  const onTagKey = (e) => {
+    if (e.key === " " || e.key === "," || e.key === "Enter") {
+      e.preventDefault();
+      addTagFromDraft(tagDraft);
+      setTagDraft("");
+    } else if (e.key === "Backspace" && !tagDraft && tags.length) {
+      setTags(tags.slice(0, -1));
+    }
+  };
+
+  const onTagChange = (e) => {
+    const v = e.target.value;
+    if (v.endsWith(" ") || v.endsWith(",")) {
+      addTagFromDraft(v.slice(0, -1));
+      setTagDraft("");
+    } else { setTagDraft(v); }
+  };
+
+  const onFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    for (const f of files.slice(0, 4)) {
+      const form = new FormData();
+      form.append("file", f);
+      try {
+        const { data } = await api.post("/upload", form, { headers: { "Content-Type": "multipart/form-data" } });
+        setMedia(m => [...m, data]);
+      } catch (e2) {
+        toast.error(formatApiError(e2.response?.data?.detail));
+      }
+    }
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const removeMedia = (i) => setMedia(m => m.filter((_, idx) => idx !== i));
+
+  const submit = async () => {
+    if (!content.trim() && media.length === 0) {
+      toast.error("Add some content"); return;
+    }
+    if (tier === "public" && nsfw) {
+      toast.error("Public posts cannot contain 18+ content"); return;
+    }
+    setBusy(true);
+    try {
+      await api.post("/posts", {
+        content, tier,
+        tags: tier === "inner" ? [] : tags,
+        media_paths: media.map(m => m.path),
+        is_ai: isAi, nsfw,
+      });
+      toast.success("Posted");
+      nav("/feed");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="px-5 pt-6 pb-32">
+      <header className="flex items-center justify-between mb-4">
+        <h1 className="font-heading text-2xl">New post</h1>
+        <button onClick={() => nav(-1)} className="text-zinc-500" data-testid="cancel-post"><X size={20} /></button>
+      </header>
+
+      {/* Tier selector */}
+      <div className="grid grid-cols-3 gap-2 mb-5">
+        {TIERS.map(t => (
+          <button key={t.id} onClick={() => setTier(t.id)} data-testid={`tier-${t.id}`}
+            className={`p-3 border rounded-2xl text-left transition ${
+              tier === t.id ? "border-[#FF5A00] bg-[#FF5A00]/5" : "border-zinc-900 hover:border-zinc-700"
+            }`}>
+            <div className="text-xs uppercase tracking-[0.18em] font-semibold">{t.label}</div>
+            <div className="text-[10px] text-zinc-500 mt-1 leading-tight">{t.desc}</div>
+          </button>
+        ))}
+      </div>
+
+      <textarea
+        data-testid="post-content"
+        className="cc-input min-h-[140px] resize-none"
+        placeholder={tier === "inner" ? "Share with your inner circle…" : "What's on your mind?"}
+        value={content} onChange={e => setContent(e.target.value)} maxLength={4000}
+      />
+
+      {/* Media */}
+      {media.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 mt-3">
+          {media.map((m, i) => (
+            <div key={i} className="relative aspect-square rounded-2xl overflow-hidden border border-zinc-900">
+              {m.content_type?.startsWith("video") ? (
+                <video src={fileUrl(m.path)} className="w-full h-full object-cover" />
+              ) : (
+                <img src={fileUrl(m.path)} alt="" className="w-full h-full object-cover" />
+              )}
+              <button onClick={() => removeMedia(i)} className="absolute top-2 right-2 bg-black/70 rounded-full p-1.5">
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 mt-3">
+        <button onClick={() => fileRef.current?.click()} className="cc-btn-secondary py-2 px-4 text-sm inline-flex items-center gap-2" data-testid="upload-btn">
+          <ImagePlus size={16} /> Add media
+        </button>
+        <input ref={fileRef} type="file" accept="image/*,video/*" multiple onChange={onFiles} className="hidden" data-testid="upload-input" />
+      </div>
+
+      {/* Tags */}
+      {tier !== "inner" && (
+        <div className="mt-5">
+          <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">Tags ({tags.length}/10)</label>
+          <div className="cc-input flex flex-wrap gap-2 mt-2">
+            {tags.map(t => (
+              <span key={t} className="tag-chip">
+                #{t}
+                <button onClick={() => setTags(tags.filter(x => x !== t))} className="ml-1 text-zinc-500 hover:text-red-400"><X size={12} /></button>
+              </span>
+            ))}
+            <input
+              data-testid="tag-input"
+              className="flex-1 bg-transparent outline-none text-sm min-w-[100px]"
+              value={tagDraft} onChange={onTagChange} onKeyDown={onTagKey}
+              placeholder={tags.length === 0 ? "space or comma to add" : ""}
+            />
+          </div>
+          <p className="text-[11px] text-zinc-600 mt-1">lowercase letters/numbers only · banned words blocked</p>
+        </div>
+      )}
+
+      {/* Toggles */}
+      <div className="mt-6 flex flex-col gap-2">
+        <label className="flex items-center justify-between p-3 border border-zinc-900 rounded-2xl cursor-pointer">
+          <div className="flex items-center gap-3">
+            <Sparkles size={16} className="text-zinc-400" />
+            <div>
+              <div className="text-sm">AI generated</div>
+              <div className="text-[11px] text-zinc-500">Label this post if AI made any part of it</div>
+            </div>
+          </div>
+          <input data-testid="ai-toggle" type="checkbox" checked={isAi} onChange={e => setIsAi(e.target.checked)} className="accent-[#FF5A00]" />
+        </label>
+        {tier !== "public" && (
+          <label className="flex items-center justify-between p-3 border border-zinc-900 rounded-2xl cursor-pointer">
+            <div className="flex items-center gap-3">
+              <AlertTriangle size={16} className="text-red-400" />
+              <div>
+                <div className="text-sm">18+ content</div>
+                <div className="text-[11px] text-zinc-500">Not allowed on Tier 1 Public</div>
+              </div>
+            </div>
+            <input data-testid="nsfw-toggle" type="checkbox" checked={nsfw} onChange={e => setNsfw(e.target.checked)} className="accent-[#FF5A00]" />
+          </label>
+        )}
+      </div>
+
+      <button onClick={submit} disabled={busy} className="cc-btn-primary w-full mt-6" data-testid="submit-post">
+        {busy ? "Posting…" : `Post to ${TIERS.find(t => t.id === tier).label}`}
+      </button>
+    </div>
+  );
+}
