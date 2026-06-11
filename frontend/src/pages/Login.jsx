@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, Link, useLocation } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { formatApiError } from "../lib/api";
 import { toast } from "sonner";
@@ -29,7 +29,6 @@ function GoogleButton({ extra }) {
 export default function Login() {
   const { login } = useAuth();
   const nav = useNavigate();
-  const loc = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -41,7 +40,7 @@ export default function Login() {
     try {
       await login(email, password);
       toast.success("Welcome back");
-      nav(loc.state?.from || "/feed", { replace: true });
+      nav("/feed", { replace: true });
     } catch (e) {
       setErr(formatApiError(e.response?.data?.detail) || e.message);
     } finally { setBusy(false); }

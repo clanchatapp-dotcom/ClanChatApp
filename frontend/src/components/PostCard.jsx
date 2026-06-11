@@ -4,6 +4,10 @@ import TierBadge from "./TierBadge";
 import api, { fileUrl, formatApiError } from "../lib/api";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "./ui/alert-dialog";
 
 function timeAgo(iso) {
   const d = new Date(iso);
@@ -19,6 +23,8 @@ export default function PostCard({ post, onChange, showPin = false }) {
   const [liked, setLiked] = useState(post.liked);
   const [count, setCount] = useState(post.like_count);
   const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleted, setDeleted] = useState(false);
 
   const toggleLike = async () => {
     if (busy) return;
@@ -46,15 +52,19 @@ export default function PostCard({ post, onChange, showPin = false }) {
   };
 
   const remove = async () => {
-    if (!window.confirm("Delete this post?")) return;
+    setConfirmOpen(false);
+    setDeleted(true); // optimistic hide
     try {
       await api.delete(`/posts/${post.post_id}`);
       toast.success("Deleted");
       onChange?.();
     } catch (e) {
+      setDeleted(false);
       toast.error(formatApiError(e.response?.data?.detail));
     }
   };
+
+  if (deleted) return null;
 
   return (
     <article
@@ -131,11 +141,28 @@ export default function PostCard({ post, onChange, showPin = false }) {
             </button>
           )}
           {showPin && (
-            <button onClick={remove} data-testid={`del-btn-${post.post_id}`} className="text-xs uppercase tracking-wider hover:text-red-400">Delete</button>
+            <button onClick={() => setConfirmOpen(true)} data-testid={`del-btn-${post.post_id}`} className="text-xs uppercase tracking-wider hover:text-red-400">Delete</button>
           )}
           <MoreHorizontal size={18} />
         </div>
       </footer>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent className="bg-zinc-950 border border-zinc-800 text-zinc-100">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-heading">Delete this post?</AlertDialogTitle>
+            <AlertDialogDescription className="text-zinc-500">
+              This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="confirm-cancel" className="bg-transparent border-zinc-800 text-zinc-300 hover:bg-zinc-900">Cancel</AlertDialogCancel>
+            <AlertDialogAction data-testid="confirm-delete" onClick={remove} className="bg-red-500 hover:bg-red-600 text-white">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </article>
   );
 }
