@@ -12,6 +12,7 @@ export default function Settings() {
   const cz = s.comfort_zone || {};
 
   const [followMode, setFollowMode] = useState(user.follow_mode);
+  const [nsfwAccount, setNsfwAccount] = useState(!!user.nsfw_account);
   const [dmsFollowers, setDmsFollowers] = useState(s.dms_enabled_followers);
   const [wallPerm, setWallPerm] = useState(s.wall_post_permission || "owner");
   const [nsfw, setNsfw] = useState(!!cz.nsfw);
@@ -25,6 +26,7 @@ export default function Settings() {
     try {
       await api.patch("/users/me", {
         follow_mode: followMode,
+        nsfw_account: nsfwAccount,
         settings: {
           dms_enabled_followers: dmsFollowers,
           wall_post_permission: wallPerm,
@@ -88,6 +90,13 @@ export default function Settings() {
         <Toggle label="Allow strong language" checked={strong} onChange={setStrong} testId="toggle-strong" />
         <Toggle label="Show violence" checked={violence} onChange={setViolence} testId="toggle-violence" />
       </Section>
+
+      {!user.is_minor && (
+        <Section title="Account flag">
+          <Toggle label="Flag account as 18+ (hides me from minors in search)"
+            checked={nsfwAccount} onChange={setNsfwAccount} testId="toggle-nsfw-account" />
+        </Section>
+      )}
 
       <Section title="Inner Circle">
         <Link to="/inner" data-testid="inner-manage-link" className="cc-btn-secondary w-full text-sm text-center block">Manage Inner Circle</Link>

@@ -155,6 +155,7 @@ def private_user(u: dict) -> dict:
         "auth_provider": u.get("auth_provider", "password"),
         "settings": u.get("settings", default_settings()),
         "role": u.get("role", "user"),
+        "nsfw_account": u.get("nsfw_account", False),
     }
 
 
@@ -363,6 +364,7 @@ class ProfileUpdateIn(BaseModel):
     links: Optional[List[dict]] = None  # [{label, url}]
     follow_mode: Optional[str] = None  # open | approval
     settings: Optional[dict] = None
+    nsfw_account: Optional[bool] = None
 
 
 class InnerInviteIn(BaseModel):
@@ -537,6 +539,8 @@ async def update_me(payload: ProfileUpdateIn, user=Depends(get_current_user)):
                            for l in payload.links[:10]]
     if payload.follow_mode in ("open", "approval"):
         update["follow_mode"] = payload.follow_mode
+    if payload.nsfw_account is not None and not user.get("is_minor"):
+        update["nsfw_account"] = bool(payload.nsfw_account)
     if payload.settings is not None:
         current_settings = user.get("settings", default_settings())
         merged = {**current_settings, **payload.settings}
@@ -559,12 +563,11 @@ async def get_user_by_handle(handle: str, viewer=Depends(get_optional_user)):
     target = await db.users.find_one({"handle": h}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Not found")
-    # adult cannot find minor in search/profile if not following
-    if viewer:
+    if viewer and target["user_id"] != viewer["user_id"]:
+        # Adults can NEVER find minors. No exceptions.
         if target.get("is_minor") and not is_minor(viewer):
-            rel = await relation(viewer["user_id"], target["user_id"])
-            if not rel["self"] and not rel["follows"] and not rel["inner"]:
-                raise HTTPException(404, "Not found")
+            raise HTTPException(404, "Not found")
+        # Minors can NEVER find NSFW-flagged accounts. No exceptions.
         if is_minor(viewer) and target.get("nsfw_account"):
             raise HTTPException(404, "Not found")
     rel = await relation(viewer["user_id"], target["user_id"]) if viewer else {"self": False, "follows": False, "inner": False, "follow_pending": False}
@@ -582,10 +585,10 @@ async def search_users(q: str = Query(..., min_length=1), viewer=Depends(get_cur
         if u["user_id"] == viewer["user_id"]:
             results.append(public_user(u))
             continue
+        # Adults can NEVER find minors. No exceptions.
         if u.get("is_minor") and not is_minor(viewer):
-            rel = await relation(viewer["user_id"], u["user_id"])
-            if not rel["follows"] and not rel["inner"]:
-                continue
+            continue
+        # Minors can NEVER find NSFW-flagged accounts. No exceptions.
         if is_minor(viewer) and u.get("nsfw_account"):
             continue
         if await db.blocks.find_one({"blocker_id": u["user_id"], "blocked_id": viewer["user_id"]}):
@@ -610,6 +613,9 @@ async def follow_user(target_id: str, user=Depends(get_current_user)):
         raise HTTPException(400, "Cannot follow yourself")
     target = await db.users.find_one({"user_id": target_id}, {"_id": 0})
     if not target:
+        raise HTTPException(404, "Not found")
+    # Minors can NEVER follow NSFW-flagged accounts. No exceptions.
+    if is_minor(user) and target.get("nsfw_account"):
         raise HTTPException(404, "Not found")
     err = adult_minor_block(user, target, actor_initiated=True)
     if err:
@@ -675,6 +681,9 @@ async def invite_inner(payload: InnerInviteIn, user=Depends(get_current_user)):
         raise HTTPException(400, "Cannot invite yourself")
     target = await db.users.find_one({"user_id": payload.user_id}, {"_id": 0})
     if not target:
+        raise HTTPException(404, "Not found")
+    # Minors can NEVER receive invites from NSFW-flagged accounts. No exceptions.
+    if is_minor(target) and user.get("nsfw_account"):
         raise HTTPException(404, "Not found")
     err = adult_minor_block(user, target, actor_initiated=True)
     if err:
@@ -825,7 +834,7 @@ async def get_feed(user=Depends(get_current_user), limit: int = 50, before: Opti
 
     # comfort zone filtering
     cz = user.get("settings", {}).get("comfort_zone", {})
-    if not cz.get("nsfw", False):
+    if not cz.get("nsfw", False) or is_minor(user):
         query["nsfw"] = {"$ne": True}
     if not cz.get("ai_content", True):
         query["is_ai"] = {"$ne": True}
@@ -841,7 +850,11 @@ async def get_feed(user=Depends(get_current_user), limit: int = 50, before: Opti
 async def posts_by_user(user_id: str, viewer=Depends(get_current_user)):
     if await db.blocks.find_one({"blocker_id": user_id, "blocked_id": viewer["user_id"]}):
         return {"posts": []}
-    cursor = db.posts.find({"author_id": user_id}, {"_id": 0}).sort("created_at", -1).limit(100)
+    # Minors never see NSFW posts on any profile. Hardcoded.
+    query = {"author_id": user_id}
+    if is_minor(viewer):
+        query["nsfw"] = {"$ne": True}
+    cursor = db.posts.find(query, {"_id": 0}).sort("created_at", -1).limit(100)
     out = []
     async for p in cursor:
         if await can_view_post(p, viewer):
@@ -1043,6 +1056,9 @@ async def can_dm(sender: dict, recipient: dict) -> tuple[bool, str]:
         return False, "Blocked"
     if await db.blocks.find_one({"blocker_id": sender["user_id"], "blocked_id": recipient["user_id"]}):
         return False, "Blocked"
+    # Minors can NEVER DM NSFW-flagged accounts. No exceptions.
+    if is_minor(sender) and recipient.get("nsfw_account"):
+        return False, "Cannot message this account"
     err = adult_minor_block(sender, recipient, actor_initiated=True)
     if err:
         # but allowed if minor initiated previously (any past message from minor)
