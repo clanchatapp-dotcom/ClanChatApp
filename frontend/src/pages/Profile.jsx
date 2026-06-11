@@ -37,12 +37,24 @@ export default function Profile() {
   };
   useEffect(() => { setData(null); load(); }, [handle, me?.user_id]);
 
+  const reloadPosts = async () => {
+    if (!target) return;
+    try {
+      const [a, b] = await Promise.all([
+        api.get(`/posts/by-user/${target.user_id}`),
+        api.get(`/posts/pinned/${target.user_id}`),
+      ]);
+      setPosts(a.data.posts);
+      setPinned(b.data.posts);
+    } catch { /* ignore */ }
+  };
+
   useEffect(() => {
     if (!target) return;
-    api.get(`/posts/by-user/${target.user_id}`).then(r => setPosts(r.data.posts)).catch(() => setPosts([]));
-    api.get(`/posts/pinned/${target.user_id}`).then(r => setPinned(r.data.posts)).catch(() => setPinned([]));
+    reloadPosts();
     api.get(`/wall/${target.user_id}`).then(r => setWall(r.data.posts)).catch(() => setWall([]));
     api.get(`/boards/by-user/${target.user_id}`).then(r => setBoards(r.data.boards)).catch(() => setBoards([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.user_id, tab]);
 
   if (!data || !target) return <div className="p-10 text-zinc-500 text-sm">Loading…</div>;
@@ -158,13 +170,13 @@ export default function Profile() {
       {tab === "feed" && (
         <div className="flex flex-col gap-3">
           {posts.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">No posts.</div>}
-          {posts.map(p => <PostCard key={p.post_id} post={p} onChange={load} showPin={isMyProfile} />)}
+          {posts.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} />)}
         </div>
       )}
       {tab === "pinned" && (
         <div className="flex flex-col gap-3">
           {pinned.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">Up to 3 pinned posts.</div>}
-          {pinned.map(p => <PostCard key={p.post_id} post={p} onChange={load} showPin={isMyProfile} />)}
+          {pinned.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} />)}
         </div>
       )}
       {tab === "wall" && (
