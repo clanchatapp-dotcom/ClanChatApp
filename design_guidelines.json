@@ -1,0 +1,93 @@
+{
+  "app_name": "ClanChat",
+  "tagline": "Your Personal Clubhouse",
+  "theme": "dark",
+  "archetype": "Luxury (Archetype 5) - Premium, Depth, Mystery",
+  "colors": {
+    "background": "#000000",
+    "surface": "#09090B",
+    "surface_elevated": "#18181B",
+    "primary": "#FF5A00",
+    "primary_hover": "#E65000",
+    "text_primary": "#FAFAFA",
+    "text_secondary": "#A1A1AA",
+    "border": "#27272A",
+    "danger": "#EF4444"
+  },
+  "typography": {
+    "headings": "Outfit",
+    "body": "Manrope",
+    "scale": {
+      "h1": "text-4xl sm:text-5xl tracking-tight",
+      "h2": "text-2xl sm:text-3xl tracking-tight",
+      "h3": "text-xl",
+      "body": "text-base leading-relaxed",
+      "labels": "text-xs uppercase tracking-[0.2em]"
+    }
+  },
+  "layout_and_spacing": {
+    "container": "Mobile-first approach. Desktop view should constrain the main app content to max-w-lg centered to mimic a premium mobile experience.",
+    "spacing_scale": "Generous padding (p-5 or p-6) inside cards. gap-6 between feed items.",
+    "borders": "1px solid border-border (#27272A) to separate true black layers without relying on shadows."
+  },
+  "components": {
+    "bottom_navigation": {
+      "description": "Fixed at the bottom of the screen with a glassmorphism effect over true black.",
+      "classes": "fixed bottom-0 w-full max-w-lg mx-auto bg-black/80 backdrop-blur-xl border-t border-zinc-800 pb-safe pt-3 px-6 flex justify-around items-center z-50",
+      "items": ["Feed", "Search", "Messages", "Profile"]
+    },
+    "buttons": {
+      "primary": "bg-[#FF5A00] text-black font-bold rounded-full px-6 py-3 hover:bg-[#E65000] transition-colors",
+      "secondary": "bg-zinc-900 text-white rounded-full px-6 py-3 border border-zinc-800 hover:bg-zinc-800 transition-colors"
+    },
+    "post_card": {
+      "classes": "bg-[#09090B] border border-zinc-900 rounded-3xl p-5 flex flex-col gap-4 mb-4",
+      "elements": "Header with avatar, #handle, timestamp, Tier badge. Content (text/media). Tags chips. Anonymous like count."
+    },
+    "tier_badges": {
+      "public": "bg-zinc-800/50 text-zinc-300 text-xs px-2 py-1 rounded-md font-medium",
+      "followers": "bg-amber-500/10 text-amber-500 text-xs px-2 py-1 rounded-md font-medium",
+      "inner_circle": "bg-[#FF5A00]/10 text-[#FF5A00] border border-[#FF5A00]/20 text-xs px-2 py-1 rounded-md font-medium"
+    },
+    "tags": {
+      "classes": "inline-flex bg-zinc-900 text-zinc-400 text-xs px-3 py-1.5 rounded-full lowercase"
+    },
+    "profile": {
+      "header_classes": "flex flex-col items-center pt-8 pb-4 border-b border-zinc-900",
+      "elements": "Large avatar, #handle, 150-char bio, links section, and a 'Shop' placeholder.",
+      "tabs": "Feed, Wall, Audio, Boards, Pinned (Maximum 3 pinned posts)."
+    }
+  },
+  "features": {
+    "feed": "Chronological only, no algorithms. Sticky top toggle for 'Words' vs 'Gallery'.",
+    "posting": "Tier selector mandatory. Tags input creates chips on space or comma (max 10, single words lowercase).",
+    "follow_system": "Open or approval-required modes. Inner Circle is invite-only. Private metrics (no public follower counts, likes are anonymous).",
+    "messaging": "Tier 1: No DMs. Tier 2: Optional DMs toggle. Tier 3: DMs always open.",
+    "safety": "Three-strike system, block, mute, restrict. DOB required at signup to enforce minor safety rules.",
+    "comfort_zone": "Settings panel for NSFW toggle (off by default) and AI label toggle.",
+    "wall_and_boards": "Wall defaults to owner only, configurable. Discussion Boards available on profile for all 3 tiers.",
+    "search": "# handle search only. Account required to search."
+  },
+  "icons": "lucide-react",
+  "media_urls": {
+    "feed_placeholders": [
+      {
+        "url": "https://images.pexels.com/photos/15876898/pexels-photo-15876898.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Minimalist dark architecture for placeholder posts"
+      },
+      {
+        "url": "https://images.pexels.com/photos/11182234/pexels-photo-11182234.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Abstract dark geometry for placeholder posts"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "IMPORTANT: Write all React code in JavaScript (.js/.jsx). Do not use TypeScript.",
+    "Ensure all interactive and key informational elements have a data-testid attribute (e.g., data-testid='post-like-button', data-testid='tier-selector').",
+    "Use Shadcn UI components but strip the default look to match the true black, minimal premium aesthetic.",
+    "Apply the E1 anti-default font rule: Use 'Outfit' for headings and 'Manrope' for body. Add these to the global CSS or font configuration.",
+    "Implement the UI mimicking a mobile app in the browser: absolute center max-w-lg container with hidden scrollbars.",
+    "Ensure handles always use # instead of @.",
+    "Create mocked contexts or state to demonstrate the visibility of tiers and chronological feed switching."
+  ]
+}
