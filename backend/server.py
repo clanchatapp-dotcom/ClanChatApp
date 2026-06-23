@@ -133,6 +133,27 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def real_name_visible(target: dict, viewer: Optional[dict]) -> bool:
+    visibility = target.get("settings", {}).get("real_name_visibility", "nobody")
+    if not target.get("real_name") or visibility == "nobody":
+        return False
+    if visibility == "everyone":
+        return True
+    if not viewer:
+        return False
+    if viewer["user_id"] == target["user_id"]:
+        return True
+    if visibility == "followers":
+        return bool(await db.follows.find_one({
+            "follower_id": viewer["user_id"], "followee_id": target["user_id"], "status": "active"
+        }))
+    if visibility == "inner":
+        return bool(await db.inner_circle.find_one({
+            "owner_id": target["user_id"], "member_id": viewer["user_id"], "status": "active"
+        }))
+    return False
+
+
 def public_user(u: dict) -> dict:
     return {
         "user_id": u["user_id"],
@@ -144,6 +165,7 @@ def public_user(u: dict) -> dict:
         "follow_mode": u.get("follow_mode", "open"),
         "is_minor": u.get("is_minor", False),
         "nsfw_account": u.get("nsfw_account", False),
+        "role": u.get("role", "user"),
     }
 
 
@@ -156,6 +178,10 @@ def private_user(u: dict) -> dict:
         "settings": u.get("settings", default_settings()),
         "role": u.get("role", "user"),
         "nsfw_account": u.get("nsfw_account", False),
+        "real_name": u.get("real_name", ""),
+        "strikes": u.get("strikes", 0),
+        "strike_history": u.get("strike_history", []),
+        "suspended_until": u.get("suspended_until"),
     }
 
 
@@ -164,6 +190,10 @@ def default_settings() -> dict:
         "theme": "dark",
         "dms_enabled_followers": False,  # T2 DMs default off
         "wall_post_permission": "owner",  # owner | followers | inner
+        "taggable_by": "followers",       # anyone | followers | inner | nobody
+        "tag_approval_mode": False,       # if True, all tags require approval
+        "real_name_visibility": "nobody", # nobody | inner | followers | everyone
+        "onboarded": False,
         "comfort_zone": {
             "nsfw": False,
             "ai_content": True,
@@ -171,6 +201,8 @@ def default_settings() -> dict:
             "violence": False,
             "self_harm": False,
             "gore": False,
+            "sensitive": False,
+            "anonymous_accounts": True,
         },
     }
 
@@ -339,6 +371,8 @@ class PostIn(BaseModel):
     depicts_real_person: bool = False
     has_consent: bool = False
     nsfw: bool = False
+    tagged_user_ids: List[str] = []  # tag-other-users
+    is_audio_track: bool = False  # audio tab posts
 
 
 class CommentIn(BaseModel):
@@ -366,6 +400,15 @@ class DMIn(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
 
 
+class GroupCreateIn(BaseModel):
+    name: str = Field(min_length=2, max_length=60)
+    member_ids: List[str] = Field(default_factory=list, max_length=14)
+
+
+class GroupMessageIn(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
 class ProfileUpdateIn(BaseModel):
     display_name: Optional[str] = None
     bio: Optional[str] = Field(default=None, max_length=150)
@@ -374,6 +417,8 @@ class ProfileUpdateIn(BaseModel):
     follow_mode: Optional[str] = None  # open | approval
     settings: Optional[dict] = None
     nsfw_account: Optional[bool] = None
+    real_name: Optional[str] = Field(default=None, max_length=80)
+    real_name_visibility: Optional[str] = None  # nobody|inner|followers|everyone
 
 
 class InnerInviteIn(BaseModel):
@@ -552,6 +597,15 @@ async def update_me(payload: ProfileUpdateIn, user=Depends(get_current_user)):
         update["follow_mode"] = payload.follow_mode
     if payload.nsfw_account is not None and not user.get("is_minor"):
         update["nsfw_account"] = bool(payload.nsfw_account)
+    if payload.real_name is not None:
+        update["real_name"] = payload.real_name.strip()[:80]
+    if payload.real_name_visibility in ("nobody", "inner", "followers", "everyone"):
+        # store inside settings too for convenience
+        if "settings" not in update:
+            update["settings"] = {**user.get("settings", default_settings()),
+                                  "real_name_visibility": payload.real_name_visibility}
+        else:
+            update["settings"]["real_name_visibility"] = payload.real_name_visibility
     if payload.settings is not None:
         current_settings = user.get("settings", default_settings())
         merged = {**current_settings, **payload.settings}
@@ -582,7 +636,10 @@ async def get_user_by_handle(handle: str, viewer=Depends(get_optional_user)):
         if is_minor(viewer) and target.get("nsfw_account"):
             raise HTTPException(404, "Not found")
     rel = await relation(viewer["user_id"], target["user_id"]) if viewer else {"self": False, "follows": False, "inner": False, "follow_pending": False}
-    return {"user": public_user(target), "relation": rel}
+    out_user = public_user(target)
+    if await real_name_visible(target, viewer):
+        out_user["real_name"] = target.get("real_name", "")
+    return {"user": out_user, "relation": rel}
 
 
 @api.get("/users/search")
@@ -770,6 +827,7 @@ async def serialize_post(post: dict, viewer: Optional[dict]) -> dict:
     can_comment = False
     if viewer:
         can_comment = await user_can_comment(post, viewer)
+    tagged = await get_approved_tags(post["post_id"])
     return {
         "post_id": post["post_id"],
         "author": public_user(author) if author else None,
@@ -781,13 +839,21 @@ async def serialize_post(post: dict, viewer: Optional[dict]) -> dict:
         "ai_label": post.get("ai_label"),
         "depicts_real_person": post.get("depicts_real_person", False),
         "nsfw": post.get("nsfw", False),
+        "is_audio_track": post.get("is_audio_track", False),
         "like_count": post.get("like_count", 0),
         "liked": liked,
         "comment_count": comment_count,
         "can_comment": can_comment,
+        "tagged_users": tagged,
         "created_at": post["created_at"],
         "pinned": post.get("pinned", False),
     }
+
+
+async def is_restricted(restrictor_id: str, restricted_id: str) -> bool:
+    return bool(await db.restrictions.find_one({
+        "restrictor_id": restrictor_id, "restricted_id": restricted_id,
+    }))
 
 
 async def user_can_comment(post: dict, viewer: dict) -> bool:
@@ -795,6 +861,8 @@ async def user_can_comment(post: dict, viewer: dict) -> bool:
     if post["author_id"] == viewer["user_id"]:
         return True
     if viewer.get("is_minor") and post.get("nsfw"):
+        return False
+    if await is_restricted(post["author_id"], viewer["user_id"]):
         return False
     return bool(await db.inner_circle.find_one({
         "owner_id": post["author_id"],
@@ -879,7 +947,131 @@ async def create_post(payload: PostIn, user=Depends(get_current_user)):
         "created_at": now_iso(),
     }
     await db.posts.insert_one(post)
+    # Tag-other-users — create tag records subject to recipient settings
+    if payload.tagged_user_ids:
+        await create_user_tags(post, user, payload.tagged_user_ids)
     return await serialize_post(post, user)
+
+
+async def create_user_tags(post: dict, tagger: dict, tagged_ids: List[str]):
+    """Create user-tag rows. Hardcoded: 18+ tags + photo/video tags always need approval."""
+    has_media = bool(post.get("media_paths"))
+    is_18 = bool(post.get("nsfw"))
+    for tid in tagged_ids[:20]:
+        if tid == tagger["user_id"]:
+            continue
+        target = await db.users.find_one({"user_id": tid}, {"_id": 0})
+        if not target:
+            continue
+        # block-aware
+        if await db.blocks.find_one({"$or": [
+            {"blocker_id": tid, "blocked_id": tagger["user_id"]},
+            {"blocker_id": tagger["user_id"], "blocked_id": tid},
+        ]}):
+            continue
+        # adult/minor protection — adults cannot tag minors (acts like contact)
+        err = adult_minor_block(tagger, target, actor_initiated=True)
+        if err:
+            continue
+        # taggable_by rule
+        taggable = target.get("settings", {}).get("taggable_by", "followers")
+        if taggable == "nobody":
+            continue
+        if taggable == "followers":
+            ok = bool(await db.follows.find_one({
+                "follower_id": tagger["user_id"], "followee_id": tid, "status": "active"
+            })) or tid == tagger["user_id"]
+            if not ok:
+                continue
+        if taggable == "inner":
+            ok = bool(await db.inner_circle.find_one({
+                "owner_id": tid, "member_id": tagger["user_id"], "status": "active"
+            }))
+            if not ok:
+                continue
+        # decide status
+        approval_required = bool(target.get("settings", {}).get("tag_approval_mode", False))
+        if has_media or is_18:
+            approval_required = True  # hardcoded
+        status = "pending" if approval_required else "approved"
+        await db.user_tags.insert_one({
+            "tag_id": f"utag_{uuid.uuid4().hex[:10]}",
+            "post_id": post["post_id"],
+            "tagged_user_id": tid,
+            "tagger_id": tagger["user_id"],
+            "status": status,
+            "is_nsfw_post": is_18,
+            "has_media": has_media,
+            "created_at": now_iso(),
+        })
+
+
+async def get_approved_tags(post_id: str) -> List[dict]:
+    tags = []
+    async for t in db.user_tags.find({"post_id": post_id, "status": "approved"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": t["tagged_user_id"]}, {"_id": 0})
+        if u:
+            tags.append({"tag_id": t["tag_id"], "user": public_user(u)})
+    return tags
+
+
+@api.get("/tags/pending")
+async def my_pending_tags(user=Depends(get_current_user)):
+    cursor = db.user_tags.find({"tagged_user_id": user["user_id"], "status": "pending"}, {"_id": 0}).sort("created_at", -1).limit(100)
+    out = []
+    async for t in cursor:
+        post = await db.posts.find_one({"post_id": t["post_id"]}, {"_id": 0})
+        tagger = await db.users.find_one({"user_id": t["tagger_id"]}, {"_id": 0})
+        if not post or not tagger:
+            continue
+        out.append({
+            "tag_id": t["tag_id"],
+            "post_id": t["post_id"],
+            "post_excerpt": (post.get("content") or "")[:120],
+            "post_media": post.get("media_paths", [])[:1],
+            "is_nsfw": t.get("is_nsfw_post", False),
+            "has_media": t.get("has_media", False),
+            "tagger": public_user(tagger),
+            "created_at": t["created_at"],
+        })
+    return {"pending": out}
+
+
+@api.post("/tags/{tag_id}/approve")
+async def approve_tag(tag_id: str, user=Depends(get_current_user)):
+    t = await db.user_tags.find_one({"tag_id": tag_id, "tagged_user_id": user["user_id"]})
+    if not t:
+        raise HTTPException(404, "Not found")
+    await db.user_tags.update_one({"tag_id": tag_id}, {"$set": {"status": "approved", "approved_at": now_iso()}})
+    return {"ok": True}
+
+
+@api.post("/tags/{tag_id}/reject")
+async def reject_tag(tag_id: str, user=Depends(get_current_user)):
+    res = await db.user_tags.delete_one({"tag_id": tag_id, "tagged_user_id": user["user_id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+@api.delete("/tags/{tag_id}")
+async def remove_tag(tag_id: str, user=Depends(get_current_user)):
+    t = await db.user_tags.find_one({"tag_id": tag_id})
+    if not t or t["tagged_user_id"] != user["user_id"]:
+        raise HTTPException(404, "Not found")
+    await db.user_tags.delete_one({"tag_id": tag_id})
+    return {"ok": True}
+
+
+@api.get("/tags/me")
+async def posts_tagged_in(user=Depends(get_current_user)):
+    cursor = db.user_tags.find({"tagged_user_id": user["user_id"], "status": "approved"}, {"_id": 0}).sort("created_at", -1).limit(100)
+    out = []
+    async for t in cursor:
+        post = await db.posts.find_one({"post_id": t["post_id"]}, {"_id": 0})
+        if post and await can_view_post(post, user):
+            out.append(await serialize_post(post, user))
+    return {"posts": out}
 
 
 @api.get("/posts/feed")
@@ -994,6 +1186,21 @@ async def delete_post(post_id: str, user=Depends(get_current_user)):
 async def posts_by_tag(tag: str, viewer=Depends(get_current_user)):
     t = tag.lower().strip().lstrip("#")
     cursor = db.posts.find({"tags": t, "tier": "public"}, {"_id": 0}).sort("created_at", -1).limit(50)
+    out = []
+    async for p in cursor:
+        if await can_view_post(p, viewer):
+            out.append(await serialize_post(p, viewer))
+    return {"posts": out}
+
+
+@api.get("/posts/audio/{user_id}")
+async def audio_posts_by_user(user_id: str, viewer=Depends(get_current_user)):
+    if await db.blocks.find_one({"blocker_id": user_id, "blocked_id": viewer["user_id"]}):
+        return {"posts": []}
+    query = {"author_id": user_id, "is_audio_track": True}
+    if is_minor(viewer):
+        query["nsfw"] = {"$ne": True}
+    cursor = db.posts.find(query, {"_id": 0}).sort("created_at", -1).limit(100)
     out = []
     async for p in cursor:
         if await can_view_post(p, viewer):
@@ -1289,6 +1496,185 @@ async def dm_history(other_id: str, user=Depends(get_current_user)):
 # ------------------------------------------------------------------
 # Block / Mute / Report
 # ------------------------------------------------------------------
+@api.post("/restrict/{user_id}")
+async def restrict_user(user_id: str, user=Depends(get_current_user)):
+    """Quietly limit follower access — they can still follow but their interactions are silenced."""
+    if user_id == user["user_id"]:
+        raise HTTPException(400, "Cannot restrict yourself")
+    await db.restrictions.update_one(
+        {"restrictor_id": user["user_id"], "restricted_id": user_id},
+        {"$setOnInsert": {"created_at": now_iso()}}, upsert=True
+    )
+    return {"ok": True}
+
+
+@api.delete("/restrict/{user_id}")
+async def unrestrict(user_id: str, user=Depends(get_current_user)):
+    await db.restrictions.delete_one({"restrictor_id": user["user_id"], "restricted_id": user_id})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Group chats — Inner Circle only, max 15, consent-based
+# ------------------------------------------------------------------
+GROUP_MAX = 15
+
+
+async def is_in_owner_inner(owner_id: str, member_id: str) -> bool:
+    return bool(await db.inner_circle.find_one({
+        "owner_id": owner_id, "member_id": member_id, "status": "active"
+    }))
+
+
+def serialize_group(g: dict, viewer_id: str) -> dict:
+    members = g.get("members", [])
+    accepted = [m for m in members if m.get("status") == "accepted"]
+    return {
+        "group_id": g["group_id"],
+        "name": g["name"],
+        "owner_id": g["owner_id"],
+        "members": members,
+        "member_count": len(accepted),
+        "my_status": next((m["status"] for m in members if m["user_id"] == viewer_id), None),
+        "created_at": g["created_at"],
+    }
+
+
+@api.post("/groups")
+async def create_group(payload: GroupCreateIn, user=Depends(get_current_user)):
+    # Only IC members may be added
+    member_objs = [{"user_id": user["user_id"], "status": "accepted", "joined_at": now_iso()}]
+    seen = {user["user_id"]}
+    for mid in payload.member_ids[:GROUP_MAX - 1]:
+        if mid in seen:
+            continue
+        if not await is_in_owner_inner(user["user_id"], mid):
+            continue  # silently skip non-IC
+        member_objs.append({"user_id": mid, "status": "pending", "invited_at": now_iso()})
+        seen.add(mid)
+    gid = f"grp_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "group_id": gid,
+        "owner_id": user["user_id"],
+        "name": payload.name.strip()[:60],
+        "members": member_objs,
+        "created_at": now_iso(),
+    }
+    await db.groups.insert_one(doc)
+    doc.pop("_id", None)
+    return serialize_group(doc, user["user_id"])
+
+
+@api.get("/groups")
+async def list_my_groups(user=Depends(get_current_user)):
+    cursor = db.groups.find({
+        "members": {"$elemMatch": {"user_id": user["user_id"], "status": {"$in": ["accepted", "pending"]}}}
+    }, {"_id": 0}).sort("created_at", -1)
+    out = []
+    async for g in cursor:
+        out.append(serialize_group(g, user["user_id"]))
+    return {"groups": out}
+
+
+@api.post("/groups/{group_id}/accept")
+async def group_accept(group_id: str, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id})
+    if not g:
+        raise HTTPException(404, "Not found")
+    m = next((x for x in g.get("members", []) if x["user_id"] == user["user_id"] and x["status"] == "pending"), None)
+    if not m:
+        raise HTTPException(404, "Not found")
+    await db.groups.update_one(
+        {"group_id": group_id, "members.user_id": user["user_id"]},
+        {"$set": {"members.$.status": "accepted", "members.$.joined_at": now_iso()}}
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/decline")
+async def group_decline(group_id: str, user=Depends(get_current_user)):
+    # Silent decline — pull member entry, no notification
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {"$pull": {"members": {"user_id": user["user_id"], "status": "pending"}}}
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/leave")
+async def group_leave(group_id: str, user=Depends(get_current_user)):
+    # Silent leave
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {"$pull": {"members": {"user_id": user["user_id"]}}}
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/invite")
+async def group_invite(group_id: str, payload: FollowActionIn, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id})
+    if not g or g["owner_id"] != user["user_id"]:
+        raise HTTPException(403, "Owner only")
+    if len(g.get("members", [])) >= GROUP_MAX:
+        raise HTTPException(400, "Group at max capacity (15)")
+    if any(m["user_id"] == payload.user_id for m in g.get("members", [])):
+        raise HTTPException(400, "Already in group")
+    if not await is_in_owner_inner(user["user_id"], payload.user_id):
+        raise HTTPException(403, "Member must be in your Inner Circle")
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {"$push": {"members": {"user_id": payload.user_id, "status": "pending", "invited_at": now_iso()}}}
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/remove/{user_id}")
+async def group_remove_member(group_id: str, user_id: str, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id})
+    if not g or g["owner_id"] != user["user_id"]:
+        raise HTTPException(403, "Owner only")
+    if user_id == user["user_id"]:
+        raise HTTPException(400, "Owner cannot remove themselves; delete group instead")
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {"$pull": {"members": {"user_id": user_id}}}
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/messages")
+async def group_send(group_id: str, payload: GroupMessageIn, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id})
+    if not g:
+        raise HTTPException(404, "Not found")
+    if not any(m["user_id"] == user["user_id"] and m["status"] == "accepted" for m in g.get("members", [])):
+        raise HTTPException(403, "Not a group member")
+    mid = f"gmsg_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "message_id": mid, "group_id": group_id,
+        "from_id": user["user_id"], "content": payload.content.strip()[:2000],
+        "created_at": now_iso(),
+    }
+    await db.group_messages.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/groups/{group_id}/messages")
+async def group_messages(group_id: str, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
+    if not g:
+        raise HTTPException(404, "Not found")
+    if not any(m["user_id"] == user["user_id"] and m["status"] == "accepted" for m in g.get("members", [])):
+        raise HTTPException(403, "Not a group member")
+    cursor = db.group_messages.find({"group_id": group_id}, {"_id": 0}).sort("created_at", 1).limit(500)
+    msgs = []
+    async for m in cursor:
+        msgs.append(m)
+    return {"group": serialize_group(g, user["user_id"]), "messages": msgs}
+
+
 @api.post("/block/{user_id}")
 async def block_user(user_id: str, user=Depends(get_current_user)):
     if user_id == user["user_id"]:
@@ -1336,7 +1722,146 @@ async def create_report(payload: ReportIn, user=Depends(get_current_user)):
         "status": "pending", "created_at": now_iso(),
     }
     await db.reports.insert_one(doc)
+    # CSAM = immediate quarantine + audit log (CEOP pipeline scaffolded behind env flag)
+    if payload.category == "csam":
+        await handle_csam_report(payload.target_type, payload.target_id, user["user_id"])
+    # Soft pre-strike warning: if 3+ pending reports against same target user → warn
+    target_user_id = None
+    if payload.target_type == "user":
+        target_user_id = payload.target_id
+    elif payload.target_type == "post":
+        p = await db.posts.find_one({"post_id": payload.target_id}, {"author_id": 1, "_id": 0})
+        if p:
+            target_user_id = p["author_id"]
+    if target_user_id:
+        recent_count = await db.reports.count_documents({
+            "target_id": payload.target_id, "status": "pending",
+        })
+        existing_warn = await db.soft_warnings.find_one({
+            "user_id": target_user_id, "target_id": payload.target_id,
+        })
+        if recent_count >= 3 and not existing_warn:
+            await db.soft_warnings.insert_one({
+                "warning_id": f"warn_{uuid.uuid4().hex[:10]}",
+                "user_id": target_user_id, "target_id": payload.target_id,
+                "message": "Your content has been reported several times. Please review our community guidelines before this becomes a strike.",
+                "created_at": now_iso(), "dismissed": False,
+            })
     return {"report_id": rid}
+
+
+async def handle_csam_report(target_type: str, target_id: str, reporter_id: str):
+    """Immediate CSAM handling: quarantine, audit, and external CEOP/NCMEC POST (feature-flagged)."""
+    if target_type == "post":
+        await db.posts.update_one(
+            {"post_id": target_id},
+            {"$set": {"quarantined": True, "quarantined_at": now_iso(), "quarantined_reason": "csam_report"}}
+        )
+    await db.csam_reports.insert_one({
+        "csam_id": f"csam_{uuid.uuid4().hex[:10]}",
+        "target_type": target_type, "target_id": target_id,
+        "reporter_id": reporter_id, "status": "queued",
+        "created_at": now_iso(),
+    })
+    await db.audit_events.insert_one({
+        "event": "csam_report_received",
+        "target_type": target_type, "target_id": target_id,
+        "reporter_id": reporter_id, "at": now_iso(),
+    })
+    # External hook — only fires if CEOP_ENDPOINT env is set (real deploy)
+    ceop_url = os.environ.get("CEOP_ENDPOINT")
+    if ceop_url:
+        try:
+            requests.post(ceop_url, json={
+                "target_type": target_type, "target_id": target_id,
+                "received_at": now_iso(),
+            }, timeout=10)
+            await db.csam_reports.update_one(
+                {"target_id": target_id}, {"$set": {"status": "forwarded"}}
+            )
+        except Exception as e:
+            logging.error(f"CEOP forward failed: {e}")
+            await db.csam_reports.update_one(
+                {"target_id": target_id}, {"$set": {"status": "forward_failed", "error": str(e)[:200]}}
+            )
+
+
+@api.get("/me/warnings")
+async def my_warnings(user=Depends(get_current_user)):
+    cursor = db.soft_warnings.find({"user_id": user["user_id"], "dismissed": False}, {"_id": 0})
+    out = []
+    async for w in cursor:
+        out.append(w)
+    return {"warnings": out}
+
+
+@api.post("/me/warnings/{warning_id}/dismiss")
+async def dismiss_warning(warning_id: str, user=Depends(get_current_user)):
+    await db.soft_warnings.update_one(
+        {"warning_id": warning_id, "user_id": user["user_id"]},
+        {"$set": {"dismissed": True}}
+    )
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Admin (founding team)
+# ------------------------------------------------------------------
+def require_admin(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    return user
+
+
+@api.get("/admin/reports")
+async def admin_list_reports(admin=Depends(require_admin), status: str = "pending"):
+    cursor = db.reports.find({"status": status}, {"_id": 0}).sort("created_at", -1).limit(200)
+    out = []
+    async for r in cursor:
+        reporter = await db.users.find_one({"user_id": r["reporter_id"]}, {"_id": 0})
+        out.append({
+            **r,
+            "reporter": public_user(reporter) if reporter else None,
+        })
+    return {"reports": out}
+
+
+@api.post("/admin/reports/{report_id}/strike")
+async def admin_apply_strike(report_id: str, level: int = 1, reason: str = "", admin=Depends(require_admin)):
+    r = await db.reports.find_one({"report_id": report_id})
+    if not r:
+        raise HTTPException(404, "Not found")
+    # find target user
+    target_user_id = None
+    if r["target_type"] == "user":
+        target_user_id = r["target_id"]
+    elif r["target_type"] == "post":
+        p = await db.posts.find_one({"post_id": r["target_id"]}, {"_id": 0})
+        if p:
+            target_user_id = p["author_id"]
+    if not target_user_id:
+        raise HTTPException(400, "Target user not resolvable")
+    await apply_strike(target_user_id, reason or r.get("category", "Community guidelines"), level=level)
+    await db.reports.update_one({"report_id": report_id}, {"$set": {"status": "actioned", "actioned_at": now_iso(), "actioned_by": admin["user_id"], "action": f"strike_{level}"}})
+    return {"ok": True}
+
+
+@api.post("/admin/reports/{report_id}/dismiss")
+async def admin_dismiss_report(report_id: str, admin=Depends(require_admin)):
+    await db.reports.update_one({"report_id": report_id}, {"$set": {"status": "dismissed", "actioned_at": now_iso(), "actioned_by": admin["user_id"]}})
+    return {"ok": True}
+
+
+@api.get("/admin/stats")
+async def admin_stats(admin=Depends(require_admin)):
+    return {
+        "users": await db.users.count_documents({"deleted": {"$ne": True}}),
+        "posts": await db.posts.count_documents({}),
+        "pending_reports": await db.reports.count_documents({"status": "pending"}),
+        "csam_queue": await db.csam_reports.count_documents({"status": "queued"}),
+        "suspended": await db.users.count_documents({"suspended_until": {"$gt": now_iso()}}),
+        "deleted": await db.users.count_documents({"deleted": True}),
+    }
 
 
 # ------------------------------------------------------------------
@@ -1345,7 +1870,7 @@ async def create_report(payload: ReportIn, user=Depends(get_current_user)):
 @api.post("/upload")
 async def upload_file(file: UploadFile = File(...), user=Depends(get_current_user)):
     ext = (file.filename.split(".")[-1] if file.filename and "." in file.filename else "bin").lower()
-    if ext not in {"jpg", "jpeg", "png", "gif", "webp", "mp4", "webm", "mov"}:
+    if ext not in {"jpg", "jpeg", "png", "gif", "webp", "mp4", "webm", "mov", "mp3", "wav", "ogg", "m4a", "aac", "flac"}:
         raise HTTPException(400, "Unsupported file type")
     path = f"{APP_NAME}/uploads/{user['user_id']}/{uuid.uuid4().hex}.{ext}"
     data = await file.read()

@@ -6,30 +6,35 @@ import { toast } from "sonner";
 export default function Notifications() {
   const [followRequests, setFollowRequests] = useState([]);
   const [innerInvites, setInnerInvites] = useState([]);
+  const [tagPending, setTagPending] = useState([]);
+  const [warnings, setWarnings] = useState([]);
 
   const load = async () => {
     try {
-      const [fr, ii] = await Promise.all([
+      const [fr, ii, tp, w] = await Promise.all([
         api.get("/follow/requests"),
         api.get("/inner/invites"),
+        api.get("/tags/pending"),
+        api.get("/me/warnings"),
       ]);
       setFollowRequests(fr.data.requests);
       setInnerInvites(ii.data.invites);
+      setTagPending(tp.data.pending);
+      setWarnings(w.data.warnings);
     } catch {}
   };
   useEffect(() => { load(); }, []);
 
   const actFollow = async (id, approve) => {
-    try {
-      await api.post(`/follow/requests/${id}/${approve ? "approve" : "decline"}`);
-      load();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    try { await api.post(`/follow/requests/${id}/${approve ? "approve" : "decline"}`); load(); }
+    catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
   const actInner = async (id, accept) => {
-    try {
-      await api.post(`/inner/invites/${id}/${accept ? "accept" : "decline"}`);
-      load();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    try { await api.post(`/inner/invites/${id}/${accept ? "accept" : "decline"}`); load(); }
+    catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+  const dismissWarn = async (id) => {
+    try { await api.post(`/me/warnings/${id}/dismiss`); load(); } catch {}
   };
 
   return (
@@ -38,6 +43,18 @@ export default function Notifications() {
         <h1 className="font-heading text-3xl">Activity</h1>
         <Link to="/feed" className="text-zinc-500 text-sm">Back</Link>
       </header>
+
+      {warnings.length > 0 && (
+        <section className="mb-6">
+          <div className="text-[10px] uppercase tracking-[0.3em] text-amber-400 mb-3">Soft warning</div>
+          {warnings.map(w => (
+            <div key={w.warning_id} className="border border-amber-500/30 bg-amber-500/5 rounded-2xl p-3 mb-2" data-testid={`warning-${w.warning_id}`}>
+              <p className="text-sm text-amber-100">{w.message}</p>
+              <button data-testid={`dismiss-warning-${w.warning_id}`} onClick={() => dismissWarn(w.warning_id)} className="text-xs text-amber-300 mt-2">Got it</button>
+            </div>
+          ))}
+        </section>
+      )}
 
       <section className="mb-6">
         <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mb-3">Follow requests</div>
@@ -55,7 +72,7 @@ export default function Notifications() {
         ))}
       </section>
 
-      <section>
+      <section className="mb-6">
         <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mb-3">Inner Circle invites</div>
         {innerInvites.length === 0 && <div className="text-zinc-600 text-sm">No invites.</div>}
         {innerInvites.map(i => (
@@ -68,6 +85,22 @@ export default function Notifications() {
             <button data-testid={`accept-inner-${i.owner.handle}`} onClick={() => actInner(i.invite_id, true)} className="cc-btn-primary text-xs py-1.5 px-3">Accept</button>
             <button onClick={() => actInner(i.invite_id, false)} className="cc-btn-secondary text-xs py-1.5 px-3">Decline</button>
           </div>
+        ))}
+      </section>
+
+      <section>
+        <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mb-3 flex items-center justify-between">
+          <span>Tag approvals</span>
+          {tagPending.length > 0 && (
+            <Link to="/tags" className="text-[#FF5A00] text-xs normal-case tracking-normal" data-testid="open-tags-link">Open ({tagPending.length})</Link>
+          )}
+        </div>
+        {tagPending.length === 0 && <div className="text-zinc-600 text-sm">No pending tags.</div>}
+        {tagPending.slice(0, 3).map(t => (
+          <Link to="/tags" key={t.tag_id} className="block border border-zinc-900 rounded-2xl p-3 mb-2 hover:border-zinc-700">
+            <div className="text-xs text-zinc-500">#{t.tagger.handle} tagged you {t.is_nsfw && <span className="text-red-400">(18+)</span>}</div>
+            <div className="text-sm mt-1 truncate">{t.post_excerpt || "[media post]"}</div>
+          </Link>
         ))}
       </section>
     </div>

@@ -3,7 +3,7 @@ import { useAuth } from "../context/AuthContext";
 import api, { formatApiError } from "../lib/api";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Sun, Moon, LogOut } from "lucide-react";
+import { Sun, Moon, LogOut, ShieldCheck, AlertTriangle } from "lucide-react";
 
 export default function Settings() {
   const { user, refresh, theme, setTheme, logout } = useAuth();
@@ -15,10 +15,16 @@ export default function Settings() {
   const [nsfwAccount, setNsfwAccount] = useState(!!user.nsfw_account);
   const [dmsFollowers, setDmsFollowers] = useState(s.dms_enabled_followers);
   const [wallPerm, setWallPerm] = useState(s.wall_post_permission || "owner");
+  const [taggableBy, setTaggableBy] = useState(s.taggable_by || "followers");
+  const [tagApproval, setTagApproval] = useState(!!s.tag_approval_mode);
+  const [realNameVis, setRealNameVis] = useState(s.real_name_visibility || "nobody");
+  // comfort zone
   const [nsfw, setNsfw] = useState(!!cz.nsfw);
   const [ai, setAi] = useState(cz.ai_content !== false);
   const [strong, setStrong] = useState(cz.strong_language !== false);
   const [violence, setViolence] = useState(!!cz.violence);
+  const [sensitive, setSensitive] = useState(!!cz.sensitive);
+  const [anon, setAnon] = useState(cz.anonymous_accounts !== false);
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
@@ -27,10 +33,17 @@ export default function Settings() {
       await api.patch("/users/me", {
         follow_mode: followMode,
         nsfw_account: nsfwAccount,
+        real_name_visibility: realNameVis,
         settings: {
           dms_enabled_followers: dmsFollowers,
           wall_post_permission: wallPerm,
-          comfort_zone: { nsfw, ai_content: ai, strong_language: strong, violence },
+          taggable_by: taggableBy,
+          tag_approval_mode: tagApproval,
+          real_name_visibility: realNameVis,
+          comfort_zone: {
+            nsfw, ai_content: ai, strong_language: strong, violence,
+            sensitive, anonymous_accounts: anon,
+          },
         },
       });
       toast.success("Saved");
@@ -46,6 +59,30 @@ export default function Settings() {
         <Link to="/feed" className="text-zinc-500 text-sm">Done</Link>
       </header>
 
+      {/* Strikes — always visible */}
+      <Section title="My strikes">
+        <div className="border border-zinc-900 rounded-xl p-3 flex items-center gap-3">
+          <AlertTriangle size={18} className={user.strikes ? "text-red-400" : "text-zinc-600"} />
+          <div className="flex-1">
+            <div className="text-sm">{user.strikes || 0} of 3 strikes</div>
+            <div className="text-xs text-zinc-500">3 strikes is permanent deletion. Strikes may expire after 12 months of clean behaviour.</div>
+          </div>
+          <span data-testid="strike-count" className="text-xl font-heading text-zinc-300">{user.strikes || 0}</span>
+        </div>
+        {(user.strike_history || []).length > 0 && (
+          <details className="mt-2">
+            <summary className="text-xs text-zinc-500 cursor-pointer">View history</summary>
+            <ul className="mt-2 space-y-1">
+              {user.strike_history.map((h, i) => (
+                <li key={i} className="text-xs text-zinc-400 border-l-2 border-zinc-800 pl-2">
+                  Strike {h.level} · {h.reason} · {new Date(h.applied_at).toLocaleDateString()}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </Section>
+
       <Section title="Theme">
         <div className="flex gap-2">
           <button data-testid="theme-dark" onClick={() => setTheme("dark")}
@@ -59,7 +96,7 @@ export default function Settings() {
         </div>
       </Section>
 
-      <Section title="Follow mode">
+      <Section title="Who can follow me">
         <Radio name="follow" value={followMode} onChange={setFollowMode}
           options={[
             { v: "open", l: "Open · anyone can follow" },
@@ -76,19 +113,45 @@ export default function Settings() {
           ]} testIdPrefix="wall-perm" />
       </Section>
 
+      <Section title="Who can tag me">
+        <Radio name="tag" value={taggableBy} onChange={setTaggableBy}
+          options={[
+            { v: "anyone", l: "Anyone" },
+            { v: "followers", l: "Followers" },
+            { v: "inner", l: "Inner Circle only" },
+            { v: "nobody", l: "Nobody" },
+          ]} testIdPrefix="taggable-by" />
+        <Toggle label="Approve every tag before it appears on me"
+          checked={tagApproval} onChange={setTagApproval} testId="toggle-tag-approval" />
+        <p className="text-[11px] text-zinc-600 mt-1">18+ tags and photo/video tags always require manual approval — hardcoded, no override.</p>
+      </Section>
+
+      <Section title="Real name">
+        <p className="text-xs text-zinc-500 mb-2">Held internally for verification. Set or change it in Edit Profile.</p>
+        <Radio name="rn" value={realNameVis} onChange={setRealNameVis}
+          options={[
+            { v: "nobody", l: "Nobody (default)" },
+            { v: "inner", l: "Inner Circle only" },
+            { v: "followers", l: "All followers" },
+            { v: "everyone", l: "Everyone" },
+          ]} testIdPrefix="rn-vis" />
+      </Section>
+
       <Section title="Direct messages">
         <Toggle label="Allow DMs from approved followers (Tier 2)"
           checked={dmsFollowers} onChange={setDmsFollowers} testId="toggle-dms-followers" />
         <p className="text-xs text-zinc-600 mt-2">Tier 1 has no DMs. Inner Circle DMs are controlled per-member.</p>
       </Section>
 
-      <Section title="Comfort Zone">
+      <Section title="My Comfort Zone">
         <Toggle label="Show 18+ content" checked={nsfw} onChange={user.is_minor ? () => {} : setNsfw}
           disabled={user.is_minor} testId="toggle-nsfw" />
         {user.is_minor && <p className="text-xs text-red-400 mt-1">Disabled for under-18 accounts.</p>}
         <Toggle label="Show AI content" checked={ai} onChange={setAi} testId="toggle-ai" />
         <Toggle label="Allow strong language" checked={strong} onChange={setStrong} testId="toggle-strong" />
-        <Toggle label="Show violence" checked={violence} onChange={setViolence} testId="toggle-violence" />
+        <Toggle label="Show graphic violence" checked={violence} onChange={setViolence} testId="toggle-violence" />
+        <Toggle label="Show sensitive topics (drugs, self-harm, eating disorders)" checked={sensitive} onChange={setSensitive} testId="toggle-sensitive" />
+        <Toggle label="Show anonymous accounts in feed" checked={anon} onChange={setAnon} testId="toggle-anon" />
       </Section>
 
       {!user.is_minor && (
@@ -101,6 +164,14 @@ export default function Settings() {
       <Section title="Inner Circle">
         <Link to="/inner" data-testid="inner-manage-link" className="cc-btn-secondary w-full text-sm text-center block">Manage Inner Circle</Link>
       </Section>
+
+      {user.role === "admin" && (
+        <Section title="Admin">
+          <Link to="/admin" data-testid="admin-link" className="cc-btn-secondary w-full text-sm text-center block inline-flex items-center justify-center gap-2">
+            <ShieldCheck size={14} /> Open admin panel
+          </Link>
+        </Section>
+      )}
 
       <button onClick={save} disabled={busy} data-testid="save-settings"
         className="cc-btn-primary w-full mt-2">{busy ? "Saving…" : "Save settings"}</button>
