@@ -25,7 +25,7 @@ export default function InnerCircle() {
   return (
     <div className="px-5 pt-6 pb-24">
       <header className="flex items-center justify-between mb-6">
-        <h1 className="font-heading text-3xl">Inner Circle</h1>
+        <h1 className="font-heading text-3xl">My Inner Circle</h1>
         <Link to="/settings" className="text-zinc-500 text-sm">Back</Link>
       </header>
 

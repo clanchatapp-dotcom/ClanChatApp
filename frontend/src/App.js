@@ -17,6 +17,9 @@ import Notifications from "./pages/Notifications";
 import InnerCircle from "./pages/InnerCircle";
 import BoardView from "./pages/BoardView";
 import TagView from "./pages/TagView";
+import { Groups, GroupChat } from "./pages/Groups";
+import Admin from "./pages/Admin";
+import TagApprovals from "./pages/TagApprovals";
 import { Toaster } from "sonner";
 
 function Protected({ children }) {
@@ -49,6 +52,10 @@ function AppRouter() {
         <Route path="/settings" element={<Protected><Settings /></Protected>} />
         <Route path="/notifications" element={<Protected><Notifications /></Protected>} />
         <Route path="/inner" element={<Protected><InnerCircle /></Protected>} />
+        <Route path="/groups" element={<Protected><Groups /></Protected>} />
+        <Route path="/g/:groupId" element={<Protected><GroupChat /></Protected>} />
+        <Route path="/admin" element={<Protected><Admin /></Protected>} />
+        <Route path="/tags" element={<Protected><TagApprovals /></Protected>} />
         <Route path="/b/:boardId" element={<Protected><BoardView /></Protected>} />
         <Route path="/t/:tag" element={<Protected><TagView /></Protected>} />
         <Route path="*" element={<Navigate to="/feed" replace />} />

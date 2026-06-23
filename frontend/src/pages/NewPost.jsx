@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import api, { formatApiError, fileUrl } from "../lib/api";
-import { Sparkles, X, ImagePlus, AlertTriangle, ShieldAlert } from "lucide-react";
+import { Sparkles, X, ImagePlus, AlertTriangle, ShieldAlert, AtSign, Music2 } from "lucide-react";
 import { toast } from "sonner";
 
 const TIERS = [
@@ -29,7 +29,30 @@ export default function NewPost() {
   const [hasConsent, setHasConsent] = useState(false);
   const [nsfw, setNsfw] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Tag people
+  const [people, setPeople] = useState([]); // [{user_id, handle}]
+  const [peopleSearch, setPeopleSearch] = useState("");
+  const [peopleResults, setPeopleResults] = useState([]);
+  // Audio track
+  const [isAudio, setIsAudio] = useState(false);
   const fileRef = useRef(null);
+
+  const runPeopleSearch = async (v) => {
+    setPeopleSearch(v);
+    const q = v.replace(/^#/, "").trim();
+    if (!q) { setPeopleResults([]); return; }
+    try {
+      const { data } = await api.get(`/users/search?q=${encodeURIComponent(q)}`);
+      setPeopleResults(data.results || []);
+    } catch { setPeopleResults([]); }
+  };
+
+  const addPerson = (u) => {
+    if (people.find(p => p.user_id === u.user_id)) return;
+    if (people.length >= 10) { toast.error("Max 10 tagged people"); return; }
+    setPeople([...people, u]);
+    setPeopleSearch(""); setPeopleResults([]);
+  };
 
   const addTagFromDraft = (raw) => {
     const clean = raw.toLowerCase().trim().replace(/^#/, "").replace(/[^a-z0-9]/g, "");
@@ -97,6 +120,8 @@ export default function NewPost() {
         depicts_real_person: !!aiLabel && depictsReal,
         has_consent: !!aiLabel && depictsReal && hasConsent,
         nsfw,
+        tagged_user_ids: people.map(p => p.user_id),
+        is_audio_track: isAudio,
       });
       toast.success("Posted");
       nav("/feed");
@@ -178,6 +203,52 @@ export default function NewPost() {
           <p className="text-[11px] text-zinc-600 mt-1">lowercase letters/numbers only · banned words blocked</p>
         </div>
       )}
+
+      {/* Tag people */}
+      <div className="mt-5">
+        <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 inline-flex items-center gap-1">
+          <AtSign size={11} /> Tag people ({people.length}/10)
+        </label>
+        <div className="cc-input flex flex-wrap gap-2 mt-2">
+          {people.map(p => (
+            <span key={p.user_id} className="tag-chip">
+              #{p.handle}
+              <button onClick={() => setPeople(people.filter(x => x.user_id !== p.user_id))} className="ml-1 text-zinc-500 hover:text-red-400"><X size={12} /></button>
+            </span>
+          ))}
+          <input
+            data-testid="people-input"
+            className="flex-1 bg-transparent outline-none text-sm min-w-[100px]"
+            value={peopleSearch} onChange={(e) => runPeopleSearch(e.target.value)}
+            placeholder={people.length === 0 ? "search by # handle" : ""}
+          />
+        </div>
+        {peopleResults.length > 0 && (
+          <div className="mt-1 border border-zinc-900 rounded-xl divide-y divide-zinc-900 max-h-44 overflow-y-auto">
+            {peopleResults.map(u => (
+              <button key={u.user_id} data-testid={`pick-person-${u.handle}`} onClick={() => addPerson(u)}
+                className="w-full text-left p-2 hover:bg-zinc-900 text-sm flex items-center gap-2">
+                <span className="text-[#FF5A00]">#{u.handle}</span>
+                <span className="text-zinc-500 text-xs truncate">{u.display_name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] text-zinc-600 mt-1">If they require approval, tag stays pending until they accept.</p>
+      </div>
+
+      {/* Audio track toggle */}
+      <label className="mt-5 flex items-center justify-between p-3 border border-zinc-900 rounded-2xl cursor-pointer">
+        <div className="flex items-center gap-3">
+          <Music2 size={16} className="text-purple-300" />
+          <div>
+            <div className="text-sm">Mark as audio track</div>
+            <div className="text-[11px] text-zinc-500">Shown on the Audio tab of your profile.</div>
+          </div>
+        </div>
+        <input data-testid="audio-toggle" type="checkbox" checked={isAudio}
+          onChange={e => setIsAudio(e.target.checked)} className="accent-[#FF5A00]" />
+      </label>
 
       {/* AI label + consent flow */}
       <div className="mt-6">

@@ -10,6 +10,8 @@ export default function EditProfile() {
   const nav = useNavigate();
   const [displayName, setDisplayName] = useState(user.display_name || "");
   const [bio, setBio] = useState(user.bio || "");
+  const [realName, setRealName] = useState(user.real_name || "");
+  const [realNameVis, setRealNameVis] = useState(user.settings?.real_name_visibility || "nobody");
   const [links, setLinks] = useState(user.links?.length ? user.links : []);
   const [busy, setBusy] = useState(false);
 
@@ -18,6 +20,8 @@ export default function EditProfile() {
     try {
       await api.patch("/users/me", {
         display_name: displayName, bio,
+        real_name: realName,
+        real_name_visibility: realNameVis,
         links: links.filter(l => l.label && l.url),
       });
       toast.success("Profile updated");
@@ -40,6 +44,25 @@ export default function EditProfile() {
       <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">Bio ({bio.length}/150)</label>
       <textarea data-testid="edit-bio" className="cc-input mt-2 mb-4 min-h-[90px] resize-none" maxLength={150}
         value={bio} onChange={e => setBio(e.target.value)} />
+
+      <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">Real name (private by default)</label>
+      <input data-testid="edit-real-name" className="cc-input mt-2" maxLength={80}
+        placeholder="Held internally for verification"
+        value={realName} onChange={e => setRealName(e.target.value)} />
+      <div className="text-[11px] text-zinc-600 mt-1 mb-2">Who can see it:</div>
+      <div className="grid grid-cols-4 gap-1 mb-4">
+        {[
+          { v: "nobody", l: "Nobody" },
+          { v: "inner", l: "Inner" },
+          { v: "followers", l: "Followers" },
+          { v: "everyone", l: "Everyone" },
+        ].map(o => (
+          <button key={o.v} data-testid={`real-name-vis-${o.v}`} onClick={() => setRealNameVis(o.v)}
+            className={`p-2 border rounded-xl text-[10px] uppercase tracking-wider transition ${
+              realNameVis === o.v ? "border-[#FF5A00] text-[#FF5A00] bg-[#FF5A00]/5" : "border-zinc-900 text-zinc-500"
+            }`}>{o.l}</button>
+        ))}
+      </div>
 
       <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">Links</label>
       <div className="flex flex-col gap-2 mt-2 mb-4">

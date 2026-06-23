@@ -30,7 +30,7 @@ export default function Feed() {
       <header className="flex items-center justify-between mb-6">
         <div>
           <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Clubhouse</div>
-          <h1 className="font-heading text-3xl">Feed</h1>
+          <h1 className="font-heading text-3xl">My Feed</h1>
         </div>
         <div className="flex items-center gap-2">
           <Link to="/notifications" data-testid="notif-link" className="relative w-10 h-10 rounded-full border border-zinc-900 flex items-center justify-center hover:bg-zinc-900">

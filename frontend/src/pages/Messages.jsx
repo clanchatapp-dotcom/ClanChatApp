@@ -11,7 +11,10 @@ export function Messages() {
   }, []);
   return (
     <div className="px-5 pt-6">
-      <h1 className="font-heading text-3xl mb-5">Messages</h1>
+      <div className="flex items-center justify-between mb-5">
+        <h1 className="font-heading text-3xl">Messages</h1>
+        <Link to="/groups" data-testid="open-groups-link" className="cc-btn-secondary text-xs py-1.5 px-3">Groups</Link>
+      </div>
       {threads.length === 0 && <div className="text-zinc-600 text-sm text-center py-10">No conversations yet.</div>}
       <div className="flex flex-col gap-1">
         {threads.map(t => (

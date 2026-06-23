@@ -1,0 +1,39 @@
+{
+  "summary": "ClanChat iter3 — full frontend e2e of newly-wired UIs (Groups, Admin, Tag approvals, Audio tab, Tag People, Real Name flow, Settings). Found and fixed one critical backend persistence bug: POST /api/posts dropped the is_audio_track field (schema accepted it, doc was inserted without it, so GET /api/posts/audio/{user_id} was always empty). After fix, audio flow verified end-to-end. All other targeted routes/flows verified — routing/shell, Groups create + IC pick, Admin stats grid (admin only), /admin no-crash for non-admin, /tags page, Tag approvals visible to bob, notifications open-tags-link, EditProfile real_name save, Settings tag_approval_mode + taggable_by + real_name_visibility PATCH persist, H1 strings (My Feed, My Inner Circle, My Groups, My Comfort Zone).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/posts", "issue": "Schema field is_audio_track was accepted from client but NEVER persisted into the posts collection (line ~934-948 dict omitted it). Result: GET /api/posts/audio/{user_id} always empty; the Profile Audio tab never populated; Profile Feed-tab/Wall-tab filters worked but had nothing to filter. FIXED during this run by adding `\"is_audio_track\": bool(payload.is_audio_track)` to the post doc before insert_one.", "priority": "CRITICAL"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Settings sections", "issues": ["Section titles render via CSS text-transform: uppercase + 0.3em tracking — the literal string is 'My Comfort Zone' but rendered text is 'MY COMFORT ZONE'. Cosmetic, but worth noting for any assertion/QA tool relying on exact-case match."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_iter2_comments_ai.py", "/app/test_reports/pytest/iter2_results.xml"],
+  "action_items": [
+    "Confirm is_audio_track fix is intentional (mirrors how nsfw, ai_label etc. are persisted). Recommend adding a backend regression test asserting POST /api/posts with is_audio_track=true round-trips and is returned by GET /api/posts/audio/{user_id}.",
+    "Consider whitelisting/extra='forbid' on PostIn to surface dropped fields loudly during dev instead of silently — this would have caught the bug at the first frontend hit.",
+    "Optional: convert Section titles to actual cased strings in markup if exact-case is desired in any external/automated reporting; current uppercase via CSS is fine for human users."
+  ],
+  "critical_code_review_comments": [
+    "server.py is at ~1974 lines — still violates the >700-line guideline. Strongly recommend splitting into routers/{auth,users,posts,inner,boards,groups,admin,moderation,tags}.py. The is_audio_track bug is exactly the kind of regression that gets hidden in a monolith file.",
+    "create_post() builds the post dict by hand and copies fields one-by-one. Several PostIn fields (is_audio_track was missed; depicts_real_person/nsfw are present) — switch to `payload.model_dump(include={...})` and merge to prevent future drift.",
+    "Settings PATCH /api/users/me overwrites real_name_visibility into settings — verified persisted, but the response is shaped without the by-handle viewer-aware filter; consumers must call /users/by-handle/{handle} to see filtered output. Acceptable but worth a comment.",
+    "Profile.jsx wall tab shows 'Words' header only if textPosts.length > 0 — correct, but the testid='wall-words-header' (or similar) would make E2E assertions cheaper.",
+    "No data-testid on the /admin H1 — 'ShieldCheck heading Admin' text was matched by body text, but a testid='admin-heading' would harden tests."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (added is_audio_track to post doc in create_post)"
+  ],
+  "success_rate": {"backend": "100% after fix (POST /api/posts persists+returns is_audio_track; GET /api/posts/audio returns it; PATCH /api/users/me persists tag_approval_mode, taggable_by, real_name_visibility, real_name)", "frontend": "100% of targeted flows (Login, Compose tag+audio, Profile tabs, Groups create+IC, Admin stats, /tags page, Notifications open-tags-link, EditProfile real_name, Settings toggles+save, all H1 strings)"},
+  "test_credentials": "alice@clanchat.app/Password123!, bob@clanchat.app/Password123!, teen@clanchat.app/Password123!, admin@clanchat.app/admin123",
+  "seed_data_creation": "Created a few extra posts/groups via the test (alice posts 'Audio test from curl', 'audio2', 'E2E audio-tag-bob'; alice groups 'Test Crew', 'Test Crew CURL', 'E2E Crew ...'). alice settings now: tag_approval_mode=true, taggable_by=followers, real_name='Alice Adams', real_name_visibility=inner. Bob is in alice's inner circle (carried over from earlier iterations), so bob CAN see Alice's real name — this is correct per the visibility rule. Demo users unaffected functionally.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter3 fixed POST /api/posts not persisting is_audio_track. The audio flow is now wired end-to-end: NewPost.jsx [data-testid=audio-toggle] -> PostIn.is_audio_track -> posts.is_audio_track -> GET /api/posts/audio/{user_id} -> Profile.jsx tab-audio. Profile tabs are: feed (media-only, no audio), wall (text-only no-audio + wall_posts under 'Words' header), audio, boards, pinned. Groups list endpoint is /api/groups; IC member list for invite picker is /api/inner/members (not /api/inner — that 404s). Tag approvals: backend hardcodes approval_required=true when post has media OR nsfw, regardless of recipient's tag_approval_mode setting. Real-name visibility filter is enforced in /users/by-handle/{handle}; bob currently is_inner=true for alice (from prior tests), so bob sees alice.real_name even under vis='inner' — this is correct, not a bug. Settings page Section titles render via CSS uppercase (text-transform). When asserting text in Playwright, use uppercase string OR compare case-insensitively.",
+  "rca of the issue": "RCA — POST /api/posts dropping is_audio_track: PostIn (line 364-376) declares `is_audio_track: bool = False` and frontend correctly sends it. But create_post() builds the post dict by listing fields explicitly (line 934-948) and the maintainer forgot to add 'is_audio_track'. insert_one persists the dict-as-is, so the field never reaches Mongo. serialize_post then reads post.get('is_audio_track', False) which always returns False. GET /api/posts/audio/{user_id} filters by {is_audio_track: True}, so query never matched. Fix: one line `\"is_audio_track\": bool(payload.is_audio_track),` added to the post dict before insert. Verified by curl: POST returns is_audio_track=true, audio endpoint count goes from 0 to 1. Long-term prevention: use payload.model_dump() instead of hand-building dicts, or add a backend smoke test asserting all PostIn fields round-trip."
+}

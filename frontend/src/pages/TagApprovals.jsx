@@ -33,7 +33,7 @@ export default function TagApprovals() {
               {t.is_nsfw && <span className="ml-2 text-red-400 text-[10px] uppercase tracking-wider">18+</span>}
               {t.has_media && <span className="ml-2 text-purple-300 text-[10px] uppercase tracking-wider">Media</span>}
             </div>
-            {t.post_excerpt && <p className="text-sm">"{t.post_excerpt}"</p>}
+            {t.post_excerpt && <p className="text-sm">&ldquo;{t.post_excerpt}&rdquo;</p>}
             {t.post_media?.[0] && (
               <img src={fileUrl(t.post_media[0])} alt="" className="mt-2 w-full max-w-xs rounded-xl object-cover" />
             )}

@@ -942,6 +942,7 @@ async def create_post(payload: PostIn, user=Depends(get_current_user)):
         "ai_label": ai_label,
         "depicts_real_person": bool(payload.depicts_real_person and ai_label),
         "nsfw": payload.nsfw and payload.tier != "public",
+        "is_audio_track": bool(payload.is_audio_track),
         "like_count": 0,
         "pinned": False,
         "created_at": now_iso(),

@@ -6,7 +6,7 @@ import PostCard from "../components/PostCard";
 import { LinkIcon, ShoppingBag, MoreHorizontal, Settings as Cog, Camera } from "lucide-react";
 import { toast } from "sonner";
 
-const TABS = ["feed", "wall", "boards", "pinned"];
+const TABS = ["feed", "wall", "audio", "boards", "pinned"];
 
 export default function Profile() {
   const { handle } = useParams();
@@ -20,6 +20,7 @@ export default function Profile() {
   const [pinned, setPinned] = useState([]);
   const [wall, setWall] = useState([]);
   const [boards, setBoards] = useState([]);
+  const [audio, setAudio] = useState([]);
   const [busy, setBusy] = useState(false);
   const avatarRef = useRef(null);
 
@@ -54,6 +55,7 @@ export default function Profile() {
     reloadPosts();
     api.get(`/wall/${target.user_id}`).then(r => setWall(r.data.posts)).catch(() => setWall([]));
     api.get(`/boards/by-user/${target.user_id}`).then(r => setBoards(r.data.boards)).catch(() => setBoards([]));
+    api.get(`/posts/audio/${target.user_id}`).then(r => setAudio(r.data.posts)).catch(() => setAudio([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.user_id, tab]);
 
@@ -119,6 +121,9 @@ export default function Profile() {
         </div>
         <h2 className="font-heading text-2xl mt-3" data-testid="profile-handle">#{target.handle}</h2>
         <div className="text-sm text-zinc-500 mt-1">{target.display_name}</div>
+        {target.real_name && (
+          <div className="text-xs text-zinc-400 mt-0.5" data-testid="profile-real-name">{target.real_name}</div>
+        )}
         {target.bio && <p className="text-sm mt-3 text-zinc-300 max-w-xs leading-relaxed">{target.bio}</p>}
 
         {target.links?.length > 0 && (
@@ -169,8 +174,17 @@ export default function Profile() {
 
       {tab === "feed" && (
         <div className="flex flex-col gap-3">
-          {posts.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">No posts.</div>}
-          {posts.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />)}
+          {(() => {
+            const mediaPosts = posts.filter(p => (p.media && p.media.length > 0) && !p.is_audio_track);
+            if (mediaPosts.length === 0) return <div className="text-zinc-600 text-sm text-center py-8">No media posts yet.</div>;
+            return mediaPosts.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />);
+          })()}
+        </div>
+      )}
+      {tab === "audio" && (
+        <div className="flex flex-col gap-3">
+          {audio.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">No audio tracks.</div>}
+          {audio.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />)}
         </div>
       )}
       {tab === "pinned" && (
@@ -180,7 +194,10 @@ export default function Profile() {
         </div>
       )}
       {tab === "wall" && (
-        <WallTab ownerId={target.user_id} isMine={isMyProfile} wall={wall} reload={() => api.get(`/wall/${target.user_id}`).then(r => setWall(r.data.posts))} />
+        <WallTab ownerId={target.user_id} isMine={isMyProfile} wall={wall}
+          textPosts={posts.filter(p => (!p.media || p.media.length === 0) && !p.is_audio_track)}
+          reload={() => api.get(`/wall/${target.user_id}`).then(r => setWall(r.data.posts))}
+          reloadPosts={reloadPosts} me={me} />
       )}
       {tab === "boards" && (
         <BoardsTab ownerId={target.user_id} isMine={isMyProfile} boards={boards} reload={() => api.get(`/boards/by-user/${target.user_id}`).then(r => setBoards(r.data.boards))} />
@@ -189,7 +206,7 @@ export default function Profile() {
   );
 }
 
-function WallTab({ ownerId, isMine, wall, reload }) {
+function WallTab({ ownerId, isMine, wall, textPosts, reload, reloadPosts, me }) {
   const [text, setText] = useState("");
   const post = async () => {
     if (!text.trim()) return;
@@ -208,7 +225,18 @@ function WallTab({ ownerId, isMine, wall, reload }) {
           <button data-testid="wall-submit" onClick={post} className="cc-btn-primary py-1 px-4 text-xs">Post</button>
         </div>
       </div>
-      {wall.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">Wall is quiet.</div>}
+
+      {textPosts.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Words</div>
+          {textPosts.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMine} currentUserId={me?.user_id} />)}
+        </div>
+      )}
+
+      {wall.length > 0 && (
+        <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mt-2">Wall notes</div>
+      )}
+      {wall.length === 0 && textPosts.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">Wall is quiet.</div>}
       {wall.map(w => (
         <div key={w.wall_post_id} className="border border-zinc-900 rounded-2xl p-4">
           <div className="text-xs text-zinc-500 mb-1">#{w.author?.handle}</div>
