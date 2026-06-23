@@ -1,0 +1,45 @@
+{
+  "summary": "ClanChat iter2 (Comments + AI Enforcement) — backend + frontend e2e tested. All 7 new iter2 backend tests + 29 iter1 regression tests passing. Fixed pre-existing ObjectId-not-popped bug in POST /api/dms and POST /api/wall/{owner_id} (same pattern that was fixed for boards in iter1). Verified frontend AI label flow (4 buttons, real-person toggle, consent checkbox, red hard-rules warning, frontend blocks submit without consent) and comments toggle/post on feed. Nuclear delete + 48h suspension rules confirmed working server-side using fresh TEST_ registered users (demo users untouched).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/dms", "issue": "Returned 500 ObjectId-not-serializable when DM succeeds (insert_one mutates doc with _id then returns doc). FIXED during this run by popping _id."},
+      {"endpoint": "POST /api/wall/{owner_id}", "issue": "Same ObjectId-not-popped bug pattern. FIXED during this run."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter2_comments_ai.py",
+    "/app/backend/tests/test_clanchat.py",
+    "/app/test_reports/pytest/iter2_results.xml",
+    "/app/test_reports/pytest/iter2_regression.xml"
+  ],
+  "action_items": [
+    "Optional: sweep server.py for any other `insert_one(doc); return doc` patterns (current count after this fix: 0 critical). Consider a helper `insert_and_return(coll, doc)` to centralize this.",
+    "Consider stronger Pydantic validation rejecting `ai_label` values outside {generated,assisted,altered,null} on incoming payload (currently 400 is raised manually after parsing — fine, but extra=forbid would catch typos earlier).",
+    "Consider returning a JSON error code (e.g. {code: 'AI_REAL_PERSON_NO_CONSENT', detail: ...}) so frontend can render structured warnings instead of grep-ing the detail string.",
+    "Frontend: the AI 'AI GENERATED' purple badge looks great in feed; consider also showing `depicts_real_person=true` badge on posts since backend already exposes it (currently hidden on PostCard)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1447 lines — violates >700-line guideline. Recommend splitting into routers/{auth,users,posts,comments,inner,dms,boards,moderation}.py. Iter3 is a good time before more endpoints land.",
+    "apply_strike() is called inside create_post BEFORE the HTTPException is raised — good, but there is no audit log entry separate from strike_history. Consider an `audit_events` collection for trust & safety review.",
+    "create_comment() does not check if post.tier='public' specifically — the IC-only rule applies to ALL tiers. PRD says 'on regular posts' which the implementation enforces uniformly. If group/board posts get separate comment endpoints later, ensure they're not accidentally routed through this guard.",
+    "user_can_comment() blocks minors on NSFW posts but does NOT block adults on NSFW posts where the author is a minor — N/A today (minor cannot post NSFW) but worth a defensive check when group/audio iter lands.",
+    "GET /api/posts/{post_id}/comments returns 404 if the post is not visible to the viewer — correct privacy behavior, but the client cannot tell 404=missing vs 404=hidden. Acceptable for V1."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (popped _id in send_dm and post_to_wall after insert_one)",
+    "/app/backend/tests/test_iter2_comments_ai.py (new — 7 tests covering AI label baseline, AI label-with-flag, feed fields, IC comment positive/negative path, comment delete authz, 48h suspension, nuclear delete)"
+  ],
+  "success_rate": {"backend": "100% (37/37 executed; 1 expected skip for adult-cannot-resolve-minor)", "frontend": "100% of tested AI label + comments flows"},
+  "test_credentials": "alice@clanchat.app/Password123!, bob@clanchat.app/Password123!, teen@clanchat.app/Password123!, admin@clanchat.app/admin123",
+  "seed_data_creation": "Iter2 created two fresh TEST_iter2_<uuid>@x.com users for the nuclear-delete and 48h-suspend tests — these users are intentionally left in a suspended/deleted state to prove the enforcement (their post-attempt also persisted strikes/strike_history). Demo users alice/bob/teen/admin remain fully functional.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter2 contract: PostIn accepts ai_label in {None,'generated','assisted','altered'}, depicts_real_person, has_consent. AI policy: real-person+nsfw → level-3 strike (deleted=true, login returns 403 'permanently deleted'); real-person without consent → level-1 strike (suspended_until +48h, login returns 403 'suspended until <iso>'). Comments endpoints: GET/POST /api/posts/{post_id}/comments, DELETE /api/comments/{cid}. user_can_comment returns True for author or active inner_circle member of author. Serialized post adds: ai_label, depicts_real_person, comment_count, can_comment. Login now checks user.deleted (403) and user.suspended_until (403). DM and wall POST responses now strip _id (fixed iter2). New testids on frontend: ai-label-{none,generated,assisted,altered}, ai-real-person, ai-consent, comment-toggle-{pid}, comment-input-{pid}, comment-send-{pid}, comments-{pid}, comment-{cid}, del-comment-{cid}. Compose page hard-blocks submit when ai_label && depicts_real && !has_consent (toast.error, no API call).",
+  "rca of the issue": "RCA — POST /api/dms 500: send_dm builds `doc`, calls db.dms.insert_one(doc) which mutates doc in-place with bson.ObjectId _id, then `return doc`. FastAPI's jsonable_encoder fails on ObjectId → 500. Surfaced only when DM was actually accepted (e.g., alice having a prior IC relation with bob from regression tests). Same root cause as the boards bug fixed in iter1; iter2 patch applies the same `doc.pop('_id', None)` to send_dm and post_to_wall. Recommend either (a) project-wide helper `insert_and_strip` or (b) use Motor's `find_one({_id: result.inserted_id}, {'_id':0})` to round-trip cleanly."
+}

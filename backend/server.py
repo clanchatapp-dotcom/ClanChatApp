@@ -248,6 +248,8 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0})
         if not user:
             raise HTTPException(401, "User not found")
+        if user.get("deleted"):
+            raise HTTPException(403, "Account deleted")
         return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "Token expired")
@@ -333,7 +335,14 @@ class PostIn(BaseModel):
     tags: List[str] = []
     media_paths: List[str] = []
     is_ai: bool = False
+    ai_label: Optional[str] = None  # None | "generated" | "assisted" | "altered"
+    depicts_real_person: bool = False
+    has_consent: bool = False
     nsfw: bool = False
+
+
+class CommentIn(BaseModel):
+    content: str = Field(min_length=1, max_length=1000)
 
 
 class WallPostIn(BaseModel):
@@ -432,6 +441,8 @@ async def login(payload: LoginIn, response: Response):
     user = await db.users.find_one({"email": payload.email.lower()})
     if not user or not user.get("password_hash") or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(401, "Invalid email or password")
+    if user.get("deleted"):
+        raise HTTPException(403, "This account has been permanently deleted.")
     if user.get("suspended_until"):
         try:
             until = datetime.fromisoformat(user["suspended_until"])
@@ -755,6 +766,10 @@ async def serialize_post(post: dict, viewer: Optional[dict]) -> dict:
     liked = False
     if viewer:
         liked = bool(await db.likes.find_one({"post_id": post["post_id"], "user_id": viewer["user_id"]}))
+    comment_count = await db.comments.count_documents({"post_id": post["post_id"]})
+    can_comment = False
+    if viewer:
+        can_comment = await user_can_comment(post, viewer)
     return {
         "post_id": post["post_id"],
         "author": public_user(author) if author else None,
@@ -763,12 +778,58 @@ async def serialize_post(post: dict, viewer: Optional[dict]) -> dict:
         "tags": post.get("tags", []),
         "media": post.get("media_paths", []),
         "is_ai": post.get("is_ai", False),
+        "ai_label": post.get("ai_label"),
+        "depicts_real_person": post.get("depicts_real_person", False),
         "nsfw": post.get("nsfw", False),
         "like_count": post.get("like_count", 0),
         "liked": liked,
+        "comment_count": comment_count,
+        "can_comment": can_comment,
         "created_at": post["created_at"],
         "pinned": post.get("pinned", False),
     }
+
+
+async def user_can_comment(post: dict, viewer: dict) -> bool:
+    """Inner Circle (Tier 3) of post author only. Author can always comment."""
+    if post["author_id"] == viewer["user_id"]:
+        return True
+    if viewer.get("is_minor") and post.get("nsfw"):
+        return False
+    return bool(await db.inner_circle.find_one({
+        "owner_id": post["author_id"],
+        "member_id": viewer["user_id"],
+        "status": "active",
+    }))
+
+
+async def apply_strike(user_id: str, reason: str, level: int, ban_hours: Optional[int] = None):
+    """Apply a strike. level=1 → 48h suspend. level=2 → 7d. level=3 → permanent delete."""
+    history_entry = {
+        "level": level,
+        "reason": reason[:500],
+        "applied_at": now_iso(),
+    }
+    if level >= 3:
+        history_entry["permanent"] = True
+        await db.users.update_one({"user_id": user_id}, {
+            "$set": {
+                "deleted": True,
+                "deleted_at": now_iso(),
+                "deleted_reason": reason[:500],
+            },
+            "$inc": {"strikes": 1},
+            "$push": {"strike_history": history_entry},
+        })
+        return
+    hours = ban_hours if ban_hours is not None else (48 if level == 1 else 24 * 7)
+    until = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+    history_entry["suspended_until"] = until
+    await db.users.update_one({"user_id": user_id}, {
+        "$set": {"suspended_until": until},
+        "$inc": {"strikes": 1},
+        "$push": {"strike_history": history_entry},
+    })
 
 
 @api.post("/posts")
@@ -777,6 +838,24 @@ async def create_post(payload: PostIn, user=Depends(get_current_user)):
         raise HTTPException(400, "Invalid tier")
     if payload.tier == "public" and payload.nsfw:
         raise HTTPException(400, "Tier 1 (Public) posts cannot contain 18+ content")
+    # AI policy enforcement
+    ai_label = payload.ai_label
+    if ai_label and ai_label not in {"generated", "assisted", "altered"}:
+        raise HTTPException(400, "Invalid AI label")
+    is_ai = bool(ai_label) or payload.is_ai
+    if ai_label:
+        # AI of real person → hard rules
+        if payload.depicts_real_person:
+            if payload.nsfw:
+                # NUCLEAR: AI sexual content of a real person → permanent deletion
+                reason = "AI sexual content depicting a real person"
+                await apply_strike(user["user_id"], reason, level=3)
+                raise HTTPException(403, "AI sexual content depicting real people is permanently banned. Your account has been deleted.")
+            if not payload.has_consent:
+                # AI of real person without consent → Strike 1 + 48h ban
+                reason = "AI generated content depicting a real person without consent"
+                await apply_strike(user["user_id"], reason, level=1, ban_hours=48)
+                raise HTTPException(403, "This content cannot be uploaded. AI content depicting real people requires their explicit consent. A 48-hour suspension has been applied.")
     if payload.tier == "inner":
         tags = []  # no tags on inner posts
     else:
@@ -791,7 +870,9 @@ async def create_post(payload: PostIn, user=Depends(get_current_user)):
         "tier": payload.tier,
         "tags": tags,
         "media_paths": payload.media_paths[:10],
-        "is_ai": payload.is_ai,
+        "is_ai": is_ai,
+        "ai_label": ai_label,
+        "depicts_real_person": bool(payload.depicts_real_person and ai_label),
         "nsfw": payload.nsfw and payload.tier != "public",
         "like_count": 0,
         "pinned": False,
@@ -921,6 +1002,68 @@ async def posts_by_tag(tag: str, viewer=Depends(get_current_user)):
 
 
 # ------------------------------------------------------------------
+# Comments (Inner Circle only on regular posts)
+# ------------------------------------------------------------------
+async def serialize_comment(c: dict) -> dict:
+    author = await db.users.find_one({"user_id": c["author_id"]}, {"_id": 0})
+    return {
+        "comment_id": c["comment_id"],
+        "post_id": c["post_id"],
+        "author": public_user(author) if author else None,
+        "content": c["content"],
+        "created_at": c["created_at"],
+    }
+
+
+@api.get("/posts/{post_id}/comments")
+async def list_comments(post_id: str, viewer=Depends(get_current_user)):
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(404, "Not found")
+    if not await can_view_post(post, viewer):
+        raise HTTPException(404, "Not found")
+    cursor = db.comments.find({"post_id": post_id}, {"_id": 0}).sort("created_at", 1).limit(500)
+    out = []
+    async for c in cursor:
+        out.append(await serialize_comment(c))
+    return {"comments": out, "can_comment": await user_can_comment(post, viewer)}
+
+
+@api.post("/posts/{post_id}/comments")
+async def create_comment(post_id: str, payload: CommentIn, viewer=Depends(get_current_user)):
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(404, "Not found")
+    if not await can_view_post(post, viewer):
+        raise HTTPException(404, "Not found")
+    if not await user_can_comment(post, viewer):
+        raise HTTPException(403, "Only the Inner Circle can comment on this post")
+    cid = f"cmt_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "comment_id": cid,
+        "post_id": post_id,
+        "author_id": viewer["user_id"],
+        "content": payload.content.strip()[:1000],
+        "created_at": now_iso(),
+    }
+    await db.comments.insert_one(doc)
+    return await serialize_comment(doc)
+
+
+@api.delete("/comments/{comment_id}")
+async def delete_comment(comment_id: str, viewer=Depends(get_current_user)):
+    c = await db.comments.find_one({"comment_id": comment_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Not found")
+    post = await db.posts.find_one({"post_id": c["post_id"]}, {"_id": 0})
+    # Comment author OR post owner can delete
+    if c["author_id"] != viewer["user_id"] and (not post or post["author_id"] != viewer["user_id"]):
+        raise HTTPException(403, "Not allowed")
+    await db.comments.delete_one({"comment_id": comment_id})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
 # Wall
 # ------------------------------------------------------------------
 @api.post("/wall/{owner_id}")
@@ -945,6 +1088,7 @@ async def post_to_wall(owner_id: str, payload: WallPostIn, user=Depends(get_curr
         "created_at": now_iso(),
     }
     await db.wall_posts.insert_one(doc)
+    doc.pop("_id", None)
     return doc
 
 
@@ -1093,6 +1237,7 @@ async def send_dm(payload: DMIn, user=Depends(get_current_user)):
         "content": payload.content.strip()[:2000], "created_at": now_iso(), "read": False,
     }
     await db.dms.insert_one(doc)
+    doc.pop("_id", None)
     return doc
 
 

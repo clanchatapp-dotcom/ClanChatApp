@@ -84,7 +84,7 @@ export default function Feed() {
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          {filtered.map(p => <PostCard key={p.post_id} post={p} onChange={load} showPin={p.author?.user_id === user?.user_id} />)}
+          {filtered.map(p => <PostCard key={p.post_id} post={p} onChange={load} showPin={p.author?.user_id === user?.user_id} currentUserId={user?.user_id} />)}
         </div>
       )}
     </div>

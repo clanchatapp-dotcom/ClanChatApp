@@ -1,13 +1,20 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import api, { formatApiError, fileUrl } from "../lib/api";
-import { Sparkles, X, ImagePlus, AlertTriangle } from "lucide-react";
+import { Sparkles, X, ImagePlus, AlertTriangle, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 const TIERS = [
   { id: "public", label: "Public", desc: "Everyone can see" },
   { id: "followers", label: "Followers", desc: "Approved followers only" },
   { id: "inner", label: "Inner Circle", desc: "Invisible to others" },
+];
+
+const AI_LABELS = [
+  { id: "", label: "Not AI" },
+  { id: "generated", label: "AI Generated" },
+  { id: "assisted", label: "AI Assisted" },
+  { id: "altered", label: "AI Altered" },
 ];
 
 export default function NewPost() {
@@ -17,7 +24,9 @@ export default function NewPost() {
   const [tags, setTags] = useState([]);
   const [tagDraft, setTagDraft] = useState("");
   const [media, setMedia] = useState([]); // [{path, content_type}]
-  const [isAi, setIsAi] = useState(false);
+  const [aiLabel, setAiLabel] = useState("");
+  const [depictsReal, setDepictsReal] = useState(false);
+  const [hasConsent, setHasConsent] = useState(false);
   const [nsfw, setNsfw] = useState(false);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
@@ -72,13 +81,22 @@ export default function NewPost() {
     if (tier === "public" && nsfw) {
       toast.error("Public posts cannot contain 18+ content"); return;
     }
+    if (aiLabel && depictsReal && nsfw) {
+      toast.error("AI sexual content depicting real people is permanently banned. Do not post this."); return;
+    }
+    if (aiLabel && depictsReal && !hasConsent) {
+      toast.error("You must confirm explicit consent from the real person depicted."); return;
+    }
     setBusy(true);
     try {
       await api.post("/posts", {
         content, tier,
         tags: tier === "inner" ? [] : tags,
         media_paths: media.map(m => m.path),
-        is_ai: isAi, nsfw,
+        ai_label: aiLabel || null,
+        depicts_real_person: !!aiLabel && depictsReal,
+        has_consent: !!aiLabel && depictsReal && hasConsent,
+        nsfw,
       });
       toast.success("Posted");
       nav("/feed");
@@ -161,18 +179,63 @@ export default function NewPost() {
         </div>
       )}
 
+      {/* AI label + consent flow */}
+      <div className="mt-6">
+        <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">AI content label</label>
+        <div className="grid grid-cols-4 gap-1 mt-2">
+          {AI_LABELS.map(opt => (
+            <button key={opt.id || "none"}
+              data-testid={`ai-label-${opt.id || "none"}`}
+              onClick={() => { setAiLabel(opt.id); if (!opt.id) { setDepictsReal(false); setHasConsent(false); } }}
+              className={`p-2 border rounded-xl text-[10px] uppercase tracking-wider transition ${
+                aiLabel === opt.id ? "border-purple-500 bg-purple-500/10 text-purple-200" : "border-zinc-900 text-zinc-500 hover:border-zinc-700"
+              }`}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {aiLabel && (
+          <p className="text-[11px] text-purple-300 mt-2 flex items-start gap-1">
+            <Sparkles size={12} className="mt-0.5 shrink-0" />
+            <span>An AI label will permanently appear on this post — it cannot be removed.</span>
+          </p>
+        )}
+      </div>
+
+      {aiLabel && (
+        <div className="mt-3 p-3 border border-purple-500/30 rounded-2xl bg-purple-500/5">
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-sm flex items-center gap-2">
+              <ShieldAlert size={14} className="text-purple-300" />
+              Does this depict a real person?
+            </span>
+            <input data-testid="ai-real-person" type="checkbox" checked={depictsReal}
+              onChange={e => { setDepictsReal(e.target.checked); if (!e.target.checked) setHasConsent(false); }}
+              className="accent-purple-500" />
+          </label>
+          {depictsReal && (
+            <>
+              <div className="mt-3 p-3 bg-red-500/10 border border-red-500/30 rounded-xl">
+                <div className="text-[11px] uppercase tracking-wider text-red-300 mb-2 flex items-center gap-1">
+                  <ShieldAlert size={12} /> Hard rules apply
+                </div>
+                <ul className="text-[12px] text-zinc-300 space-y-1 leading-snug">
+                  <li>· Posting without their consent → 48hr ban + Strike 1</li>
+                  <li>· If 18+ content depicting them → permanent deletion. No appeal.</li>
+                </ul>
+              </div>
+              <label className="flex items-center justify-between cursor-pointer mt-3">
+                <span className="text-sm">I have their explicit consent</span>
+                <input data-testid="ai-consent" type="checkbox" checked={hasConsent}
+                  onChange={e => setHasConsent(e.target.checked)} className="accent-[#FF5A00]" />
+              </label>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Toggles */}
-      <div className="mt-6 flex flex-col gap-2">
-        <label className="flex items-center justify-between p-3 border border-zinc-900 rounded-2xl cursor-pointer">
-          <div className="flex items-center gap-3">
-            <Sparkles size={16} className="text-zinc-400" />
-            <div>
-              <div className="text-sm">AI generated</div>
-              <div className="text-[11px] text-zinc-500">Label this post if AI made any part of it</div>
-            </div>
-          </div>
-          <input data-testid="ai-toggle" type="checkbox" checked={isAi} onChange={e => setIsAi(e.target.checked)} className="accent-[#FF5A00]" />
-        </label>
+      <div className="mt-3 flex flex-col gap-2">
         {tier !== "public" && (
           <label className="flex items-center justify-between p-3 border border-zinc-900 rounded-2xl cursor-pointer">
             <div className="flex items-center gap-3">

@@ -1,6 +1,7 @@
-import { Heart, MoreHorizontal, Sparkles, Pin } from "lucide-react";
+import { Heart, MoreHorizontal, Sparkles, Pin, MessageCircle } from "lucide-react";
 import { useState } from "react";
 import TierBadge from "./TierBadge";
+import Comments from "./Comments";
 import api, { fileUrl, formatApiError } from "../lib/api";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -19,12 +20,21 @@ function timeAgo(iso) {
   return d.toLocaleDateString();
 }
 
-export default function PostCard({ post, onChange, showPin = false }) {
+export default function PostCard({ post, onChange, showPin = false, currentUserId }) {
   const [liked, setLiked] = useState(post.liked);
   const [count, setCount] = useState(post.like_count);
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleted, setDeleted] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [commentCount, setCommentCount] = useState(post.comment_count || 0);
+
+  const reloadCount = async () => {
+    try {
+      const { data } = await api.get(`/posts/${post.post_id}/comments`);
+      setCommentCount(data.comments.length);
+    } catch { /* ignore */ }
+  };
 
   const toggleLike = async () => {
     if (busy) return;
@@ -88,8 +98,8 @@ export default function PostCard({ post, onChange, showPin = false }) {
         <div className="flex items-center gap-2">
           {post.pinned && <Pin size={14} className="text-[#FF5A00]" />}
           {post.is_ai && (
-            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.15em] text-zinc-400 bg-zinc-900 px-2 py-1 rounded">
-              <Sparkles size={10} /> AI
+            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.15em] text-zinc-300 bg-purple-500/10 border border-purple-500/30 px-2 py-1 rounded">
+              <Sparkles size={10} /> AI {post.ai_label || ""}
             </span>
           )}
           {post.nsfw && (
@@ -126,14 +136,24 @@ export default function PostCard({ post, onChange, showPin = false }) {
       )}
 
       <footer className="flex items-center justify-between pt-1 border-t border-zinc-900">
-        <button
-          data-testid={`like-btn-${post.post_id}`}
-          onClick={toggleLike}
-          className={`flex items-center gap-2 text-sm transition-colors ${liked ? "text-[#FF5A00]" : "text-zinc-400 hover:text-zinc-200"}`}
-        >
-          <Heart size={18} fill={liked ? "#FF5A00" : "none"} />
-          <span>{count}</span>
-        </button>
+        <div className="flex items-center gap-4">
+          <button
+            data-testid={`like-btn-${post.post_id}`}
+            onClick={toggleLike}
+            className={`flex items-center gap-2 text-sm transition-colors ${liked ? "text-[#FF5A00]" : "text-zinc-400 hover:text-zinc-200"}`}
+          >
+            <Heart size={18} fill={liked ? "#FF5A00" : "none"} />
+            <span>{count}</span>
+          </button>
+          <button
+            data-testid={`comment-toggle-${post.post_id}`}
+            onClick={() => setCommentsOpen(o => !o)}
+            className={`flex items-center gap-2 text-sm transition-colors ${commentsOpen ? "text-[#FF5A00]" : "text-zinc-400 hover:text-zinc-200"}`}
+          >
+            <MessageCircle size={18} />
+            <span>{commentCount}</span>
+          </button>
+        </div>
         <div className="flex items-center gap-3 text-zinc-500">
           {showPin && (
             <button onClick={pin} data-testid={`pin-btn-${post.post_id}`} className="text-xs uppercase tracking-wider hover:text-zinc-200">
@@ -146,6 +166,10 @@ export default function PostCard({ post, onChange, showPin = false }) {
           <MoreHorizontal size={18} />
         </div>
       </footer>
+
+      {commentsOpen && (
+        <Comments post={post} currentUserId={currentUserId} onChange={reloadCount} />
+      )}
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent className="bg-zinc-950 border border-zinc-800 text-zinc-100">

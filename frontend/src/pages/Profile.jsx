@@ -170,13 +170,13 @@ export default function Profile() {
       {tab === "feed" && (
         <div className="flex flex-col gap-3">
           {posts.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">No posts.</div>}
-          {posts.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} />)}
+          {posts.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />)}
         </div>
       )}
       {tab === "pinned" && (
         <div className="flex flex-col gap-3">
           {pinned.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">Up to 3 pinned posts.</div>}
-          {pinned.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} />)}
+          {pinned.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />)}
         </div>
       )}
       {tab === "wall" && (
