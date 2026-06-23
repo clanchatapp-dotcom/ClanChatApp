@@ -1,5 +1,6 @@
 import { Outlet, useLocation } from "react-router-dom";
 import BottomNav from "./BottomNav";
+import OnboardingTour from "./OnboardingTour";
 import { useAuth } from "../context/AuthContext";
 
 export default function AppShell() {
@@ -10,6 +11,7 @@ export default function AppShell() {
     <div className="cc-shell bg-background text-foreground">
       <Outlet />
       {!hideNav && <BottomNav />}
+      {user && <OnboardingTour />}
     </div>
   );
 }
