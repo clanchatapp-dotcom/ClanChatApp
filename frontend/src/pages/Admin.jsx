@@ -60,6 +60,28 @@ export default function Admin() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
+  const promote = async () => {
+    const email = window.prompt("Promote which email to admin?");
+    if (!email) return;
+    try {
+      await api.post("/admin/promote", { email });
+      toast.success(`${email} is now admin`);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+  const purge = async (includeSeededAdmin) => {
+    const msg = includeSeededAdmin
+      ? "Purge ALL demo accounts INCLUDING admin@clanchat.app and every trace of their data? This cannot be undone."
+      : "Purge alice/bob/teen and all their data (admin@clanchat.app kept)? This cannot be undone.";
+    if (!window.confirm(msg)) return;
+    if (includeSeededAdmin && !window.confirm("Last check: you are about to delete the seeded admin account. Make sure you've promoted your own email to admin FIRST. Continue?")) return;
+    try {
+      const { data } = await api.post("/admin/purge-demo-accounts", { include_seeded_admin: includeSeededAdmin });
+      toast.success(`Purged ${data.purged.length} account(s)`);
+      loadStats();
+      console.info("Purge summary", data.summary);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
   if (!stats) return <div className="p-10 text-zinc-500 text-sm">Loading admin…</div>;
 
   return (
@@ -176,6 +198,31 @@ export default function Admin() {
           )}
         </div>
       )}
+
+      <section className="mt-10 border border-red-500/30 bg-red-500/5 rounded-2xl p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <AlertTriangle size={14} className="text-red-400" />
+          <h3 className="text-xs uppercase tracking-[0.25em] text-red-200">Danger zone</h3>
+        </div>
+        <p className="text-xs text-zinc-500 leading-relaxed">
+          One-off bootstrap for production. Promote your real email to admin, sign in as that account,
+          then purge the seeded demo accounts (alice / bob / teen) and optionally the seeded admin too.
+        </p>
+        <div className="flex flex-wrap gap-2 mt-4">
+          <button data-testid="admin-promote-btn" onClick={promote} className="cc-btn-secondary text-xs py-1.5 px-3">
+            Promote email to admin…
+          </button>
+          <button data-testid="admin-purge-demo-btn" onClick={() => purge(false)} className="cc-btn-secondary text-xs py-1.5 px-3 border-amber-500/40 text-amber-200">
+            Purge alice / bob / teen
+          </button>
+          <button data-testid="admin-purge-all-btn" onClick={() => purge(true)} className="bg-red-500 text-white text-xs py-1.5 px-3 rounded-full">
+            Purge ALL demo (incl. seeded admin)
+          </button>
+        </div>
+        <p className="text-[10px] text-zinc-600 mt-3 leading-relaxed">
+          Purges every related record: posts, comments, follows, IC, DMs, groups, boards, walls, reports, CSAM, tags, blocks, mutes, restricts. The calling admin is never deleted, even via the "purge all" option.
+        </p>
+      </section>
     </div>
   );
 }

@@ -1978,6 +1978,94 @@ async def admin_audit_log(admin=Depends(require_admin), limit: int = 100):
 
 
 # ------------------------------------------------------------------
+# Admin: promote a user to admin role (one-off bootstrap helper for
+# production where the user wants to swap the seeded admin@clanchat.app
+# for their own real email).
+# ------------------------------------------------------------------
+@api.post("/admin/promote")
+async def admin_promote(payload: dict, admin=Depends(require_admin)):
+    email = (payload.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(400, "email required")
+    target = await db.users.find_one({"email": email})
+    if not target:
+        raise HTTPException(404, "User not found")
+    await db.users.update_one({"user_id": target["user_id"]}, {"$set": {"role": "admin"}})
+    await db.audit_events.insert_one({
+        "event": "admin_promoted", "target_user_id": target["user_id"],
+        "target_email": email, "promoted_by": admin["user_id"], "at": now_iso(),
+    })
+    return {"ok": True, "user_id": target["user_id"]}
+
+
+# ------------------------------------------------------------------
+# Admin: one-off purge of seeded demo accounts.
+# Wipes alice/bob/teen (+ optionally the seeded admin@clanchat.app) and ALL
+# data they touched: posts, comments, follows, inner-circle, DMs, group chats,
+# boards, wall posts, reports, csam, tag-approvals, warnings, notifications.
+# The calling admin is never purged, even if include_seeded_admin=true.
+# ------------------------------------------------------------------
+DEMO_EMAILS = ["alice@clanchat.app", "bob@clanchat.app", "teen@clanchat.app"]
+SEEDED_ADMIN_EMAIL = "admin@clanchat.app"
+
+
+@api.post("/admin/purge-demo-accounts")
+async def admin_purge_demo(payload: Optional[dict] = None, admin=Depends(require_admin)):
+    payload = payload or {}
+    include_seeded_admin = bool(payload.get("include_seeded_admin", False))
+
+    emails_to_purge = list(DEMO_EMAILS)
+    if include_seeded_admin:
+        emails_to_purge.append(SEEDED_ADMIN_EMAIL)
+
+    # Resolve user_ids and refuse to nuke the calling admin
+    targets = []
+    async for u in db.users.find({"email": {"$in": emails_to_purge}}, {"_id": 0, "user_id": 1, "email": 1, "handle": 1}):
+        if u["user_id"] == admin["user_id"]:
+            continue  # never delete self
+        targets.append(u)
+
+    if not targets:
+        return {"ok": True, "purged": [], "note": "No demo accounts found (already clean)."}
+
+    uids = [t["user_id"] for t in targets]
+
+    # Delete every collection that references these users by any id field.
+    summary = {}
+    summary["posts"] = (await db.posts.delete_many({"author_id": {"$in": uids}})).deleted_count
+    summary["comments"] = (await db.comments.delete_many({"author_id": {"$in": uids}})).deleted_count
+    summary["follows"] = (await db.follows.delete_many({"$or": [{"follower_id": {"$in": uids}}, {"followee_id": {"$in": uids}}]})).deleted_count
+    summary["inner_circle"] = (await db.inner_circle.delete_many({"$or": [{"owner_id": {"$in": uids}}, {"member_id": {"$in": uids}}]})).deleted_count
+    summary["dms"] = (await db.dms.delete_many({"$or": [{"from_id": {"$in": uids}}, {"to_id": {"$in": uids}}]})).deleted_count
+    # group chats: delete groups created by, plus remove from members/pending of others
+    summary["group_chats"] = (await db.group_chats.delete_many({"creator_id": {"$in": uids}})).deleted_count
+    await db.group_chats.update_many({}, {"$pull": {"members": {"$in": uids}, "pending_invites": {"$in": uids}}})
+    summary["group_messages"] = (await db.group_messages.delete_many({"$or": [{"author_id": {"$in": uids}}, {"from_id": {"$in": uids}}]})).deleted_count
+    summary["boards"] = (await db.boards.delete_many({"creator_id": {"$in": uids}})).deleted_count
+    summary["board_posts"] = (await db.board_posts.delete_many({"author_id": {"$in": uids}})).deleted_count
+    summary["wall_posts"] = (await db.wall_posts.delete_many({"$or": [{"owner_id": {"$in": uids}}, {"author_id": {"$in": uids}}]})).deleted_count
+    summary["reports"] = (await db.reports.delete_many({"$or": [{"reporter_id": {"$in": uids}}, {"target_id": {"$in": uids}}]})).deleted_count
+    summary["csam_reports"] = (await db.csam_reports.delete_many({"$or": [{"reporter_id": {"$in": uids}}, {"target_id": {"$in": uids}}]})).deleted_count
+    summary["tags_pending"] = (await db.tags_pending.delete_many({"$or": [{"author_id": {"$in": uids}}, {"tagged_user_id": {"$in": uids}}]})).deleted_count
+    summary["user_warnings"] = (await db.user_warnings.delete_many({"user_id": {"$in": uids}})).deleted_count
+    summary["blocks"] = (await db.blocks.delete_many({"$or": [{"blocker_id": {"$in": uids}}, {"blocked_id": {"$in": uids}}]})).deleted_count
+    summary["mutes"] = (await db.mutes.delete_many({"$or": [{"muter_id": {"$in": uids}}, {"muted_id": {"$in": uids}}]})).deleted_count
+    summary["restricts"] = (await db.restricts.delete_many({"$or": [{"restrictor_id": {"$in": uids}}, {"restricted_id": {"$in": uids}}]})).deleted_count
+    summary["users"] = (await db.users.delete_many({"user_id": {"$in": uids}})).deleted_count
+
+    await db.audit_events.insert_one({
+        "event": "demo_purge",
+        "purged_user_ids": uids,
+        "purged_emails": [t["email"] for t in targets],
+        "summary": summary,
+        "include_seeded_admin": include_seeded_admin,
+        "performed_by": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "purged": [t["email"] for t in targets], "summary": summary}
+
+
+# ------------------------------------------------------------------
 # Trending tags (right-rail / discovery)
 # Public posts, last 24h, top 10, exclude banned & non-public
 # ------------------------------------------------------------------
