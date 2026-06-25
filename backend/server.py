@@ -1462,7 +1462,7 @@ async def send_dm(payload: DMIn, user=Depends(get_current_user)):
     doc = {
         "message_id": mid, "from_id": user["user_id"], "to_id": payload.recipient_id,
         "content": content,
-        "media_paths": payload.media_paths[:4],  # hard cap 4 per message
+        "media_paths": payload.media_paths,  # capped at 4 via DMIn validator
         "created_at": now_iso(),
         # Self-DMs are pre-marked read since you're sending to yourself —
         # no point lighting up the unread badge.

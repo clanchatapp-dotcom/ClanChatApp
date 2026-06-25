@@ -271,8 +271,8 @@ function DMMedia({ path }) {
     return <audio src={url} controls preload="metadata" className="w-full" data-testid="dm-media-audio" />;
   }
   return (
-    <a href={url} target="_blank" rel="noreferrer" data-testid="dm-media-image">
-      <img src={url} alt="" loading="lazy" className="rounded-lg max-h-72 w-full object-cover" />
+    <a href={url} target="_blank" rel="noreferrer">
+      <img src={url} alt="" loading="lazy" data-testid="dm-media-image" className="rounded-lg max-h-72 w-full object-cover" />
     </a>
   );
 }
