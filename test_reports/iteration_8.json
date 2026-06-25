@@ -1,0 +1,38 @@
+{
+  "summary": "Iter8 — DM read-state bug fix VERIFIED end-to-end. Backend: 9/9 pytest cases pass in test_iter8_dm_read_state.py covering (1) unread_dms increments on incoming DM, (2) opening thread via GET /api/dms/with/{other_id} clears unread_dms to 0, (3) the db.dms row has read:true + read_at populated for messages received by the opener, (4) idempotent re-open is a clean no-op, (5) opening one's OWN outgoing thread does NOT mark messages-I-sent as read (correctly recipient-perspective only), (6) /notifications/counts shape preserved. Regression: 15/15 prior iter7 notif+follower+admin-promote tests still pass. Frontend Playwright (mobile 390x844 + desktop 1440x900): orange dot on bottom-nav Messages icon (data-testid='nav-notif-dot' inside nav-messages) appears when alice has unread_dms=1; navigating to /m/{bobId} fires GET /api/dms/with → counts API drops to 0 → dot/pill disappear on next route remount. Desktop sidebar pill (data-testid='side-badge-side-messages') shows '1' then is gone after thread open. Production bug from screenshot is fixed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter8_dm_read_state.py",
+    "/app/test_reports/pytest/iter8_dm_read.xml"
+  ],
+  "action_items": [
+    "Main agent can ship the fix. Bug is closed."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1495 — update_many fires unconditionally on every GET /dms/with. For chatty users this is fine, but the matched_count==0 path issues a no-op write. Consider gating with a quick count_documents first if mongo write perf matters; currently negligible.",
+    "server.py:1495 — Only flips read=False → True for messages from other_id→me. Correct recipient-perspective semantics (verified by TestDmReadStateDoesNotMarkOutgoing).",
+    "useNotifCounts.js polls every 30s and remounts on route change (useEffect deps [enabled, refresh]). Since the read-mark happens server-side on /dms/with, the badge update is purely driven by the next /counts poll — could be more responsive by calling refresh() explicitly inside MessageThread after the dm_history fetch resolves. Optional UX polish, not a bug.",
+    "BottomNav.jsx:23 — Messages dot driven by counts.unread_dms > 0 (correct). DesktopSidebar similar — both clear cleanly on next /counts response."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter8_dm_read_state.py"
+  ],
+  "success_rate": {
+    "backend": "9/9 new pytest passed + 15/15 iter7 regression passed = 100%",
+    "frontend": "Mobile dot + desktop pill clear behavior verified live on https://private-posts-11.preview.emergentagent.com via Playwright (100%)"
+  },
+  "test_credentials": "alice@clanchat.app/Password123!, bob@clanchat.app/Password123! — both seeded and working. NOTE: bob is still ADMIN from iter7 promote test; not relevant to this fix.",
+  "seed_data_creation": "Test sent 3 DMs (bob→alice 'TEST iter8 unread', alice→bob 'TEST iter8 outgoing', plus two FRONTEND test DMs during Playwright runs). Toggled alice.settings.dms_enabled_followers=true (already true from iter7). No destructive operations. Test data is fully self-cleaning via the read-flag transition — no manual cleanup needed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_iter8_dm_read_state.py is the regression suite for the DM-read-state bug. Run with REACT_APP_BACKEND_URL exported in env (the suite reads it). The TestDmReadStateDoesNotMarkOutgoing class is the critical guard against a future regression where someone might naively update_many on $or:[{from_id:me,to_id:other},{from_id:other,to_id:me}] (would incorrectly mark sender's own outgoing messages as read). For frontend Playwright: thread route is /m/:userId NOT /messages/:userId. Bob's user_id is user_bfa838fc3363, alice's is user_529ecc56114c (stable across reseeds because SEED_DEMO_DATA generates deterministic IDs from email hash). Onboarding tour modal can be dismissed via localStorage.setItem('onboarding_seen','true') OR clicking the X / Skip button at data-testid='onboarding-tour'.",
+  "rca_of_the_issue": "ROOT CAUSE: dm_history endpoint at server.py:1491 previously fetched the conversation but never updated the read flag on the messages it returned. /notifications/counts at server.py:2148 counts {to_id:me, read:False} — so the unread_dms counter stayed > 0 forever, keeping the orange dot stuck on the Messages nav icon (user's production screenshot). FIX (already applied by main agent): added db.dms.update_many({from_id: other_id, to_id: user.user_id, read: False}, {$set: {read: True, read_at: now_iso()}}) before returning the message history. Filter is scoped to from=other,to=me which means re-viewing OWN outgoing thread (where me=from, other=to) doesn't match the filter — verified by TestDmReadStateDoesNotMarkOutgoing. REPRODUCTION (prior to fix): (1) login bob, (2) POST /api/dms recipient_id=alice content=any → alice's unread_dms=1, (3) login alice, (4) GET /api/dms/with/{bobId} returns msgs but unread_dms STILL 1 → bug. MITIGATION: fix shipped on backend; useNotifCounts polls every 30s OR refreshes on route remount, so dot clears within 30s of opening thread (immediately if user navigates away and back)."
+}

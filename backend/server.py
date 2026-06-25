@@ -1490,6 +1490,12 @@ async def list_threads(user=Depends(get_current_user)):
 
 @api.get("/dms/with/{other_id}")
 async def dm_history(other_id: str, user=Depends(get_current_user)):
+    # Mark all messages from `other_id` to me as read — this is when the user
+    # actually opens the thread, so the unread badge should drop accordingly.
+    await db.dms.update_many(
+        {"from_id": other_id, "to_id": user["user_id"], "read": False},
+        {"$set": {"read": True, "read_at": now_iso()}},
+    )
     cursor = db.dms.find({
         "$or": [
             {"from_id": user["user_id"], "to_id": other_id},
