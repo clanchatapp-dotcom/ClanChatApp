@@ -2047,10 +2047,64 @@ async def serve_file(path: str, request: Request):
 # ------------------------------------------------------------------
 @api.get("/notifications/counts")
 async def notif_counts(user=Depends(get_current_user)):
-    fr = await db.follows.count_documents({"followee_id": user["user_id"], "status": "pending"})
-    inv = await db.inner_circle.count_documents({"member_id": user["user_id"], "status": "pending"})
-    unread = await db.dms.count_documents({"to_id": user["user_id"], "read": False})
-    return {"follow_requests": fr, "inner_invites": inv, "unread_dms": unread}
+    uid = user["user_id"]
+    last_seen = user.get("notifications_seen_at") or "2000-01-01T00:00:00+00:00"
+    fr = await db.follows.count_documents({"followee_id": uid, "status": "pending"})
+    inv = await db.inner_circle.count_documents({"member_id": uid, "status": "pending"})
+    unread = await db.dms.count_documents({"to_id": uid, "read": False})
+    # New followers since last viewed (covers open-follow accounts)
+    new_followers = await db.follows.count_documents({
+        "followee_id": uid, "status": "active",
+        "created_at": {"$gt": last_seen},
+    })
+    # Pending tag-approval requests addressed to me
+    tag_pending = await db.tags_pending.count_documents({"tagged_user_id": uid, "status": "pending"})
+    # Pending group-chat invites
+    group_invites = await db.group_chats.count_documents({"pending_invites": uid})
+    # Unread strike warnings
+    warnings = await db.user_warnings.count_documents({"user_id": uid, "dismissed": False})
+    total = fr + inv + unread + new_followers + tag_pending + group_invites + warnings
+    return {
+        "follow_requests": fr,
+        "inner_invites": inv,
+        "unread_dms": unread,
+        "new_followers": new_followers,
+        "tag_pending": tag_pending,
+        "group_invites": group_invites,
+        "warnings": warnings,
+        "total": total,
+    }
+
+
+@api.post("/notifications/mark-seen")
+async def notif_mark_seen(user=Depends(get_current_user)):
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"notifications_seen_at": now_iso()}}
+    )
+    return {"ok": True}
+
+
+@api.get("/users/me/followers")
+async def my_followers(user=Depends(get_current_user)):
+    """Private list — only the user themselves can see who follows them."""
+    out = []
+    async for f in db.follows.find({"followee_id": user["user_id"], "status": "active"}, {"_id": 0}).sort("created_at", -1).limit(500):
+        u = await db.users.find_one({"user_id": f["follower_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1})
+        if u:
+            out.append({**u, "followed_at": f.get("created_at")})
+    return {"followers": out, "count": len(out)}
+
+
+@api.get("/users/me/following")
+async def my_following(user=Depends(get_current_user)):
+    """Private list — only the user themselves can see who they follow."""
+    out = []
+    async for f in db.follows.find({"follower_id": user["user_id"], "status": "active"}, {"_id": 0}).sort("created_at", -1).limit(500):
+        u = await db.users.find_one({"user_id": f["followee_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1})
+        if u:
+            out.append({**u, "followed_at": f.get("created_at")})
+    return {"following": out, "count": len(out)}
 
 
 # ------------------------------------------------------------------
@@ -2091,7 +2145,10 @@ async def startup_event():
     await db.follows.create_index([("follower_id", 1), ("followee_id", 1)], unique=True)
     await db.inner_circle.create_index([("owner_id", 1), ("member_id", 1)], unique=True)
     await db.dms.create_index([("from_id", 1), ("to_id", 1), ("created_at", -1)])
-    await seed_demo()
+    # Demo accounts are only seeded when SEED_DEMO_DATA=1 (preview/dev only).
+    # Production must NOT have alice/bob/teen test users polluting the app.
+    if os.environ.get("SEED_DEMO_DATA") == "1":
+        await seed_demo()
     init_storage()
 
 

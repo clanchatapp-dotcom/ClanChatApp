@@ -20,6 +20,7 @@ import TagView from "./pages/TagView";
 import { Groups, GroupChat } from "./pages/Groups";
 import Admin from "./pages/Admin";
 import TagApprovals from "./pages/TagApprovals";
+import MyConnections from "./pages/MyConnections";
 import { Toaster } from "sonner";
 
 function Protected({ children }) {
@@ -56,6 +57,7 @@ function AppRouter() {
         <Route path="/g/:groupId" element={<Protected><GroupChat /></Protected>} />
         <Route path="/admin" element={<Protected><Admin /></Protected>} />
         <Route path="/tags" element={<Protected><TagApprovals /></Protected>} />
+        <Route path="/me/:kind" element={<Protected><MyConnections /></Protected>} />
         <Route path="/b/:boardId" element={<Protected><BoardView /></Protected>} />
         <Route path="/t/:tag" element={<Protected><TagView /></Protected>} />
         <Route path="*" element={<Navigate to="/feed" replace />} />

@@ -22,6 +22,7 @@ export default function Profile() {
   const [boards, setBoards] = useState([]);
   const [audio, setAudio] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [myCounts, setMyCounts] = useState({ followers: null, following: null });
   const avatarRef = useRef(null);
 
   const target = isMyProfile ? me : data?.user;
@@ -37,6 +38,14 @@ export default function Profile() {
     }
   };
   useEffect(() => { setData(null); load(); }, [handle, me?.user_id]);
+
+  useEffect(() => {
+    if (!isMyProfile) return;
+    Promise.all([
+      api.get("/users/me/followers").catch(() => ({ data: { count: 0 } })),
+      api.get("/users/me/following").catch(() => ({ data: { count: 0 } })),
+    ]).then(([f, fg]) => setMyCounts({ followers: f.data.count, following: fg.data.count }));
+  }, [isMyProfile, me?.user_id]);
 
   const reloadPosts = async () => {
     if (!target) return;
@@ -140,6 +149,28 @@ export default function Profile() {
         <div className="flex items-center gap-2 mt-4 text-[10px] uppercase tracking-[0.2em] text-zinc-600">
           <span className="inline-flex items-center gap-1"><ShoppingBag size={11} /> Shop · coming soon</span>
         </div>
+
+        {isMyProfile && myCounts.followers !== null && (
+          <div className="mt-5 flex items-center justify-center gap-6">
+            <Link
+              to="/me/followers"
+              data-testid="my-followers-link"
+              className="text-center hover:opacity-80 transition"
+            >
+              <div className="font-heading text-2xl leading-none">{myCounts.followers}</div>
+              <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 mt-1">Followers</div>
+            </Link>
+            <div className="w-px h-8 bg-zinc-900" />
+            <Link
+              to="/me/following"
+              data-testid="my-following-link"
+              className="text-center hover:opacity-80 transition"
+            >
+              <div className="font-heading text-2xl leading-none">{myCounts.following}</div>
+              <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 mt-1">Following</div>
+            </Link>
+          </div>
+        )}
 
         <div className="mt-5 flex gap-2">
           {!isMyProfile && (

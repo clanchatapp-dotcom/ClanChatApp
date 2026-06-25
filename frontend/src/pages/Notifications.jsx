@@ -23,7 +23,11 @@ export default function Notifications() {
       setWarnings(w.data.warnings);
     } catch (e) { console.warn("notifications load failed", e); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    // Mark all activity as seen the moment the user opens this tab — clears the dot badge.
+    api.post("/notifications/mark-seen").catch(() => {});
+  }, []);
 
   const actFollow = async (id, approve) => {
     try { await api.post(`/follow/requests/${id}/${approve ? "approve" : "decline"}`); load(); }

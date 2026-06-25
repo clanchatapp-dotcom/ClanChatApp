@@ -1,19 +1,24 @@
 import { NavLink, Link } from "react-router-dom";
 import { Home, Search, MessageCircle, User, Users, Bell, Settings as Cog, ShieldCheck, Plus } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
-
-const NAV = [
-  { to: "/feed", icon: Home, label: "Feed", testId: "side-feed" },
-  { to: "/search", icon: Search, label: "Search", testId: "side-search" },
-  { to: "/messages", icon: MessageCircle, label: "Messages", testId: "side-messages" },
-  { to: "/groups", icon: Users, label: "Groups", testId: "side-groups" },
-  { to: "/notifications", icon: Bell, label: "Activity", testId: "side-notifications" },
-  { to: "/me", icon: User, label: "Profile", testId: "side-profile" },
-  { to: "/settings", icon: Cog, label: "Settings", testId: "side-settings" },
-];
+import useNotifCounts from "../hooks/useNotifCounts";
 
 export default function DesktopSidebar() {
   const { user } = useAuth();
+  const { counts } = useNotifCounts(!!user);
+
+  const activityCount = counts.follow_requests + counts.inner_invites + counts.new_followers + counts.tag_pending + counts.group_invites + counts.warnings;
+
+  const NAV = [
+    { to: "/feed", icon: Home, label: "Feed", testId: "side-feed", badge: 0 },
+    { to: "/search", icon: Search, label: "Search", testId: "side-search", badge: 0 },
+    { to: "/messages", icon: MessageCircle, label: "Messages", testId: "side-messages", badge: counts.unread_dms },
+    { to: "/groups", icon: Users, label: "Groups", testId: "side-groups", badge: counts.group_invites },
+    { to: "/notifications", icon: Bell, label: "Activity", testId: "side-notifications", badge: activityCount },
+    { to: "/me", icon: User, label: "Profile", testId: "side-profile", badge: 0 },
+    { to: "/settings", icon: Cog, label: "Settings", testId: "side-settings", badge: 0 },
+  ];
+
   return (
     <aside
       data-testid="desktop-sidebar"
@@ -27,7 +32,7 @@ export default function DesktopSidebar() {
       </Link>
 
       <nav className="flex flex-col gap-1 flex-1">
-        {NAV.map(({ to, icon: Icon, label, testId }) => (
+        {NAV.map(({ to, icon: Icon, label, testId, badge }) => (
           <NavLink
             key={to}
             to={to}
@@ -39,7 +44,12 @@ export default function DesktopSidebar() {
             }
           >
             <Icon size={18} strokeWidth={1.6} />
-            <span className="text-sm">{label}</span>
+            <span className="text-sm flex-1">{label}</span>
+            {badge > 0 && (
+              <span data-testid={`side-badge-${testId}`} className="text-[10px] px-1.5 min-w-[18px] h-[18px] inline-flex items-center justify-center rounded-full bg-[#FF5A00] text-black font-semibold">
+                {badge > 99 ? "99+" : badge}
+              </span>
+            )}
           </NavLink>
         ))}
         {user?.role === "admin" && (
