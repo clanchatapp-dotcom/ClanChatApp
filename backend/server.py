@@ -403,7 +403,8 @@ class BoardMessageIn(BaseModel):
 
 class DMIn(BaseModel):
     recipient_id: str
-    content: str = Field(min_length=1, max_length=2000)
+    content: str = Field(default="", max_length=2000)
+    media_paths: list[str] = Field(default_factory=list, max_length=4)
 
 
 class GroupCreateIn(BaseModel):
@@ -1454,10 +1455,15 @@ async def send_dm(payload: DMIn, user=Depends(get_current_user)):
         ok, reason = await can_dm(user, recipient)
         if not ok:
             raise HTTPException(403, reason)
+    content = payload.content.strip()[:2000]
+    if not content and not payload.media_paths:
+        raise HTTPException(400, "Message cannot be empty — add text or attach media.")
     mid = f"dm_{uuid.uuid4().hex[:10]}"
     doc = {
         "message_id": mid, "from_id": user["user_id"], "to_id": payload.recipient_id,
-        "content": payload.content.strip()[:2000], "created_at": now_iso(),
+        "content": content,
+        "media_paths": payload.media_paths[:4],  # hard cap 4 per message
+        "created_at": now_iso(),
         # Self-DMs are pre-marked read since you're sending to yourself —
         # no point lighting up the unread badge.
         "read": True if is_self else False,

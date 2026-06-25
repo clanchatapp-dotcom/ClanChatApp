@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import api, { fileUrl, formatApiError } from "../lib/api";
-import { Send } from "lucide-react";
+import { Send, Paperclip, X, Search } from "lucide-react";
 import { toast } from "sonner";
 
 export function Messages() {
@@ -59,36 +59,68 @@ export function MessageThread() {
   const [data, setData] = useState(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingMedia, setPendingMedia] = useState([]); // [{path, kind, name}]
+  const [query, setQuery] = useState("");
+  const fileRef = useRef(null);
 
   const load = async () => {
     try {
       const { data } = await api.get(`/dms/with/${userId}`);
       setData(data);
-      // Server just flipped read=true for any unread messages — tell the
-      // nav badges to refetch /notifications/counts immediately instead of
-      // waiting for the next 30s poll.
       window.dispatchEvent(new Event("clanchat:notif-refresh"));
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
   useEffect(() => { load(); }, [userId]);
 
-  const send = async (e) => {
-    e.preventDefault();
-    if (!text.trim() || busy) return;
+  const onPickFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const room = 4 - pendingMedia.length;
+    if (room <= 0) { toast.error("Max 4 attachments per message"); return; }
+    const queue = files.slice(0, room);
     setBusy(true);
     try {
-      await api.post("/dms", { recipient_id: userId, content: text });
-      setText("");
+      for (const f of queue) {
+        const fd = new FormData();
+        fd.append("file", f);
+        const { data } = await api.post("/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+        const kind = f.type.startsWith("video/") ? "video" : f.type.startsWith("audio/") ? "audio" : "image";
+        setPendingMedia((prev) => [...prev, { path: data.path, kind, name: f.name }]);
+      }
+    } catch (err) { toast.error(formatApiError(err.response?.data?.detail) || "Upload failed"); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
+  };
+
+  const send = async (e) => {
+    e?.preventDefault?.();
+    if ((!text.trim() && pendingMedia.length === 0) || busy) return;
+    setBusy(true);
+    try {
+      await api.post("/dms", {
+        recipient_id: userId,
+        content: text,
+        media_paths: pendingMedia.map((m) => m.path),
+      });
+      setText(""); setPendingMedia([]);
       load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
     finally { setBusy(false); }
   };
 
+  // Search filters by message content. Self-DM is the primary saved-vault
+  // use case but the search applies to any thread.
+  const visibleMessages = useMemo(() => {
+    if (!data) return [];
+    const q = query.trim().toLowerCase();
+    if (!q) return data.messages;
+    return data.messages.filter((m) => (m.content || "").toLowerCase().includes(q));
+  }, [data, query]);
+
   if (!data) return <div className="p-10 text-zinc-500 text-sm">Loading…</div>;
 
   return (
     <div className="px-5 pt-6 pb-32 flex flex-col min-h-screen">
-      <header className="flex items-center gap-3 mb-5">
+      <header className="flex items-center gap-3 mb-4">
         <button onClick={() => nav(-1)} className="text-zinc-500 text-sm">← Back</button>
         {data.with?.is_self ? (
           <div className="flex items-center gap-2">
@@ -105,31 +137,142 @@ export function MessageThread() {
         )}
       </header>
 
+      {/* Search bar — shown on every thread, especially useful for self-DM */}
+      <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-900 rounded-full px-3 py-1.5 mb-4">
+        <Search size={14} className="text-zinc-600" />
+        <input
+          data-testid="dm-search"
+          className="flex-1 bg-transparent outline-none text-sm"
+          placeholder={data.with?.is_self ? "Search your notes…" : "Search this conversation…"}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        {query && (
+          <button
+            onClick={() => setQuery("")}
+            data-testid="dm-search-clear"
+            className="text-zinc-500 hover:text-zinc-300"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      {query && (
+        <div className="text-[11px] text-zinc-500 mb-2" data-testid="dm-search-count">
+          {visibleMessages.length} match{visibleMessages.length === 1 ? "" : "es"}
+        </div>
+      )}
+
       <div className="flex-1 flex flex-col gap-3">
-        {data.messages.map(m => (
-          <div key={m.message_id} data-testid={`msg-${m.message_id}`}
-            className={`max-w-[80%] rounded-2xl px-4 py-2 ${m.from_id === userId ? "bg-zinc-900 self-start" : "bg-[#FF5A00] text-black self-end"}`}>
-            <div className="text-sm whitespace-pre-wrap break-words">{m.content}</div>
+        {visibleMessages.map((m) => {
+          const outgoing = m.from_id !== userId;
+          return (
+            <div key={m.message_id} data-testid={`msg-${m.message_id}`}
+              className={`max-w-[80%] rounded-2xl px-3 py-2 ${outgoing ? "bg-[#FF5A00] text-black self-end" : "bg-zinc-900 self-start"}`}>
+              {m.media_paths?.length > 0 && (
+                <div className={`grid gap-1 mb-1 ${m.media_paths.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
+                  {m.media_paths.map((p) => (
+                    <DMMedia key={p} path={p} />
+                  ))}
+                </div>
+              )}
+              {m.content && (
+                <div className="text-sm whitespace-pre-wrap break-words">{m.content}</div>
+              )}
+            </div>
+          );
+        })}
+        {visibleMessages.length === 0 && (
+          <div className="text-zinc-600 text-sm text-center py-10">
+            {query ? "No matches." : data.with?.is_self ? "Drop a note to your future self." : "Say hi."}
           </div>
-        ))}
-        {data.messages.length === 0 && <div className="text-zinc-600 text-sm text-center py-10">Say hi.</div>}
+        )}
       </div>
 
       <form onSubmit={send} className="fixed bottom-16 left-1/2 -translate-x-1/2 w-full max-w-lg px-5 pb-2">
         {!data.can_send && (
           <div className="text-xs text-zinc-500 mb-2 text-center">{data.reason || "Cannot message this user"}</div>
         )}
-        <div className="flex gap-2 bg-zinc-950 border border-zinc-900 rounded-full p-1.5">
-          <input data-testid="dm-input"
-            className="flex-1 bg-transparent px-3 py-1 outline-none text-sm"
+
+        {pendingMedia.length > 0 && (
+          <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-2 mb-2 flex gap-1.5 overflow-x-auto">
+            {pendingMedia.map((m, i) => (
+              <div key={m.path} className="relative shrink-0" data-testid={`pending-media-${i}`}>
+                {m.kind === "image" ? (
+                  <img src={fileUrl(m.path)} alt="" className="w-14 h-14 object-cover rounded-lg" />
+                ) : (
+                  <div className="w-14 h-14 bg-zinc-900 rounded-lg flex items-center justify-center text-[10px] uppercase text-zinc-400 px-1 text-center">{m.kind}</div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPendingMedia((prev) => prev.filter((_, idx) => idx !== i))}
+                  className="absolute -top-1 -right-1 bg-black border border-zinc-700 rounded-full w-4 h-4 flex items-center justify-center"
+                  data-testid={`pending-media-remove-${i}`}
+                >
+                  <X size={10} className="text-zinc-300" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-900 rounded-full p-1.5">
+          <button
+            type="button"
+            data-testid="dm-attach"
+            onClick={() => fileRef.current?.click()}
+            disabled={!data.can_send || pendingMedia.length >= 4 || busy}
+            className="p-2 text-zinc-400 hover:text-[#FF5A00] disabled:opacity-40"
+            aria-label="Attach"
+          >
+            <Paperclip size={16} />
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            accept="image/*,video/*,audio/*"
+            className="hidden"
+            onChange={onPickFiles}
+            data-testid="dm-file-input"
+          />
+          <input
+            data-testid="dm-input"
+            className="flex-1 bg-transparent px-1 py-1 outline-none text-sm"
             placeholder={data.can_send ? "Message…" : "DM not allowed"}
-            value={text} onChange={e => setText(e.target.value)} disabled={!data.can_send} />
-          <button data-testid="dm-send" className="bg-[#FF5A00] disabled:bg-zinc-800 text-black p-2 rounded-full"
-            disabled={!data.can_send || !text.trim()}>
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            disabled={!data.can_send}
+          />
+          <button
+            data-testid="dm-send"
+            className="bg-[#FF5A00] disabled:bg-zinc-800 text-black p-2 rounded-full"
+            disabled={!data.can_send || busy || (!text.trim() && pendingMedia.length === 0)}
+          >
             <Send size={16} />
           </button>
         </div>
       </form>
     </div>
+  );
+}
+
+// Inline media renderer for DMs. Images load lazily; video/audio get native controls.
+function DMMedia({ path }) {
+  const url = fileUrl(path);
+  const lower = path.toLowerCase();
+  const isVideo = lower.match(/\.(mp4|mov|webm|m4v)(\?|$)/);
+  const isAudio = lower.match(/\.(mp3|wav|m4a|ogg|aac|flac)(\?|$)/);
+  if (isVideo) {
+    return <video src={url} controls preload="metadata" className="rounded-lg max-h-72 w-full bg-black" data-testid="dm-media-video" />;
+  }
+  if (isAudio) {
+    return <audio src={url} controls preload="metadata" className="w-full" data-testid="dm-media-audio" />;
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer" data-testid="dm-media-image">
+      <img src={url} alt="" loading="lazy" className="rounded-lg max-h-72 w-full object-cover" />
+    </a>
   );
 }
