@@ -1,0 +1,44 @@
+# Pre-commit hooks for ClanChat
+# Install once: pip install pre-commit && pre-commit install
+# Auto-runs on `git commit`. Bypass with `git commit --no-verify` if needed.
+#
+# Note: emergent platform commits run as the agent, not as developers — this
+# config primarily benefits local + CI environments. The agent honours these
+# rules implicitly via mcp_lint_javascript and mcp_lint_python.
+
+repos:
+  # ── Python: Ruff (lint + format) ───────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.18
+    hooks:
+      - id: ruff
+        name: ruff lint (backend)
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^backend/
+      - id: ruff-format
+        name: ruff format (backend)
+        files: ^backend/
+
+  # ── Frontend: ESLint (flat config) ─────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: eslint-frontend
+        name: eslint (frontend)
+        entry: bash -c 'cd frontend && npx eslint --config eslint.config.mjs --max-warnings 50 "$@"' --
+        language: system
+        files: ^frontend/src/.*\.(js|jsx|ts|tsx)$
+        pass_filenames: true
+
+  # ── Safety nets ────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-json
+        exclude: ^frontend/.+\.json$  # CRA generates some non-strict JSON
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key

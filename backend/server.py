@@ -300,6 +300,12 @@ async def get_optional_user(request: Request) -> Optional[dict]:
 # Visibility check
 # ------------------------------------------------------------------
 async def can_view_post(post: dict, viewer: Optional[dict]) -> bool:
+    # Quarantined content (CSAM flag) is invisible to everyone except admins.
+    # Even the author cannot view a quarantined post — content is locked pending review.
+    if post.get("quarantined"):
+        if viewer and viewer.get("role") == "admin":
+            return True
+        return False
     if not viewer:
         return post["tier"] == "public" and not post.get("nsfw")
     if viewer["user_id"] == post["author_id"]:
@@ -1863,6 +1869,135 @@ async def admin_stats(admin=Depends(require_admin)):
         "suspended": await db.users.count_documents({"suspended_until": {"$gt": now_iso()}}),
         "deleted": await db.users.count_documents({"deleted": True}),
     }
+
+
+# ------------------------------------------------------------------
+# CEOP / CSAM pipeline (Iteration 8)
+# Quarantined content is invisible to everyone except admins (enforced in
+# can_view_post). The queue below is the human handoff layer. In production
+# CEOP_ENDPOINT triggers an automated POST to NCMEC/IWF; without it, the queue
+# captures every report for manual export.
+# ------------------------------------------------------------------
+@api.get("/admin/csam/queue")
+async def admin_csam_queue(admin=Depends(require_admin), status: str = "queued"):
+    cursor = db.csam_reports.find({"status": status}, {"_id": 0}).sort("created_at", -1).limit(200)
+    out = []
+    async for r in cursor:
+        reporter = await db.users.find_one({"user_id": r["reporter_id"]}, {"_id": 0})
+        target_meta = None
+        if r["target_type"] == "post":
+            p = await db.posts.find_one({"post_id": r["target_id"]}, {"_id": 0})
+            if p:
+                target_meta = {
+                    "author_handle": (await db.users.find_one({"user_id": p["author_id"]}, {"_id": 0, "handle": 1}) or {}).get("handle"),
+                    "media_count": len(p.get("media_paths", [])),
+                    "created_at": p.get("created_at"),
+                    "quarantined": p.get("quarantined", False),
+                }
+        out.append({
+            "csam_id": r["csam_id"],
+            "target_type": r["target_type"],
+            "target_id": r["target_id"],
+            "reporter_handle": reporter.get("handle") if reporter else None,
+            "status": r["status"],
+            "created_at": r["created_at"],
+            "target_meta": target_meta,
+        })
+    return {"queue": out}
+
+
+@api.post("/admin/csam/{csam_id}/confirm")
+async def admin_csam_confirm(csam_id: str, admin=Depends(require_admin)):
+    """Confirm CSAM — escalate: delete content, strike-3 author, log audit, mark handoff complete."""
+    r = await db.csam_reports.find_one({"csam_id": csam_id})
+    if not r:
+        raise HTTPException(404, "Not found")
+    if r["target_type"] == "post":
+        post = await db.posts.find_one({"post_id": r["target_id"]}, {"_id": 0})
+        if post:
+            await db.posts.delete_one({"post_id": r["target_id"]})
+            # immediate strike-3 (permanent deletion path) on the author
+            await apply_strike(post["author_id"], reason="CSAM confirmed", level=3)
+    elif r["target_type"] == "user":
+        await apply_strike(r["target_id"], reason="CSAM confirmed", level=3)
+    await db.csam_reports.update_one(
+        {"csam_id": csam_id},
+        {"$set": {"status": "confirmed", "reviewed_by": admin["user_id"], "reviewed_at": now_iso()}}
+    )
+    await db.audit_events.insert_one({
+        "event": "csam_confirmed",
+        "csam_id": csam_id,
+        "target_type": r["target_type"],
+        "target_id": r["target_id"],
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+@api.post("/admin/csam/{csam_id}/clear")
+async def admin_csam_clear(csam_id: str, admin=Depends(require_admin)):
+    """False alarm — restore content, log audit. Note: keeps full audit trail."""
+    r = await db.csam_reports.find_one({"csam_id": csam_id})
+    if not r:
+        raise HTTPException(404, "Not found")
+    if r["target_type"] == "post":
+        await db.posts.update_one(
+            {"post_id": r["target_id"]},
+            {"$set": {"quarantined": False, "quarantine_cleared_at": now_iso(), "quarantine_cleared_by": admin["user_id"]}}
+        )
+    await db.csam_reports.update_one(
+        {"csam_id": csam_id},
+        {"$set": {"status": "cleared", "reviewed_by": admin["user_id"], "reviewed_at": now_iso()}}
+    )
+    await db.audit_events.insert_one({
+        "event": "csam_cleared",
+        "csam_id": csam_id,
+        "target_type": r["target_type"],
+        "target_id": r["target_id"],
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+@api.get("/admin/audit")
+async def admin_audit_log(admin=Depends(require_admin), limit: int = 100):
+    """Compliance audit trail. Append-only, immutable, admin-only."""
+    cursor = db.audit_events.find({}, {"_id": 0}).sort("at", -1).limit(min(limit, 500))
+    out = []
+    async for e in cursor:
+        out.append(e)
+    return {"events": out}
+
+
+# ------------------------------------------------------------------
+# Trending tags (right-rail / discovery)
+# Public posts, last 24h, top 10, exclude banned & non-public
+# ------------------------------------------------------------------
+@api.get("/tags/trending")
+async def trending_tags(viewer=Depends(get_current_user)):
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    # Aggregate over public, non-NSFW (for minors), non-quarantined posts
+    match = {
+        "tier": "public",
+        "quarantined": {"$ne": True},
+        "created_at": {"$gte": cutoff},
+        "tags": {"$exists": True, "$ne": []},
+    }
+    if is_minor(viewer):
+        match["nsfw"] = {"$ne": True}
+    pipeline = [
+        {"$match": match},
+        {"$unwind": "$tags"},
+        {"$group": {"_id": "$tags", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 10},
+    ]
+    out = []
+    async for row in db.posts.aggregate(pipeline):
+        out.append({"tag": row["_id"], "count": row["count"]})
+    return {"trending": out}
 
 
 # ------------------------------------------------------------------

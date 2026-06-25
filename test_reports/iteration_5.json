@@ -1,0 +1,58 @@
+{
+  "summary": "Iteration 8 CEOP/CSAM + Trending Rail backend & frontend e2e. Found ONE CRITICAL backend bug: GET /api/posts/feed does NOT filter quarantined posts, so CSAM-flagged content stays visible in the global feed to ALL users (including the reporter). Quarantine enforcement DOES work on /api/posts/by-user/{id} (uses can_view_post correctly). Admin CSAM endpoints, audit log, trending tags, throwaway-confirm-delete flow all work as specced. Frontend report dialog works, admin tabs/CSAM/audit render, smoke pages OK. Minor: Trending Rail visible at viewport=1280 (Tailwind xl breakpoint is min-w:1280) but spec said it should be hidden at 1280.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/posts/feed",
+        "issue": "Quarantine enforcement bug — feed endpoint queries db.posts directly with the {$or:tier...} filter but never calls can_view_post() and has no {quarantined:{$ne:true}} mongo filter. A CSAM-quarantined post stays visible in the global feed to ALL viewers, including the reporter, until cleared/confirmed by admin. This defeats the entire CEOP pipeline guarantee. Reproduced both via backend test (TestQuarantineEnforcement.test_quarantined_post_not_in_bob_feed) and via Playwright (bob reports a post as CSAM, reloads /feed, post is still rendered). by-user feed DOES correctly hide it because that handler explicitly loops with can_view_post. Fix: add `query['quarantined'] = {'$ne': True}` to the mongo query at server.py:1109 (or iterate with can_view_post like by-user does). Admin role should still see it — gate on viewer.role.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "TrendingRail",
+        "issue": "Rail visible at viewport width=1280 — spec said it should be hidden at 1280 (lg). Implementation uses `hidden xl:flex` and Tailwind default xl=1280, so 1280 IS xl. If product wants the rail hidden below ~1320, switch to `hidden 2xl:flex` (2xl=1536) or define a custom breakpoint. At 1024 it is correctly hidden.",
+        "selector": "[data-testid='trending-rail']",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Report → reload feed (bob reports alice post as csam)",
+        "issue": "Reported post remains visible in /feed after reload because backend /posts/feed leaks quarantined content (see backend critical above). Frontend behaviour is correct; the bug is server-side.",
+        "affected_selectors": ["[data-testid^='post-']"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter8_csam_trending.py",
+    "/app/test_reports/pytest/iter8_results.xml"
+  ],
+  "action_items": [
+    "CRITICAL: Fix /api/posts/feed to exclude quarantined posts. Add `query['quarantined'] = {'$ne': True}` (gate to allow admin-role viewers to still see them if desired). Re-run backend test_iter8_csam_trending.py::TestQuarantineEnforcement::test_quarantined_post_not_in_bob_feed and the frontend report-reload check.",
+    "Decide breakpoint for TrendingRail. If hiding at 1280 is intentional, change `hidden xl:flex` → `hidden 2xl:flex` (or extend tailwind theme.screens). Current behaviour (visible at exactly 1280) is technically correct for Tailwind defaults."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1084-1126 (/posts/feed): The mongo $or composes tier+author visibility but ignores quarantined and ignores can_view_post. Every other post-listing handler (by-user, by-tag, pinned) should also be audited for the same omission. by-user uses can_view_post — by-tag and pinned should be double-checked.",
+    "server.py:1192 by-tag and 1145 pinned: confirm these also filter quarantined posts. If not, same CEOP leak exists for tag pages and pinned-on-profile.",
+    "Test class-level attributes used to carry state (csam_id, reported_pid) work but are fragile. Consider module-level dict or pytest fixtures with `scope='module'` returning a stateful object.",
+    "TrendingRail uses `hidden xl:flex` which lights up at min-width:1280 — confirm with product whether this is the intended cutoff. AppShell.showRail logic gates by route; that part works."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter8_csam_trending.py"
+  ],
+  "success_rate": {
+    "backend": "16/17 (94%)",
+    "frontend": "9/10 flows pass; 1 critical bug surfaced (downstream of backend leak)"
+  },
+  "test_credentials": "alice@clanchat.app/Password123!, bob@clanchat.app/Password123!, admin@clanchat.app/admin123 — all verified working",
+  "seed_data_creation": "Tests create 2 alice public posts + 1 throwaway user (handle=throwcsam<random>) + 1 throwaway post that is confirm-deleted by admin. The throwaway user ends up with deleted=true. Alice's 2 test posts: one is quarantine-cleared (restored), one was previously reported during frontend test and is still leaking in feed (waiting for backend fix). Trending test creates a public post with a unique random tag like phototest<random>.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "After main agent fixes /posts/feed quarantine filter, re-run: pytest /app/backend/tests/test_iter8_csam_trending.py -v. Specifically TestQuarantineEnforcement::test_quarantined_post_not_in_bob_feed must pass. Also re-run Playwright report-reload check. Note the backend test deliberately uses bob to report alice's posts; one of these posts will remain quarantined after the test run (the one used to verify queue-and-clear is cleared and back in feed; the very first one reported was already cleared). The throwaway-confirm flow creates a fresh user each run so it does not pollute alice/bob. Test credentials and seeded users are all working.",
+  "rca_of_the_issue": "ROOT CAUSE: server.py:1109-1122 — get_feed() builds a $or query for tier+author visibility and applies blocks/nsfw/ai filters, but never adds `quarantined:{$ne:true}` nor iterates results through can_view_post(). Meanwhile can_view_post() at lines 302-308 DOES correctly hide quarantined posts from non-admins. The by-user handler (1129-1142) DOES use can_view_post in its loop, so quarantine works there. Net effect: feed leak. REPRODUCTION: (1) login bob, (2) POST /api/reports {target_type:post, target_id:<alice public post id>, category:csam}, (3) GET /api/posts/feed as bob → alice post still in list with the same post_id. MITIGATION: simplest fix is to add `query['quarantined'] = {'$ne': True}` in get_feed() before the cursor; for admin role, conditionally drop that filter."
+}

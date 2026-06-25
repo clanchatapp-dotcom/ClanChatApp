@@ -1,4 +1,4 @@
-import { Heart, MoreHorizontal, Sparkles, Pin, MessageCircle } from "lucide-react";
+import { Heart, MoreHorizontal, Sparkles, Pin, MessageCircle, Flag, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import TierBadge from "./TierBadge";
 import Comments from "./Comments";
@@ -28,6 +28,25 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
   const [deleted, setDeleted] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [commentCount, setCommentCount] = useState(post.comment_count || 0);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportCat, setReportCat] = useState("");
+  const [reportNotes, setReportNotes] = useState("");
+
+  const submitReport = async () => {
+    if (!reportCat) { toast.error("Pick a reason"); return; }
+    try {
+      await api.post("/reports", {
+        target_type: "post",
+        target_id: post.post_id,
+        category: reportCat,
+        notes: reportNotes,
+      });
+      setReportOpen(false); setReportCat(""); setReportNotes("");
+      toast.success(reportCat === "csam"
+        ? "Reported. Content quarantined immediately."
+        : "Reported. Thanks for keeping ClanChat safe.");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
 
   const reloadCount = async () => {
     try {
@@ -163,7 +182,16 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
           {showPin && (
             <button onClick={() => setConfirmOpen(true)} data-testid={`del-btn-${post.post_id}`} className="text-xs uppercase tracking-wider hover:text-red-400">Delete</button>
           )}
-          <MoreHorizontal size={18} />
+          {!showPin && post.author?.user_id !== currentUserId && (
+            <button
+              data-testid={`report-btn-${post.post_id}`}
+              onClick={() => setReportOpen(true)}
+              className="text-zinc-500 hover:text-red-400 inline-flex items-center gap-1 text-xs"
+              title="Report"
+            >
+              <Flag size={14} />
+            </button>
+          )}
         </div>
       </footer>
 
@@ -183,6 +211,69 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
             <AlertDialogCancel data-testid="confirm-cancel" className="bg-transparent border-zinc-800 text-zinc-300 hover:bg-zinc-900">Cancel</AlertDialogCancel>
             <AlertDialogAction data-testid="confirm-delete" onClick={remove} className="bg-red-500 hover:bg-red-600 text-white">
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={reportOpen} onOpenChange={setReportOpen}>
+        <AlertDialogContent className="bg-zinc-950 border border-zinc-800 text-zinc-100">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-heading flex items-center gap-2">
+              <Flag size={16} className="text-red-400" /> Report this post
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-zinc-500">
+              Your report is confidential. CSAM reports auto-quarantine the content immediately and route to our compliance queue.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex flex-col gap-2 mt-2">
+            {[
+              { id: "csam", label: "Child sexual abuse material (CSAM)", danger: true },
+              { id: "harassment", label: "Harassment or threats" },
+              { id: "spam", label: "Spam or scam" },
+              { id: "hate", label: "Hate speech" },
+              { id: "self_harm", label: "Self-harm content" },
+              { id: "impersonation", label: "Impersonation" },
+              { id: "other", label: "Other" },
+            ].map((opt) => (
+              <label
+                key={opt.id}
+                className={`flex items-center justify-between p-3 border rounded-xl cursor-pointer ${
+                  reportCat === opt.id
+                    ? opt.danger ? "border-red-500/60 bg-red-500/10" : "border-[#FF5A00] bg-[#FF5A00]/5"
+                    : "border-zinc-900"
+                }`}
+              >
+                <span className={`text-sm inline-flex items-center gap-2 ${opt.danger ? "text-red-200" : ""}`}>
+                  {opt.danger && <ShieldAlert size={14} className="text-red-400" />}
+                  {opt.label}
+                </span>
+                <input
+                  type="radio"
+                  name={`report-${post.post_id}`}
+                  checked={reportCat === opt.id}
+                  onChange={() => setReportCat(opt.id)}
+                  data-testid={`report-cat-${opt.id}-${post.post_id}`}
+                  className={opt.danger ? "accent-red-500" : "accent-[#FF5A00]"}
+                />
+              </label>
+            ))}
+            <textarea
+              data-testid={`report-notes-${post.post_id}`}
+              className="cc-input mt-1 min-h-[60px] resize-none text-sm"
+              placeholder="Optional context (helps reviewers)"
+              value={reportNotes}
+              onChange={(e) => setReportNotes(e.target.value)}
+              maxLength={1000}
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="report-cancel" className="bg-transparent border-zinc-800 text-zinc-300 hover:bg-zinc-900">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid={`report-submit-${post.post_id}`}
+              onClick={submitReport}
+              className={reportCat === "csam" ? "bg-red-500 hover:bg-red-600 text-white" : "bg-[#FF5A00] hover:bg-[#E65000] text-black"}
+            >
+              Send report
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
