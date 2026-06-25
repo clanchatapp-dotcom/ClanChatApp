@@ -17,19 +17,37 @@ export function Messages() {
       </div>
       {threads.length === 0 && <div className="text-zinc-600 text-sm text-center py-10">No conversations yet.</div>}
       <div className="flex flex-col gap-1">
-        {threads.map(t => (
-          <Link to={`/m/${t.with.user_id}`} key={t.with.user_id} data-testid={`thread-${t.with.handle}`}
-            className="flex items-center gap-3 p-3 rounded-2xl hover:bg-zinc-950 transition">
-            <div className="w-12 h-12 rounded-full bg-zinc-800 overflow-hidden flex items-center justify-center">
-              {t.with.avatar_path ? <img src={fileUrl(t.with.avatar_path)} alt="" className="w-full h-full object-cover" /> :
-                <span className="font-heading text-zinc-400">{t.with.handle[0].toUpperCase()}</span>}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium">#{t.with.handle}</div>
-              <div className="text-xs text-zinc-500 truncate">{t.last.content}</div>
-            </div>
-          </Link>
-        ))}
+        {threads.map(t => {
+          const isSelf = t.with.is_self;
+          return (
+            <Link to={`/m/${t.with.user_id}`} key={t.with.user_id}
+              data-testid={isSelf ? "thread-self" : `thread-${t.with.handle}`}
+              className={`flex items-center gap-3 p-3 rounded-2xl hover:bg-zinc-950 transition ${
+                isSelf ? "border border-[#FF5A00]/20 bg-[#FF5A00]/[0.03]" : ""
+              }`}>
+              <div className={`w-12 h-12 rounded-full overflow-hidden flex items-center justify-center shrink-0 ${
+                isSelf ? "bg-gradient-to-br from-[#FF5A00] to-[#A00B00]" : "bg-zinc-800"
+              }`}>
+                {isSelf ? (
+                  <span className="font-heading text-black text-lg">★</span>
+                ) : t.with.avatar_path ? (
+                  <img src={fileUrl(t.with.avatar_path)} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <span className="font-heading text-zinc-400">{t.with.handle[0].toUpperCase()}</span>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium flex items-center gap-2">
+                  {isSelf ? "Me, myself and I" : `#${t.with.handle}`}
+                  {isSelf && <span className="text-[9px] uppercase tracking-[0.25em] text-[#FF5A00]">Saved</span>}
+                </div>
+                <div className="text-xs text-zinc-500 truncate">
+                  {t.last ? t.last.content : (isSelf ? "Notes to self · photos · audio — all in one place." : "")}
+                </div>
+              </div>
+            </Link>
+          );
+        })}
       </div>
     </div>
   );
@@ -72,7 +90,19 @@ export function MessageThread() {
     <div className="px-5 pt-6 pb-32 flex flex-col min-h-screen">
       <header className="flex items-center gap-3 mb-5">
         <button onClick={() => nav(-1)} className="text-zinc-500 text-sm">← Back</button>
-        <Link to={`/u/${data.with?.handle}`} className="font-heading text-2xl">#{data.with?.handle}</Link>
+        {data.with?.is_self ? (
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#FF5A00] to-[#A00B00] flex items-center justify-center">
+              <span className="font-heading text-black">★</span>
+            </div>
+            <div>
+              <div className="font-heading text-xl leading-none">Me, myself and I</div>
+              <div className="text-[10px] uppercase tracking-[0.2em] text-[#FF5A00]">Saved · only you can see this</div>
+            </div>
+          </div>
+        ) : (
+          <Link to={`/u/${data.with?.handle}`} className="font-heading text-2xl">#{data.with?.handle}</Link>
+        )}
       </header>
 
       <div className="flex-1 flex flex-col gap-3">

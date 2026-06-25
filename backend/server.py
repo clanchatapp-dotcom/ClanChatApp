@@ -1445,16 +1445,22 @@ async def can_dm(sender: dict, recipient: dict) -> tuple[bool, str]:
 
 @api.post("/dms")
 async def send_dm(payload: DMIn, user=Depends(get_current_user)):
-    recipient = await db.users.find_one({"user_id": payload.recipient_id}, {"_id": 0})
-    if not recipient:
-        raise HTTPException(404, "Recipient not found")
-    ok, reason = await can_dm(user, recipient)
-    if not ok:
-        raise HTTPException(403, reason)
+    # Self-DM ("Me, myself and I" saved-messages thread) — always allowed.
+    is_self = payload.recipient_id == user["user_id"]
+    if not is_self:
+        recipient = await db.users.find_one({"user_id": payload.recipient_id}, {"_id": 0})
+        if not recipient:
+            raise HTTPException(404, "Recipient not found")
+        ok, reason = await can_dm(user, recipient)
+        if not ok:
+            raise HTTPException(403, reason)
     mid = f"dm_{uuid.uuid4().hex[:10]}"
     doc = {
         "message_id": mid, "from_id": user["user_id"], "to_id": payload.recipient_id,
-        "content": payload.content.strip()[:2000], "created_at": now_iso(), "read": False,
+        "content": payload.content.strip()[:2000], "created_at": now_iso(),
+        # Self-DMs are pre-marked read since you're sending to yourself —
+        # no point lighting up the unread badge.
+        "read": True if is_self else False,
     }
     await db.dms.insert_one(doc)
     doc.pop("_id", None)
@@ -1476,8 +1482,16 @@ async def list_threads(user=Depends(get_current_user)):
     ]
     cursor = db.dms.aggregate(pipeline)
     threads = []
+    self_thread = None
     async for t in cursor:
         other_id = t["_id"]
+        if other_id == user["user_id"]:
+            # Pin the self thread to the top later, don't bucket with the rest.
+            self_thread = {
+                "with": {**public_user(user), "is_self": True, "display_name": "Me, myself and I"},
+                "last": {k: v for k, v in t["last_message"].items() if k != "_id"},
+            }
+            continue
         other = await db.users.find_one({"user_id": other_id}, {"_id": 0})
         if not other:
             continue
@@ -1485,13 +1499,20 @@ async def list_threads(user=Depends(get_current_user)):
             "with": public_user(other),
             "last": {k: v for k, v in t["last_message"].items() if k != "_id"},
         })
-    return {"threads": threads}
+    # Always surface the self thread, even if empty.
+    if self_thread is None:
+        self_thread = {
+            "with": {**public_user(user), "is_self": True, "display_name": "Me, myself and I"},
+            "last": None,
+        }
+    return {"threads": [self_thread, *threads]}
 
 
 @api.get("/dms/with/{other_id}")
 async def dm_history(other_id: str, user=Depends(get_current_user)):
-    # Mark all messages from `other_id` to me as read — this is when the user
-    # actually opens the thread, so the unread badge should drop accordingly.
+    is_self = other_id == user["user_id"]
+    # Mark incoming messages as read. For self-DMs this is a no-op since
+    # self-sends are already inserted with read=True.
     await db.dms.update_many(
         {"from_id": other_id, "to_id": user["user_id"], "read": False},
         {"$set": {"read": True, "read_at": now_iso()}},
@@ -1505,6 +1526,9 @@ async def dm_history(other_id: str, user=Depends(get_current_user)):
     msgs = []
     async for m in cursor:
         msgs.append(m)
+    if is_self:
+        other = {**user, "display_name": "Me, myself and I"}
+        return {"messages": msgs, "with": {**public_user(other), "is_self": True}, "can_send": True, "reason": ""}
     other = await db.users.find_one({"user_id": other_id}, {"_id": 0})
     ok, reason = (False, "")
     if other:

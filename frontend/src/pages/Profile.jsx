@@ -3,10 +3,10 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { fileUrl, formatApiError } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import PostCard from "../components/PostCard";
-import { LinkIcon, ShoppingBag, MoreHorizontal, Settings as Cog, Camera } from "lucide-react";
+import { LinkIcon, ShoppingBag, MoreHorizontal, Settings as Cog, Camera, Pin, Layers } from "lucide-react";
 import { toast } from "sonner";
 
-const TABS = ["feed", "wall", "audio", "boards", "pinned"];
+const TABS = ["media", "wall", "audio"];
 
 export default function Profile() {
   const { handle } = useParams();
@@ -15,7 +15,7 @@ export default function Profile() {
   const isMyProfile = !handle || handle === me?.handle;
 
   const [data, setData] = useState(null); // { user, relation }
-  const [tab, setTab] = useState("feed");
+  const [tab, setTab] = useState("media");
   const [posts, setPosts] = useState([]);
   const [pinned, setPinned] = useState([]);
   const [wall, setWall] = useState([]);
@@ -192,6 +192,18 @@ export default function Profile() {
       </div>
 
       {/* Tabs */}
+      {/* Pinned ribbon — always visible above the tabs, max 3 (hard limit) */}
+      {pinned.length > 0 && (
+        <div className="mb-3" data-testid="pinned-ribbon">
+          <div className="flex items-center gap-1.5 mb-2 text-[10px] uppercase tracking-[0.3em] text-zinc-500">
+            <Pin size={11} /> Pinned
+          </div>
+          <div className="flex flex-col gap-3">
+            {pinned.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />)}
+          </div>
+        </div>
+      )}
+
       <div className="flex gap-1 mt-4 mb-4 border-b border-zinc-900 no-scrollbar overflow-x-auto">
         {TABS.map(t => (
           <button key={t} data-testid={`tab-${t}`} onClick={() => setTab(t)}
@@ -203,7 +215,7 @@ export default function Profile() {
         ))}
       </div>
 
-      {tab === "feed" && (
+      {tab === "media" && (
         <div className="flex flex-col gap-3">
           {(() => {
             const mediaPosts = posts.filter(p => (p.media && p.media.length > 0) && !p.is_audio_track);
@@ -218,27 +230,25 @@ export default function Profile() {
           {audio.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />)}
         </div>
       )}
-      {tab === "pinned" && (
-        <div className="flex flex-col gap-3">
-          {pinned.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">Up to 3 pinned posts.</div>}
-          {pinned.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />)}
-        </div>
-      )}
       {tab === "wall" && (
         <WallTab ownerId={target.user_id} isMine={isMyProfile} wall={wall}
           textPosts={posts.filter(p => (!p.media || p.media.length === 0) && !p.is_audio_track)}
+          boards={boards}
           reload={() => api.get(`/wall/${target.user_id}`).then(r => setWall(r.data.posts))}
+          reloadBoards={() => api.get(`/boards/by-user/${target.user_id}`).then(r => setBoards(r.data.boards))}
           reloadPosts={reloadPosts} me={me} />
-      )}
-      {tab === "boards" && (
-        <BoardsTab ownerId={target.user_id} isMine={isMyProfile} boards={boards} reload={() => api.get(`/boards/by-user/${target.user_id}`).then(r => setBoards(r.data.boards))} />
       )}
     </div>
   );
 }
 
-function WallTab({ ownerId, isMine, wall, textPosts, reload, reloadPosts, me }) {
+function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoards, reloadPosts, me }) {
   const [text, setText] = useState("");
+  const [boardsOpen, setBoardsOpen] = useState(false);
+  const [creatingBoard, setCreatingBoard] = useState(false);
+  const [boardTitle, setBoardTitle] = useState("");
+  const [boardTier, setBoardTier] = useState("public");
+
   const post = async () => {
     if (!text.trim()) return;
     try {
@@ -246,6 +256,16 @@ function WallTab({ ownerId, isMine, wall, textPosts, reload, reloadPosts, me }) 
       setText(""); reload(); toast.success("Posted to wall");
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
+
+  const createBoard = async () => {
+    if (!boardTitle.trim()) return;
+    try {
+      await api.post("/boards", { title: boardTitle, tier: boardTier, description: "" });
+      setBoardTitle(""); setCreatingBoard(false); reloadBoards();
+      toast.success("Board created");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
   return (
     <div className="flex flex-col gap-3">
       <div className="border border-zinc-900 rounded-2xl p-3">
@@ -255,6 +275,56 @@ function WallTab({ ownerId, isMine, wall, textPosts, reload, reloadPosts, me }) 
         <div className="flex justify-end">
           <button data-testid="wall-submit" onClick={post} className="cc-btn-primary py-1 px-4 text-xs">Post</button>
         </div>
+      </div>
+
+      {/* Boards section — collapsed by default to keep wall clean */}
+      <div className="border border-zinc-900 rounded-2xl">
+        <button
+          data-testid="boards-toggle"
+          onClick={() => setBoardsOpen(!boardsOpen)}
+          className="w-full flex items-center justify-between p-3 text-left"
+        >
+          <span className="inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.25em] text-zinc-500">
+            <Layers size={11} /> Discussion boards ({boards.length})
+          </span>
+          <span className="text-zinc-500 text-xs">{boardsOpen ? "Hide" : "Show"}</span>
+        </button>
+
+        {boardsOpen && (
+          <div className="p-3 pt-0 flex flex-col gap-2">
+            {isMine && !creatingBoard && (
+              <button data-testid="new-board-btn" onClick={() => setCreatingBoard(true)} className="cc-btn-secondary text-xs py-1.5">+ New board</button>
+            )}
+            {isMine && creatingBoard && (
+              <div className="border border-zinc-900 rounded-xl p-3 flex flex-col gap-2">
+                <input data-testid="board-title" className="cc-input text-sm" placeholder="Board title" value={boardTitle} onChange={e => setBoardTitle(e.target.value)} />
+                <div className="flex gap-1.5">
+                  {["public", "followers", "inner"].map(t => (
+                    <button key={t} onClick={() => setBoardTier(t)} data-testid={`board-tier-${t}`}
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] uppercase tracking-wider border ${
+                        boardTier === t ? "bg-[#FF5A00] text-black border-[#FF5A00]" : "border-zinc-800 text-zinc-500"
+                      }`}>{t}</button>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button data-testid="board-create" onClick={createBoard} className="cc-btn-primary text-xs py-1.5 flex-1">Create</button>
+                  <button onClick={() => setCreatingBoard(false)} className="cc-btn-secondary text-xs py-1.5 flex-1">Cancel</button>
+                </div>
+              </div>
+            )}
+            {boards.length === 0 && <div className="text-zinc-600 text-xs text-center py-3">No boards yet.</div>}
+            {boards.map(b => (
+              <Link to={`/b/${b.board_id}`} key={b.board_id} data-testid={`board-${b.board_id}`}
+                className="border border-zinc-900 rounded-xl p-2.5 hover:border-zinc-700 transition flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">{b.title}</div>
+                  {b.description && <div className="text-[11px] text-zinc-500 mt-0.5">{b.description}</div>}
+                </div>
+                <span className={`tier-pill-${b.tier} text-[10px] uppercase tracking-wider px-2 py-0.5 rounded`}>{b.tier}</span>
+              </Link>
+            ))}
+          </div>
+        )}
       </div>
 
       {textPosts.length > 0 && (
@@ -273,57 +343,6 @@ function WallTab({ ownerId, isMine, wall, textPosts, reload, reloadPosts, me }) 
           <div className="text-xs text-zinc-500 mb-1">#{w.author?.handle}</div>
           <div className="text-sm whitespace-pre-wrap">{w.content}</div>
         </div>
-      ))}
-    </div>
-  );
-}
-
-function BoardsTab({ ownerId, isMine, boards, reload }) {
-  const [creating, setCreating] = useState(false);
-  const [title, setTitle] = useState("");
-  const [tier, setTier] = useState("public");
-  const create = async () => {
-    if (!title.trim()) return;
-    try {
-      await api.post("/boards", { title, tier, description: "" });
-      setTitle(""); setCreating(false); reload();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-  };
-  return (
-    <div className="flex flex-col gap-2">
-      {isMine && (
-        <>
-          {!creating ? (
-            <button data-testid="new-board-btn" onClick={() => setCreating(true)} className="cc-btn-secondary text-sm py-2">+ New board</button>
-          ) : (
-            <div className="border border-zinc-900 rounded-2xl p-3 flex flex-col gap-2">
-              <input data-testid="board-title" className="cc-input" placeholder="Board title" value={title} onChange={e => setTitle(e.target.value)} />
-              <div className="flex gap-2">
-                {["public", "followers", "inner"].map(t => (
-                  <button key={t} onClick={() => setTier(t)} data-testid={`board-tier-${t}`}
-                    className={`flex-1 py-1.5 rounded-lg text-[11px] uppercase tracking-wider border ${
-                      tier === t ? "bg-[#FF5A00] text-black border-[#FF5A00]" : "border-zinc-800 text-zinc-400"
-                    }`}>{t}</button>
-                ))}
-              </div>
-              <div className="flex gap-2">
-                <button data-testid="board-create" onClick={create} className="cc-btn-primary text-xs py-2 flex-1">Create</button>
-                <button onClick={() => setCreating(false)} className="cc-btn-secondary text-xs py-2 flex-1">Cancel</button>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-      {boards.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">No boards.</div>}
-      {boards.map(b => (
-        <Link to={`/b/${b.board_id}`} key={b.board_id} data-testid={`board-${b.board_id}`}
-          className="border border-zinc-900 rounded-2xl p-4 hover:border-zinc-700 transition">
-          <div className="flex items-center justify-between">
-            <div className="font-medium">{b.title}</div>
-            <span className={`tier-pill-${b.tier} text-[10px] uppercase tracking-wider px-2 py-1 rounded`}>{b.tier}</span>
-          </div>
-          {b.description && <div className="text-xs text-zinc-500 mt-1">{b.description}</div>}
-        </Link>
       ))}
     </div>
   );

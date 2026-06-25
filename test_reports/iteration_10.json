@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration 10 — Self-DM ('Me, myself and I') backend + ClanChat Profile 3-tab restructure (media/wall/audio) frontend testing. 8/8 backend tests pass. Frontend tabs, pinned ribbon, boards-in-wall, board creation, wall posting, self-thread UI, send-to-self all verified working. Regression smoke (feed/search/compose/settings/watchlist/groups) clean — no console errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter10_self_dm.py",
+    "/app/test_reports/pytest/iter10_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 2471 lines — exceeds the 700-line guideline. Strongly recommend splitting DMs / posts / boards / admin / watchlist into separate router modules. This will keep getting worse each iteration.",
+    "send_dm self-branch uses is_self flag computed once, but the recipient existence check is skipped entirely for self-sends — safe because recipient_id == user_id is guaranteed by current_user, but worth a comment noting why the 404 path is intentionally skipped.",
+    "list_threads always appends a self_thread even if the aggregation pipeline returned no docs, which is correct — but the empty self-thread is built with public_user(user) rather than a dedicated helper; if public_user ever leaks fields you don't want to echo back to the owner, this is a foot-gun.",
+    "Profile.jsx WallTab now has both boards UI and wall-post UI in a single ~120 line render. As the wall grows it's already non-trivial; consider extracting BoardsSection into its own component.",
+    "Onboarding modal ('Three tiers. One simple rule.') intercepts pointer events over the tabs strip on first login. Not a regression in this iteration, but worth giving it a higher z-only-while-not-dismissed or a backdrop click-through so the underlying UI isn't visually 'frozen' to a tester. Functional users will dismiss it, so low priority."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter10_self_dm.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (8/8)",
+    "frontend": "100% on tested flows"
+  },
+  "test_credentials": "alice@clanchat.app / Password123! ; bob@clanchat.app / Password123! — both confirmed working",
+  "seed_data_creation": "Created one 'Test Board ####' board on alice's profile (tier=followers). Several self-DMs from alice marked with 'saved note', 'history seed', 'SECRET-xxxxxxx', 'hello self from playwright'. One follow edge bob->alice (idempotent) + dms_enabled_followers toggle ended at TRUE for alice. Bob->alice DM 'hi alice xxxxxx' inserted then read by alice.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend changes for self-DM are solid. When writing Playwright for the Profile page, dismiss the first-login onboarding modal (it overlays the tab strip) OR drive clicks via page.evaluate(\"document.querySelector('[data-testid=...]').click()\") — Playwright's force=True alone doesn't bypass the modal's pointer-events overlay. The same pattern applies to other onboarding-modal-gated screens. Use the BoardsTab selectors: boards-toggle, new-board-btn, board-title, board-tier-{public|followers|inner}, board-create. Profile tabs: tab-media (default), tab-wall, tab-audio. Messages page: thread-self is always index 0, has 'Me, myself and I' label + orange star avatar + 'Saved · only you can see this'; thread-{handle} for the rest.",
+  "verified_flows": {
+    "backend_self_dm_send": "alice -> alice w/ followers DMs off → 200, read:true, from==to",
+    "backend_self_thread_always_listed": "alice list_threads[0].with.is_self=true; brand-new registered user threads[0].is_self=true with last:null",
+    "backend_self_history": "GET /dms/with/{me} returns is_self=true, can_send=true, reason='', idempotent",
+    "backend_privacy": "bob GET /dms/with/{alice_id} sees zero alice->alice messages and no SECRET marker",
+    "backend_regression_blocked": "stranger->alice 403 when not follower",
+    "backend_regression_follower_ok": "bob->alice OK when bob follows + alice.dms_enabled_followers=true; unread_dms incremented then decremented after alice opened thread",
+    "backend_404_unknown_recipient": "POST /dms with bogus recipient_id -> 404",
+    "frontend_profile_three_tabs": "tab-media (default selected, orange), tab-wall, tab-audio present; tab-feed/tab-pinned/tab-boards do NOT exist",
+    "frontend_pinned_ribbon": "data-testid='pinned-ribbon' absent when alice has 0 pins (correct — not an empty placeholder)",
+    "frontend_wall_tab_boards": "boards-toggle collapsible found, opens to reveal new-board-btn → form with board-title + tier-public/followers/inner + board-create. Created 'Test Board ####' with tier=followers, 'Board created' toast appeared.",
+    "frontend_wall_post": "wall-input + wall-submit posted 'wall note from pw', 'Posted to wall' toast confirmed",
+    "frontend_self_thread": "thread-self at index 0 with '★ Me, myself and I' label and 'SAVED · ONLY YOU CAN SEE THIS' hint",
+    "frontend_self_thread_open": "Clicking thread-self routes to /m/{alice_id}; header shows 'Me, myself and I' self-themed; dm-input + dm-send sends 'hello self from playwright' and message appears.",
+    "frontend_regular_thread": "thread-bob renders below thread-self (count=1).",
+    "frontend_smoke": "/feed /search /compose /settings /watchlist /groups all load with 0 error-overlay matches"
+  },
+  "rca of the issue": "n/a — no production bugs identified this iteration."
+}
