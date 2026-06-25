@@ -46,6 +46,10 @@ export function MessageThread() {
     try {
       const { data } = await api.get(`/dms/with/${userId}`);
       setData(data);
+      // Server just flipped read=true for any unread messages — tell the
+      // nav badges to refetch /notifications/counts immediately instead of
+      // waiting for the next 30s poll.
+      window.dispatchEvent(new Event("clanchat:notif-refresh"));
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
   useEffect(() => { load(); }, [userId]);

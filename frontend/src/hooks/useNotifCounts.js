@@ -35,7 +35,15 @@ export default function useNotifCounts(enabled = true) {
     if (!enabled) return;
     refresh();
     const id = setInterval(refresh, POLL_MS);
-    return () => clearInterval(id);
+    // Instant refresh trigger — components dispatch this after taking an
+    // action that should drop the badge (e.g. opening a DM thread, dismissing
+    // a warning, accepting a follow request).
+    const handler = () => refresh();
+    window.addEventListener("clanchat:notif-refresh", handler);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("clanchat:notif-refresh", handler);
+    };
   }, [enabled, refresh]);
 
   return { counts, refresh, markSeen };

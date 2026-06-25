@@ -26,7 +26,9 @@ export default function Notifications() {
   useEffect(() => {
     load();
     // Mark all activity as seen the moment the user opens this tab — clears the dot badge.
-    api.post("/notifications/mark-seen").catch(() => {});
+    api.post("/notifications/mark-seen")
+      .then(() => window.dispatchEvent(new Event("clanchat:notif-refresh")))
+      .catch(() => {});
   }, []);
 
   const actFollow = async (id, approve) => {
