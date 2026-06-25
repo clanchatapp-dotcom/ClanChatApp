@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 8 re-test after the iter5 critical-bug fix. The /posts/feed quarantine leak is FIXED. Added 8 new pytest cases (TestQuarantineAdminBypassAndListEndpoints) covering the original iter5 repro plus admin bypass + by-tag + pinned regression. Backend: 24/25 pytest passed, 1 SKIPPED (alice already at 3-pin cap — not a defect). Frontend: TrendingRail breakpoints all behave correctly per the new 2xl=1536 rule, and the report-reload flow now hides the quarantined post on /feed reload. No new issues found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter8_csam_trending.py",
+    "/app/test_reports/pytest/iter8_retest.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:1118-1119 fix is correct and minimal: gates on viewer role and applies the mongo {quarantined:{$ne:true}} filter for non-admins. Admin bypass verified end-to-end (admin sees the post in /posts/feed while bob/alice do not).",
+    "by-user, by-tag, pinned, audio all iterate through can_view_post() — verified hide quarantined posts correctly. No additional handlers need the same patch.",
+    "Note: OnboardingTour modal (data-testid=onboarding-tour) is rendered at z-[100] over the entire viewport and intercepts pointer events on first login. This blocks any UI test that lands a fresh session — tests must either dismiss it via the Skip button or remove the element. Consider checking if it should only render once per account (currently appears for bob even after prior sessions in the same env)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter8_csam_trending.py"
+  ],
+  "success_rate": {
+    "backend": "24/25 passed, 1 skipped (3-pin cap, not a defect) = 100% of executed",
+    "frontend": "3/3 breakpoint cases + 1/1 report-reload flow + toast assertion all pass"
+  },
+  "test_credentials": "alice@clanchat.app/Password123!, bob@clanchat.app/Password123!, admin@clanchat.app/admin123 — all verified working",
+  "seed_data_creation": "New TestQuarantineAdminBypassAndListEndpoints class creates 1 fresh alice public post per run with content 'iter5b quarantine test', a unique tag 'iter5b<rand>', a fake image url, and (best-effort) pins it. The post is quarantined → cleared in the same run so it returns to feed at the end. TestCsamConfirmThrowaway still runs and leaves throwaway user with deleted=true.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter5 feed-leak critical bug is closed. All iter-8 backend (CSAM, trending tags, admin queue/clear/confirm, audit) and frontend (report dialog, admin tabs, breakpoints) flows passing. If the next testing agent wants to re-run pytest only on the new admin-bypass suite: pytest /app/backend/tests/test_iter8_csam_trending.py::TestQuarantineAdminBypassAndListEndpoints -v. Note: bob may see OnboardingTour on fresh login — dismiss via Skip or localStorage.setItem('cc_tour_seen','1') before interacting with feed.",
+  "rca_of_the_issue": "FIX VERIFIED: server.py:1115-1119 — non-admin viewers now have query['quarantined']={'$ne':True} added before db.posts.find(). Admin viewers (role=='admin') skip that line and still see quarantined posts in /posts/feed for review context. Confirmed by: (a) backend test test_quarantined_hidden_from_bob_feed → PASS, (b) test_quarantined_hidden_from_author_feed → PASS, (c) test_admin_can_see_quarantined_in_feed → PASS, (d) Playwright report-reload → post disappears after reload, toast 'Reported. Content quarantined immediately.' shown, /api/posts/feed direct response confirms target post_id absent. TrendingRail breakpoint change (xl→2xl) also verified at 1024 (hidden), 1280 (hidden), 1536 (visible)."
+}

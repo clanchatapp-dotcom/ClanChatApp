@@ -296,6 +296,97 @@ class TestCsamConfirmThrowaway:
         assert ev.get("admin_id")
 
 
+# ---------- Iter5 critical-bug retest: admin bypass + list endpoints ----------
+class TestQuarantineAdminBypassAndListEndpoints:
+    """Iter5b retest: fresh post, bob reports as csam, verify feed leak fix + admin bypass + by-tag/pinned hide."""
+
+    @classmethod
+    def setup_class(cls):
+        cls.alice = login_session(*ALICE)
+        cls.bob = login_session(*BOB)
+        cls.admin_s = login_session(*ADMIN)
+        cls.tag = f"iter5b{uuid.uuid4().hex[:6]}"
+
+        # Alice creates a fresh public post w/ tag + image
+        r = cls.alice.post(f"{API}/posts", json={
+            "content": "iter5b quarantine test",
+            "tier": "public",
+            "tags": [cls.tag],
+            "media": [{"type": "image", "url": "https://example.com/x.jpg"}],
+        }, timeout=15)
+        assert r.status_code == 200, r.text
+        cls.pid = r.json()["post_id"]
+        cls.alice_uid = me(cls.alice)["user_id"]
+
+        # Best-effort pin so we can test pinned endpoint; may already be at the 3-pin cap.
+        pr = cls.alice.post(f"{API}/posts/{cls.pid}/pin", timeout=15)
+        cls.is_pinned = (pr.status_code == 200 and pr.json().get("pinned") is True)
+
+        # Bob reports as csam → quarantine
+        rr = cls.bob.post(f"{API}/reports", json={
+            "target_type": "post", "target_id": cls.pid,
+            "category": "csam", "notes": "iter5b retest",
+        }, timeout=15)
+        assert rr.status_code == 200, rr.text
+
+    def test_quarantined_hidden_from_bob_feed(self):
+        ids = [p["post_id"] for p in self.bob.get(f"{API}/posts/feed", timeout=15).json()["posts"]]
+        assert self.pid not in ids, "iter5 bug regression: quarantined post leaked to bob feed"
+
+    def test_quarantined_hidden_from_author_feed(self):
+        ids = [p["post_id"] for p in self.alice.get(f"{API}/posts/feed", timeout=15).json()["posts"]]
+        assert self.pid not in ids, "author should not see own quarantined post in feed"
+
+    def test_admin_can_see_quarantined_in_feed(self):
+        """Admin bypass: role=='admin' should see quarantined posts in /posts/feed."""
+        ids = [p["post_id"] for p in self.admin_s.get(f"{API}/posts/feed", timeout=15).json()["posts"]]
+        assert self.pid in ids, "admin must bypass quarantine filter on /posts/feed"
+
+    def test_admin_csam_queue_has_entry(self):
+        q = self.admin_s.get(f"{API}/admin/csam/queue?status=queued", timeout=15).json()["queue"]
+        target_ids = [x["target_id"] for x in q]
+        assert self.pid in target_ids
+
+    def test_hidden_from_by_user(self):
+        ids = [p["post_id"] for p in self.bob.get(f"{API}/posts/by-user/{self.alice_uid}", timeout=15).json()["posts"]]
+        assert self.pid not in ids
+
+    def test_hidden_from_by_tag(self):
+        ids = [p["post_id"] for p in self.bob.get(f"{API}/posts/by-tag/{self.tag}", timeout=15).json()["posts"]]
+        assert self.pid not in ids, "by-tag should hide quarantined posts via can_view_post"
+
+    def test_hidden_from_pinned(self):
+        if not self.is_pinned:
+            pytest.skip("post not pinned (alice already at 3-pin cap)")
+        ids = [p["post_id"] for p in self.bob.get(f"{API}/posts/pinned/{self.alice_uid}", timeout=15).json()["posts"]]
+        assert self.pid not in ids, "pinned should hide quarantined posts via can_view_post"
+
+    def test_clear_restores_for_bob_and_audit(self):
+        # locate csam_id
+        q = self.admin_s.get(f"{API}/admin/csam/queue?status=queued", timeout=15).json()["queue"]
+        match = [x for x in q if x["target_id"] == self.pid]
+        assert match, "csam entry missing for iter5b post"
+        csam_id = match[0]["csam_id"]
+
+        cr = self.admin_s.post(f"{API}/admin/csam/{csam_id}/clear", timeout=15)
+        assert cr.status_code == 200, cr.text
+
+        time.sleep(0.5)
+        ids = [p["post_id"] for p in self.bob.get(f"{API}/posts/feed", timeout=15).json()["posts"]]
+        assert self.pid in ids, "cleared post should return to bob feed"
+
+        async def check():
+            client = AsyncIOMotorClient(MONGO_URL)
+            db = client[DB_NAME]
+            ev = await db.audit_events.find_one(
+                {"event": "csam_cleared", "csam_id": csam_id}, {"_id": 0}
+            )
+            client.close()
+            return ev
+        ev = asyncio.get_event_loop().run_until_complete(check())
+        assert ev is not None, "csam_cleared audit row must exist"
+
+
 # ---------- Trending tags ----------
 class TestTrendingTags:
     def test_trending_endpoint_returns_valid_shape(self, alice):

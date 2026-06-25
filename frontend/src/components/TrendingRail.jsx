@@ -19,7 +19,7 @@ export default function TrendingRail() {
   return (
     <aside
       data-testid="trending-rail"
-      className="hidden xl:flex flex-col w-72 shrink-0 px-5 py-7 sticky top-0 h-screen"
+      className="hidden 2xl:flex flex-col w-72 shrink-0 px-5 py-7 sticky top-0 h-screen"
     >
       <div className="border border-zinc-900 rounded-2xl p-4">
         <div className="flex items-center gap-2 mb-3">

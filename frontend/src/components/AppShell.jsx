@@ -14,7 +14,7 @@ export default function AppShell() {
   const showRail = !hideNav && (loc.pathname === "/feed" || loc.pathname.startsWith("/t/") || loc.pathname.startsWith("/u/") || loc.pathname === "/me");
   return (
     <div className="bg-background text-foreground min-h-screen">
-      <div className={`mx-auto ${isAuthRoute || !user ? "" : "lg:flex lg:max-w-6xl xl:max-w-7xl"}`}>
+      <div className={`mx-auto ${isAuthRoute || !user ? "" : "lg:flex lg:max-w-6xl 2xl:max-w-7xl"}`}>
         {!hideNav && <DesktopSidebar />}
         <main className={`cc-shell ${!hideNav ? "cc-shell-wide lg:flex-1 lg:max-w-2xl lg:border-l lg:border-r lg:border-zinc-900 lg:pb-8" : ""}`}>
           <Outlet />

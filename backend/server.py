@@ -1112,6 +1112,12 @@ async def get_feed(user=Depends(get_current_user), limit: int = 50, before: Opti
     if before:
         query["created_at"] = {"$lt": before}
 
+    # Quarantined content is invisible to everyone (admin still sees via /admin/csam/queue).
+    # This is the same rule enforced in can_view_post — applied at the Mongo layer here
+    # because /posts/feed does not iterate through that helper for performance.
+    if user.get("role") != "admin":
+        query["quarantined"] = {"$ne": True}
+
     # comfort zone filtering
     cz = user.get("settings", {}).get("comfort_zone", {})
     if not cz.get("nsfw", False) or is_minor(user):
