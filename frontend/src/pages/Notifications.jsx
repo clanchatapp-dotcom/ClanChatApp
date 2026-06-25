@@ -21,7 +21,7 @@ export default function Notifications() {
       setInnerInvites(ii.data.invites);
       setTagPending(tp.data.pending);
       setWarnings(w.data.warnings);
-    } catch {}
+    } catch (e) { console.warn("notifications load failed", e); }
   };
   useEffect(() => { load(); }, []);
 
@@ -34,7 +34,7 @@ export default function Notifications() {
     catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
   const dismissWarn = async (id) => {
-    try { await api.post(`/me/warnings/${id}/dismiss`); load(); } catch {}
+    try { await api.post(`/me/warnings/${id}/dismiss`); load(); } catch (e) { console.warn("dismiss warning failed", e); }
   };
 
   return (
