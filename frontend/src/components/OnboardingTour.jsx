@@ -48,6 +48,13 @@ export default function OnboardingTour() {
     } catch { /* ignore */ }
   }, [user?.user_id]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
   const close = () => {
     if (user?.user_id) {
       try { localStorage.setItem(storageKey(user.user_id), "1"); } catch { /* ignore */ }

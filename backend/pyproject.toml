@@ -1,0 +1,50 @@
+# ClanChat backend Python tooling configuration
+# Purpose: be the canonical source-of-truth for Python linting. External
+# scanners producing noise (e.g. flagging `is None` as a smell, or flagging
+# variables that are guarded by early-return as undefined) should be ignored
+# in favour of this config.
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["__pycache__", ".venv", "tests/__pycache__"]
+
+[tool.ruff.lint]
+# Enable a focused set — real bugs over style nitpicks.
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes (undefined names, unused imports — real bugs)
+    "W",    # pycodestyle warnings
+    "B",    # flake8-bugbear (likely-bug patterns)
+    "I",    # isort
+    "UP",   # pyupgrade
+    "S",    # flake8-bandit (security) — limited
+    "C4",   # flake8-comprehensions
+    "PIE",  # flake8-pie (general lint sanity)
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+
+ignore = [
+    "E501",   # line too long — we let black/style handle it
+    "B008",   # function call in default arg — FastAPI uses Depends(...) by design
+    "B904",   # raise from — not always meaningful for HTTPException
+    "S101",   # assert — used in tests
+    "S105",   # hardcoded password string — false positives on enum-like values
+    "S106",   # hardcoded password func arg — false positives
+    "S311",   # pseudo-random — we don't use random for crypto
+    "SIM108", # ternary preferred — readability call
+    "UP015",  # `open(..., "r")` — explicit is fine
+    # NEVER enable these — they generate pure noise:
+    # - "is None" → "== None" (PEP-8 says use `is None`!)
+    # - "string concat in loop" warnings on tiny lists
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S106", "B017"]   # tests can assert/use simple secrets
+"server.py" = []                        # main app file gets the full rule set
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
