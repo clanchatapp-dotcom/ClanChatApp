@@ -2005,6 +2005,175 @@ async def admin_promote(payload: dict, admin=Depends(require_admin)):
 
 
 # ------------------------------------------------------------------
+# Admin Watchlist — silent investigative surveillance
+#
+# WHY: When an account has been reported, the admin needs to verify whether
+# the report is warranted (e.g. confirming abuse pattern in DMs) before
+# applying a strike. This tool allows full visibility — posts in every tier,
+# all DMs, group memberships — for accounts the admin has explicitly added.
+#
+# RULES:
+# - Watched users have ZERO indication they're being watched. No notification,
+#   no field on their public profile, no API endpoint they can call to check.
+# - Every add / remove / view is recorded in audit_events (append-only,
+#   immutable). This protects the admin legally: "why was bob123 watched?" has
+#   a documented reason and timestamp.
+# - Only admin role can touch any /admin/watch/* endpoint.
+# - Adding requires a reason (free-text). Encouraged: a report_id or short note.
+# ------------------------------------------------------------------
+async def is_watched(user_id: str) -> bool:
+    return (await db.watchlist.find_one({"target_id": user_id, "active": True})) is not None
+
+
+@api.get("/admin/watch")
+async def admin_watch_list(admin=Depends(require_admin)):
+    out = []
+    async for w in db.watchlist.find({"active": True}, {"_id": 0}).sort("added_at", -1):
+        u = await db.users.find_one({"user_id": w["target_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "email": 1, "user_id": 1})
+        if not u:
+            continue
+        out.append({
+            "watch_id": w["watch_id"],
+            "target": u,
+            "reason": w.get("reason"),
+            "added_at": w["added_at"],
+            "added_by": w["added_by"],
+        })
+    return {"watched": out}
+
+
+@api.post("/admin/watch/{user_id}")
+async def admin_watch_add(user_id: str, payload: dict, admin=Depends(require_admin)):
+    reason = (payload.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "reason required (audit trail)")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "handle": 1, "user_id": 1})
+    if not target:
+        raise HTTPException(404, "User not found")
+    # Re-activate existing entry or insert new
+    existing = await db.watchlist.find_one({"target_id": user_id, "active": True})
+    if existing:
+        return {"ok": True, "watch_id": existing["watch_id"], "note": "already watched"}
+    watch_id = f"watch_{uuid.uuid4().hex[:12]}"
+    await db.watchlist.insert_one({
+        "watch_id": watch_id,
+        "target_id": user_id,
+        "added_by": admin["user_id"],
+        "added_at": now_iso(),
+        "reason": reason,
+        "active": True,
+    })
+    await db.audit_events.insert_one({
+        "event": "watchlist_add",
+        "watch_id": watch_id,
+        "target_id": user_id,
+        "target_handle": target.get("handle"),
+        "reason": reason,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "watch_id": watch_id}
+
+
+@api.delete("/admin/watch/{user_id}")
+async def admin_watch_remove(user_id: str, admin=Depends(require_admin)):
+    entry = await db.watchlist.find_one({"target_id": user_id, "active": True})
+    if not entry:
+        raise HTTPException(404, "Not on watchlist")
+    await db.watchlist.update_one(
+        {"watch_id": entry["watch_id"]},
+        {"$set": {"active": False, "removed_at": now_iso(), "removed_by": admin["user_id"]}},
+    )
+    await db.audit_events.insert_one({
+        "event": "watchlist_remove",
+        "watch_id": entry["watch_id"],
+        "target_id": user_id,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+@api.get("/admin/watch/{user_id}/overview")
+async def admin_watch_overview(user_id: str, admin=Depends(require_admin)):
+    """All-tiers profile + post + DM + group summary for a watched user.
+    Each call is audit-logged so we know which admin viewed what when.
+    """
+    if not await is_watched(user_id):
+        raise HTTPException(403, "Target is not on the watchlist. Add them first.")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+
+    # Posts — ALL tiers including IC and quarantined
+    posts = []
+    async for p in db.posts.find({"author_id": user_id}, {"_id": 0}).sort("created_at", -1).limit(100):
+        posts.append(p)
+
+    # DMs — both directions, last 200
+    dms_cursor = db.dms.find(
+        {"$or": [{"from_id": user_id}, {"to_id": user_id}]}, {"_id": 0}
+    ).sort("created_at", -1).limit(200)
+    dms = []
+    counterpart_ids = set()
+    async for m in dms_cursor:
+        dms.append(m)
+        counterpart_ids.add(m["from_id"] if m["from_id"] != user_id else m["to_id"])
+    # Resolve counterpart handles for the UI
+    counterparts = {}
+    async for u in db.users.find({"user_id": {"$in": list(counterpart_ids)}}, {"_id": 0, "user_id": 1, "handle": 1, "display_name": 1}):
+        counterparts[u["user_id"]] = u
+
+    # Group memberships
+    groups = []
+    async for g in db.group_chats.find({"members": user_id}, {"_id": 0}):
+        groups.append({"group_id": g["group_id"], "name": g.get("name"), "members": len(g.get("members", []))})
+
+    # Inner Circle relationships
+    ic_members = []
+    async for ic in db.inner_circle.find({"owner_id": user_id, "status": "active"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": ic["member_id"]}, {"_id": 0, "handle": 1, "user_id": 1})
+        if u:
+            ic_members.append(u)
+    ic_of = []
+    async for ic in db.inner_circle.find({"member_id": user_id, "status": "active"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": ic["owner_id"]}, {"_id": 0, "handle": 1, "user_id": 1})
+        if u:
+            ic_of.append(u)
+
+    # Follow counts
+    followers_count = await db.follows.count_documents({"followee_id": user_id, "status": "active"})
+    following_count = await db.follows.count_documents({"follower_id": user_id, "status": "active"})
+
+    # Reports filed against this user
+    reports_against = []
+    async for r in db.reports.find({"target_id": user_id}, {"_id": 0}).sort("created_at", -1).limit(50):
+        reports_against.append(r)
+
+    await db.audit_events.insert_one({
+        "event": "watchlist_view_overview",
+        "target_id": user_id,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+
+    return {
+        "target": target,
+        "posts": posts,
+        "post_count": len(posts),
+        "dms": dms,
+        "dm_count": len(dms),
+        "counterparts": counterparts,
+        "groups": groups,
+        "inner_circle_members": ic_members,
+        "inner_circle_of": ic_of,
+        "followers_count": followers_count,
+        "following_count": following_count,
+        "reports_against": reports_against,
+    }
+
+
+# ------------------------------------------------------------------
 # Admin: one-off purge of seeded demo accounts.
 # Wipes alice/bob/teen (+ optionally the seeded admin@clanchat.app) and ALL
 # data they touched: posts, comments, follows, inner-circle, DMs, group chats,

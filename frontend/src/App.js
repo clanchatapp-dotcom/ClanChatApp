@@ -19,6 +19,7 @@ import BoardView from "./pages/BoardView";
 import TagView from "./pages/TagView";
 import { Groups, GroupChat } from "./pages/Groups";
 import Admin from "./pages/Admin";
+import AdminWatch from "./pages/AdminWatch";
 import TagApprovals from "./pages/TagApprovals";
 import MyConnections from "./pages/MyConnections";
 import { Toaster } from "sonner";
@@ -56,6 +57,7 @@ function AppRouter() {
         <Route path="/groups" element={<Protected><Groups /></Protected>} />
         <Route path="/g/:groupId" element={<Protected><GroupChat /></Protected>} />
         <Route path="/admin" element={<Protected><Admin /></Protected>} />
+        <Route path="/admin/watch/:userId" element={<Protected><AdminWatch /></Protected>} />
         <Route path="/tags" element={<Protected><TagApprovals /></Protected>} />
         <Route path="/me/:kind" element={<Protected><MyConnections /></Protected>} />
         <Route path="/b/:boardId" element={<Protected><BoardView /></Protected>} />

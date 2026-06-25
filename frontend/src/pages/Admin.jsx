@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { formatApiError } from "../lib/api";
 import { toast } from "sonner";
-import { ShieldCheck, ShieldAlert, FileText, AlertTriangle } from "lucide-react";
+import { ShieldCheck, ShieldAlert, FileText, AlertTriangle, Eye, EyeOff } from "lucide-react";
 
 const TABS = [
   { id: "reports", label: "Reports" },
   { id: "csam", label: "CSAM queue" },
+  { id: "watchlist", label: "Watchlist" },
   { id: "audit", label: "Audit log" },
 ];
 
@@ -16,17 +17,22 @@ export default function Admin() {
   const [reports, setReports] = useState([]);
   const [csam, setCsam] = useState([]);
   const [audit, setAudit] = useState([]);
+  const [watched, setWatched] = useState([]);
+  const [watchInput, setWatchInput] = useState("");
+  const [watchReason, setWatchReason] = useState("");
 
   const loadStats = () => api.get("/admin/stats").then((r) => setStats(r.data)).catch(() => {});
   const loadReports = () => api.get("/admin/reports?status=pending").then((r) => setReports(r.data.reports)).catch(() => {});
   const loadCsam = () => api.get("/admin/csam/queue?status=queued").then((r) => setCsam(r.data.queue)).catch(() => {});
   const loadAudit = () => api.get("/admin/audit?limit=100").then((r) => setAudit(r.data.events)).catch(() => {});
+  const loadWatched = () => api.get("/admin/watch").then((r) => setWatched(r.data.watched)).catch(() => {});
 
   useEffect(() => { loadStats(); }, []);
   useEffect(() => {
     if (tab === "reports") loadReports();
     if (tab === "csam") loadCsam();
     if (tab === "audit") loadAudit();
+    if (tab === "watchlist") loadWatched();
   }, [tab]);
 
   const strike = async (id, level) => {
@@ -79,6 +85,30 @@ export default function Admin() {
       toast.success(`Purged ${data.purged.length} account(s)`);
       loadStats();
       console.info("Purge summary", data.summary);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const addToWatchlist = async () => {
+    const handle = watchInput.trim().replace(/^#/, "");
+    const reason = watchReason.trim();
+    if (!handle) { toast.error("Enter a # handle"); return; }
+    if (!reason) { toast.error("Reason required (audit trail)"); return; }
+    try {
+      // First resolve handle → user_id
+      const { data: u } = await api.get(`/users/by-handle/${handle}`);
+      await api.post(`/admin/watch/${u.user.user_id}`, { reason });
+      toast.success(`Watching #${handle} silently · audit logged`);
+      setWatchInput(""); setWatchReason("");
+      loadWatched();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail) || "User not found"); }
+  };
+
+  const removeFromWatchlist = async (uid, handle) => {
+    if (!window.confirm(`Stop watching #${handle}? Privacy restored. Audit log keeps the record.`)) return;
+    try {
+      await api.delete(`/admin/watch/${uid}`);
+      toast.success("Removed · audit logged");
+      loadWatched();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
@@ -170,6 +200,70 @@ export default function Admin() {
                 <button data-testid={`csam-confirm-${c.csam_id}`} onClick={() => confirmCsam(c.csam_id)} className="bg-red-500 text-white text-xs py-1.5 px-3 rounded-full">Confirm · escalate</button>
                 <button data-testid={`csam-clear-${c.csam_id}`} onClick={() => clearCsam(c.csam_id)} className="cc-btn-secondary text-xs py-1.5 px-3">False alarm · clear</button>
               </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === "watchlist" && (
+        <div className="flex flex-col gap-3">
+          <div className="p-3 border border-amber-500/30 bg-amber-500/5 rounded-2xl">
+            <div className="flex items-center gap-2 mb-1">
+              <Eye size={14} className="text-amber-300" />
+              <h3 className="text-xs uppercase tracking-[0.25em] text-amber-200">Silent surveillance</h3>
+            </div>
+            <p className="text-[11px] text-zinc-500 leading-relaxed">
+              Watched accounts have NO indication. You can view all their posts (every tier including Inner Circle), DMs, group chats, and IC relationships. Every add / remove / view is audit-logged. Use for investigating reports — un-watch as soon as the question is resolved.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2 border border-zinc-900 rounded-2xl p-3">
+            <label className="text-[10px] uppercase tracking-[0.25em] text-zinc-500">Add to watchlist</label>
+            <input
+              data-testid="watch-add-handle"
+              value={watchInput}
+              onChange={(e) => setWatchInput(e.target.value)}
+              placeholder="# handle (e.g. bob123)"
+              className="cc-input text-sm"
+            />
+            <textarea
+              data-testid="watch-add-reason"
+              value={watchReason}
+              onChange={(e) => setWatchReason(e.target.value)}
+              placeholder="Reason — audit trail requires this (e.g. 'Report #r_abc — alleged harassment')"
+              className="cc-input text-sm min-h-[60px] resize-none"
+              maxLength={500}
+            />
+            <button data-testid="watch-add-submit" onClick={addToWatchlist} className="cc-btn-primary text-xs py-2 self-end inline-flex items-center gap-1.5">
+              <Eye size={12} /> Start watching
+            </button>
+          </div>
+
+          {watched.length === 0 && <div className="text-zinc-600 text-sm text-center py-6">No accounts on the watchlist.</div>}
+          {watched.map((w) => (
+            <div key={w.watch_id} className="border border-zinc-900 rounded-2xl p-3 flex items-center gap-3" data-testid={`watch-row-${w.target.handle}`}>
+              <div className="w-10 h-10 rounded-full bg-zinc-900 flex items-center justify-center shrink-0">
+                <span className="font-heading text-zinc-500">{w.target.handle?.[0]?.toUpperCase()}</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">#{w.target.handle}</div>
+                <div className="text-[11px] text-zinc-500 truncate">{w.reason}</div>
+                <div className="text-[10px] text-zinc-700 mt-0.5">Added {new Date(w.added_at).toLocaleString()}</div>
+              </div>
+              <Link
+                to={`/admin/watch/${w.target.user_id}`}
+                data-testid={`watch-view-${w.target.handle}`}
+                className="cc-btn-secondary text-xs py-1.5 px-3 inline-flex items-center gap-1.5"
+              >
+                <Eye size={12} /> View
+              </Link>
+              <button
+                data-testid={`watch-remove-${w.target.handle}`}
+                onClick={() => removeFromWatchlist(w.target.user_id, w.target.handle)}
+                className="cc-btn-secondary text-xs py-1.5 px-3 border-emerald-500/40 text-emerald-200 inline-flex items-center gap-1.5"
+              >
+                <EyeOff size={12} /> Stop
+              </button>
             </div>
           ))}
         </div>
