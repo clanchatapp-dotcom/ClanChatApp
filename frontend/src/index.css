@@ -92,6 +92,16 @@ html.light, html.light body, html.light #root { background: #ffffff; color: #0a0
     border-right: 1px solid #18181B;
 }
 
+@media (min-width: 1024px) {
+    .cc-shell.cc-shell-wide {
+        max-width: none;
+        margin: 0;
+        padding-bottom: 0;
+        border-left: none;
+        border-right: none;
+    }
+}
+
 .light .cc-shell { border-left-color: #f0f0f0; border-right-color: #f0f0f0; }
 
 .cc-btn-primary {

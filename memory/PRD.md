@@ -4,7 +4,7 @@
 Your Personal Clubhouse.
 
 ## Vision
-A privacy-first social space with three visibility tiers (Public / Followers / Inner Circle), no algorithm, # handles, anonymous likes, and hardcoded minor protections. "My"-style language throughout.
+A privacy-first social space with three visibility tiers (Public / Followers / Inner Circle), no algorithm, # handles, anonymous likes, and hardcoded minor protections. "My"-style language throughout. Cross-device: web (desktop + mobile) today, native app (Capacitor wrap) Phase B.
 
 ## Personas
 - Adult creator who values privacy & inner-circle sharing
@@ -12,58 +12,65 @@ A privacy-first social space with three visibility tiers (Public / Followers / I
 - Casual user who wants chronological feed without algorithm
 
 ## Implemented (V1 — Feb 2026)
-- JWT email/password + Emergent Google OAuth (both offered on login/register)
+- JWT email/password + Emergent Google OAuth
 - DOB at signup -> is_minor flag
-- 3-tier posting (public/followers/inner) with tier visibility filtering
+- 3-tier posting with tier visibility filtering
 - Tags: lowercase chips, max 10, banned-word block, no tags on inner posts
 - Tier 1 NSFW hardcoded block
 - Chronological feed with Words/Gallery toggle
 - Profile: avatar, handle, bio, links, Shop placeholder, max 3 pinned
-- Follow open/approval modes, request approve/decline
+- Follow open/approval modes
 - Inner Circle invite-only with per-member permissions
-- Adult-minor hardcoded restrictions (follow/DM/invite/search)
-- Search by # handle only (minor invisibility, NSFW invisibility for minors)
+- Adult-minor hardcoded restrictions
+- Search by # handle only with minor & NSFW invisibility rules
 - Wall, Discussion Boards per tier, DMs tier-respecting
-- Block, mute, report endpoints; strike fields on user
+- Block, mute, report endpoints; strike fields
 - Comfort Zone settings
 - Emergent object storage for media upload
 - Dark default true-black + light theme toggle
 
-## Implemented (Iter 1 — Feb 2026)
-- Comments gated to Inner Circle only (author can always reply)
-- AI label hardcoded enforcement: real-person + 18+ = permanent ban, no consent = 48h ban + strike
-- Strike history tracked on user
-- Soft warning system + dismissable warnings on Notifications
+## Implemented (Iter 1)
+- Comments gated to Inner Circle only
+- AI label hardcoded enforcement: real-person + 18+ = permanent ban; no consent = 48h ban + strike
+- Strike history + soft warning system
 
-## Implemented (Iter 2-6 — Feb 2026)
-- Tagging others on posts (max 10) with approval queue
-  - Hardcoded approval required for media tags and 18+ tags (no override)
-  - Per-user `taggable_by` (anyone / followers / inner / nobody) + `tag_approval_mode`
+## Implemented (Iter 2-6)
+- Tagging others (max 10) with approval queue; hardcoded approval for media + 18+ tags
 - Group chats (Inner Circle only, ≤15, accept-required, silent decline/leave)
-- Restrict feature (silently hide comments/tags from a user)
-- Audio tab posts (`is_audio_track` flag) — shown on dedicated profile Audio tab
-- Admin moderation panel (stats grid, pending reports queue, strike 1/2/3, dismiss)
-- Real name field (private by default) with visibility tiers (nobody/inner/followers/everyone)
-- Profile tab restructure: Feed (media only) · Wall (text only + wall notes) · Audio · Boards · Pinned
+- Restrict feature
+- Audio tab posts (`is_audio_track`) with dedicated profile tab
+- Admin moderation panel (stats, reports queue, strike 1/2/3, dismiss)
+- Real name field with visibility tiers
+- Profile tab restructure: Feed (media) · Wall (text + wall notes) · Audio · Boards · Pinned
 - "My" language: My Feed, My Inner Circle, My Groups, My Comfort Zone
 
-## Backlog (Iter 7 — P0 next)
-- CEOP / CSAM pipeline: internal flag flow, quarantine, automated handoff queue, audit logs
+## Implemented (Iter 7 — Phase A cross-device, Feb 2026)
+- **OnboardingTour.jsx** — 4-step modal on first login (Tiers · Comfort Zone · Inner Circle · Tag approvals); persisted in localStorage per user
+- **DesktopSidebar.jsx** — full desktop navigation (Feed/Search/Messages/Groups/Activity/Profile/Settings/Admin + New Post CTA + user chip) — visible at lg+ only
+- **Responsive AppShell** — desktop = sidebar + center column; mobile = bottom nav (unchanged)
+- **PWA manifest.json** — installable to home screen, branded SVG icon, standalone display, theme color #000
+- **SEO + social cards** — proper `<title>`, description, Open Graph + Twitter Card meta tags
 
-## Backlog (Phase 2 — P1/P2)
-- Hive Moderation AI scan (replace manual `is_ai` label)
+## Backlog — P0 next
+- **Iteration 8 (CEOP/CSAM pipeline)**: internal flag flow, quarantine, automated handoff queue, audit logs
+
+## Backlog — Phase B (Mobile App)
+- Capacitor wrap for iOS / Android app stores (~1 week of work)
+- Switch auth to bearer tokens in secure storage (httpOnly cookies don't work in native webviews)
+- Push notifications (FCM/APNs)
+- Deep linking (`clanchat://u/<handle>`, `clanchat://p/<post_id>`)
+
+## Backlog — Phase 2 (P1/P2)
+- Hive Moderation AI scan (replace manual is_ai)
 - Yoti / Veriff age verification
 - WebRTC audio/video calls + screenshot protection
 - Verified accounts + shield colours
 - E2E encryption (Signal Protocol) for DMs & group chats
-- Creator monetization (premium subs, paid IC, tips)
+- Creator monetization
 
 ## Refactor backlog
-- Split `backend/server.py` (~1974 lines) into routers: auth, users, posts, inner, boards, groups, admin, moderation, tags
-- Use `payload.model_dump()` in `create_post` instead of hand-building the dict (prevents drift like the is_audio_track bug)
-
-## Endpoints (all /api prefixed)
-auth/* posts/* posts/audio/{user_id} follow/* inner/* dms/* boards/* wall/* users/* upload files/* notifications/counts reports block/* mute/* tags/pending tags/{tag_id}/approve|reject groups/* restrict/* admin/stats admin/reports admin/reports/{id}/strike|dismiss me/warnings
+- Split `backend/server.py` (~1974 lines) into routers
+- Use `payload.model_dump()` in `create_post` instead of hand-built dicts (prevents drift bugs)
 
 ## Test Credentials
 See /app/memory/test_credentials.md

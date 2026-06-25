@@ -12,7 +12,7 @@ export default function BottomNav() {
   return (
     <nav
       data-testid="bottom-nav"
-      className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg bg-black/80 dark:bg-black/80 backdrop-blur-xl border-t border-zinc-900 z-50"
+      className="lg:hidden fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg bg-black/80 dark:bg-black/80 backdrop-blur-xl border-t border-zinc-900 z-50"
       style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
     >
       <div className="flex justify-around items-center pt-2 pb-2 px-4">
