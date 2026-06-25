@@ -2053,6 +2053,17 @@ async def admin_watch_add(user_id: str, payload: dict, admin=Depends(require_adm
     # Re-activate existing entry or insert new
     existing = await db.watchlist.find_one({"target_id": user_id, "active": True})
     if existing:
+        # Log the re-add attempt so the paper trail captures repeated escalation
+        # interest in the same target (even though the watch entry itself is unchanged).
+        await db.audit_events.insert_one({
+            "event": "watchlist_readd_attempt",
+            "watch_id": existing["watch_id"],
+            "target_id": user_id,
+            "target_handle": target.get("handle"),
+            "reason": reason,
+            "admin_id": admin["user_id"],
+            "at": now_iso(),
+        })
         return {"ok": True, "watch_id": existing["watch_id"], "note": "already watched"}
     watch_id = f"watch_{uuid.uuid4().hex[:12]}"
     await db.watchlist.insert_one({
