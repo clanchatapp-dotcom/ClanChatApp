@@ -112,6 +112,9 @@ export function MessageThread() {
 
   const onPickFiles = async (e) => {
     const files = Array.from(e.target.files || []);
+    // Re-enable screenshot block after the picker closes if this thread requires it.
+    const needsBlock = data && !data.screenshots_allowed && !data.with?.is_self;
+    if (needsBlock) setNativeScreenshotBlock(true);
     if (!files.length) return;
     const room = 4 - pendingMedia.length;
     if (room <= 0) { toast.error("Max 4 attachments per message"); return; }
@@ -157,7 +160,7 @@ export function MessageThread() {
   if (!data) return <div className="p-10 text-zinc-500 text-sm">Loading…</div>;
 
   return (
-    <div className="px-5 pt-6 pb-32 flex flex-col min-h-screen">
+    <div className="px-5 pt-6 pb-40 flex flex-col min-h-screen">
       <header className="flex items-center gap-3 mb-4">
         <button onClick={() => nav(-1)} className="text-zinc-500 text-sm">← Back</button>
         {data.with?.is_self ? (
@@ -250,7 +253,11 @@ export function MessageThread() {
         )}
       </div>
 
-      <form onSubmit={send} className="fixed bottom-16 left-1/2 -translate-x-1/2 w-full max-w-lg px-5 pb-2">
+      <form
+        onSubmit={send}
+        className="fixed left-1/2 -translate-x-1/2 w-full max-w-lg px-5 z-[55]"
+        style={{ bottom: "calc(4rem + env(safe-area-inset-bottom, 0px))" }}
+      >
         {!data.can_send && (
           <div className="text-xs text-zinc-500 mb-2 text-center">{data.reason || "Cannot message this user"}</div>
         )}
@@ -281,7 +288,13 @@ export function MessageThread() {
           <button
             type="button"
             data-testid="dm-attach"
-            onClick={async () => { if (await ensureMediaPermission()) fileRef.current?.click(); }}
+            onClick={async () => {
+              if (!(await ensureMediaPermission())) return;
+              // Temporarily lift FLAG_SECURE so the Android file picker can render.
+              // The onPickFiles handler re-enables the block when needed.
+              await setNativeScreenshotBlock(false);
+              fileRef.current?.click();
+            }}
             disabled={!data.can_send || pendingMedia.length >= 4 || busy}
             className="p-2 text-zinc-400 hover:text-[#FF5A00] disabled:opacity-40"
             aria-label="Attach"

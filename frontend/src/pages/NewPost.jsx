@@ -178,7 +178,18 @@ export default function NewPost() {
       )}
 
       <div className="flex items-center gap-3 mt-3">
-        <button onClick={async () => { if (await ensureMediaPermission()) fileRef.current?.click(); }} className="cc-btn-secondary py-2 px-4 text-sm inline-flex items-center gap-2" data-testid="upload-btn">
+        <button onClick={async () => {
+          if (!(await ensureMediaPermission())) return;
+          // Defensive: if a prior DM thread left FLAG_SECURE on, lift it so
+          // the Android system file picker can actually appear.
+          try {
+            const Cap = window.Capacitor;
+            if (Cap?.isNativePlatform?.() && Cap?.Plugins?.PrivacyScreen?.disable) {
+              await Cap.Plugins.PrivacyScreen.disable();
+            }
+          } catch { /* no-op */ }
+          fileRef.current?.click();
+        }} className="cc-btn-secondary py-2 px-4 text-sm inline-flex items-center gap-2" data-testid="upload-btn">
           <ImagePlus size={16} /> Add media
         </button>
         <input ref={fileRef} type="file" accept="image/*,video/*" multiple onChange={onFiles} className="hidden" data-testid="upload-input" />

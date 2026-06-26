@@ -35,6 +35,15 @@ const config = {
       style: "DARK",
       backgroundColor: "#000000",
     },
+    // IMPORTANT: PrivacyScreen defaults to enable:true which sets FLAG_SECURE
+    // on the whole app from launch — that's what blocks screenshots across
+    // every screen and breaks the file picker. We default it OFF, then
+    // selectively call PrivacyScreen.enable() ONLY when the user opens a DM
+    // thread where both parties haven't opted into screenshots.
+    PrivacyScreen: {
+      enable: false,
+      preventScreenshots: false,
+    },
   },
 };
 
