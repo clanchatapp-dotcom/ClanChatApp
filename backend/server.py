@@ -2035,6 +2035,111 @@ async def admin_promote(payload: dict, admin=Depends(require_admin)):
 
 
 # ------------------------------------------------------------------
+# Admin: manual account flag overrides (interim — long-term these become
+# automated via age verification + creator application).
+# ------------------------------------------------------------------
+@api.post("/admin/users/{user_id}/mark-minor")
+async def admin_mark_minor(user_id: str, payload: dict, admin=Depends(require_admin)):
+    """Force-lock an account as a minor. Sets is_minor:true regardless of DOB
+    and records minor_locked_by_admin so the user cannot self-unlock. Setting
+    locked:false removes the override (DOB-derived minority still applies)."""
+    locked = bool(payload.get("locked", True))
+    reason = (payload.get("reason") or "").strip()
+    if locked and not reason:
+        raise HTTPException(400, "reason required (audit trail)")
+    target = await db.users.find_one({"user_id": user_id})
+    if not target:
+        raise HTTPException(404, "User not found")
+    # Safety guard — can't simultaneously be a flagged 18+ creator
+    if locked and target.get("nsfw_account"):
+        raise HTTPException(409, "Account is flagged as 18+ creator. Remove that flag first.")
+    update = {
+        "is_minor": locked,
+        "minor_locked_by_admin": locked,
+        "minor_locked_reason": reason if locked else None,
+        "minor_locked_at": now_iso() if locked else None,
+        "minor_locked_by": admin["user_id"] if locked else None,
+    }
+    # When unlocking, restore the DOB-derived flag
+    if not locked:
+        update["is_minor"] = calc_age(target.get("dob", "1900-01-01")) < 18
+    await db.users.update_one({"user_id": user_id}, {"$set": update})
+    await db.audit_events.insert_one({
+        "event": "admin_mark_minor",
+        "target_user_id": user_id,
+        "target_handle": target.get("handle"),
+        "locked": locked,
+        "reason": reason,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "is_minor": update["is_minor"], "minor_locked_by_admin": locked}
+
+
+@api.post("/admin/users/{user_id}/mark-18plus")
+async def admin_mark_18plus(user_id: str, payload: dict, admin=Depends(require_admin)):
+    """Flag an account as a 18+ content creator. NSFW content allowed for them;
+    invisible to minors in search; nsfw_account=true. Setting is_creator:false
+    removes the flag."""
+    is_creator = bool(payload.get("is_creator", True))
+    reason = (payload.get("reason") or "").strip()
+    if is_creator and not reason:
+        raise HTTPException(400, "reason required (audit trail)")
+    target = await db.users.find_one({"user_id": user_id})
+    if not target:
+        raise HTTPException(404, "User not found")
+    # Safety guard — can't simultaneously be a locked minor
+    if is_creator and (target.get("minor_locked_by_admin") or target.get("is_minor")):
+        raise HTTPException(409, "Account is a minor (DOB or admin-locked). Cannot flag as 18+ creator.")
+    update = {
+        "nsfw_account": is_creator,
+        "flagged_18plus_by_admin": is_creator,
+        "flagged_18plus_reason": reason if is_creator else None,
+        "flagged_18plus_at": now_iso() if is_creator else None,
+        "flagged_18plus_by": admin["user_id"] if is_creator else None,
+    }
+    await db.users.update_one({"user_id": user_id}, {"$set": update})
+    await db.audit_events.insert_one({
+        "event": "admin_mark_18plus",
+        "target_user_id": user_id,
+        "target_handle": target.get("handle"),
+        "is_creator": is_creator,
+        "reason": reason,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "nsfw_account": is_creator, "flagged_18plus_by_admin": is_creator}
+
+
+@api.get("/admin/users/by-handle/{handle}")
+async def admin_user_lookup(handle: str, admin=Depends(require_admin)):
+    """Admin lookup for any handle — returns the flag state so the UI can show
+    current minor/18+ status before applying changes."""
+    h = handle.strip().lower().lstrip("#")
+    u = await db.users.find_one({"handle": h}, {"_id": 0, "password_hash": 0})
+    if not u:
+        raise HTTPException(404, "User not found")
+    return {
+        "user_id": u["user_id"],
+        "handle": u["handle"],
+        "display_name": u.get("display_name"),
+        "email": u.get("email"),
+        "dob": u.get("dob"),
+        "is_minor": is_minor(u),
+        "dob_derived_minor": calc_age(u.get("dob", "1900-01-01")) < 18,
+        "minor_locked_by_admin": bool(u.get("minor_locked_by_admin")),
+        "minor_locked_reason": u.get("minor_locked_reason"),
+        "nsfw_account": bool(u.get("nsfw_account")),
+        "flagged_18plus_by_admin": bool(u.get("flagged_18plus_by_admin")),
+        "flagged_18plus_reason": u.get("flagged_18plus_reason"),
+        "role": u.get("role", "user"),
+        "deleted": bool(u.get("deleted")),
+        "suspended_until": u.get("suspended_until"),
+        "strikes": u.get("strikes", 0),
+    }
+
+
+# ------------------------------------------------------------------
 # Admin Watchlist — silent investigative surveillance
 #
 # WHY: When an account has been reported, the admin needs to verify whether

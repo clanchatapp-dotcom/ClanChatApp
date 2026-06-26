@@ -1,0 +1,62 @@
+{
+  "summary": "Iteration 12 — Admin manual flag overrides (lock-as-minor + flag-as-18+-creator). 14/14 backend tests pass, all UI selectors and flows verified end-to-end via Playwright as admin@clanchat.app. Mutual exclusion (both directions), reason-required toast, audit trail, applied behaviours (adult-cannot-follow-locked-minor + 18+-hidden-from-minor-search) all confirmed. Bob restored to clean state (no flags) at end of run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter12_admin_flags.py",
+    "/app/test_reports/pytest/iter12_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 2582 lines (up from 2477) — still well above the 700-line guideline. The /admin/* surface (reports, csam, watchlist, audit, promote, users-by-handle, mark-minor, mark-18plus, purge-demo-accounts) is ~600+ lines and the obvious next router-extraction candidate (backend/routers/admin.py).",
+    "admin_mark_minor and admin_mark_18plus accept untyped dict payloads. Other admin endpoints in this file use Pydantic models — these two should follow suit (MarkMinorIn / Mark18PlusIn) for consistent 422-on-bad-shape and OpenAPI docs.",
+    "When unlocking a minor (locked:false), code restores is_minor via calc_age(target.get('dob','1900-01-01')) < 18. The same 1900-01-01 fallback is used in the lookup endpoint. Centralizing this in a helper (e.g. dob_to_is_minor(user)) would prevent drift if the cutoff logic changes.",
+    "Lookup endpoint returns 13 fields directly — for symmetry with the rest of the admin surface, consider a Pydantic response_model so the contract is enforced and documented.",
+    "Frontend Admin.jsx is 460 lines and houses 5 unrelated tabs + their handlers + their JSX. Splitting into <ReportsTab/>, <CsamTab/>, <WatchlistTab/>, <UsersTab/>, <AuditTab/> would improve readability and make each tab independently testable."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter12_admin_flags.py (new)",
+    "/app/test_reports/pytest/iter12_results.xml (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14)",
+    "frontend": "100% — all selectors present, lookup → flag → unflag → lock → unlock flow works, mutual-exclusion disabled-state verified in both directions, no console page errors."
+  },
+  "test_credentials": "admin@clanchat.app / admin123 ; alice@clanchat.app / Password123! ; bob@clanchat.app / Password123! ; teen@clanchat.app / Password123! — all verified working",
+  "seed_data_creation": "Multiple admin_mark_minor and admin_mark_18plus audit events appended for bob during the run (transient state — bob is restored to no-flags at end). No persistent data changes for any other user.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend coverage: /app/backend/tests/test_iter12_admin_flags.py — 14 tests, all green. Key flows covered: lookup (200/404/403), mark-18plus (set/unset/missing-reason-400), mark-minor (set/unset/missing-reason-400), mutual-exclusion both ways (409 with literal error messages), applied behaviour (alice cannot follow locked-minor bob → 403, teen cannot see 18+-flagged bob in /users/search), audit trail. Frontend coverage via Playwright: /admin → admin-tab-users → lookup bob → user-card-bob → reason-required toast → toggle 18+ → admin-flagged label + 'Remove 18+ flag' text + minor-button disabled → unflag → lock-minor → 'admin-locked' + 18+-button disabled → unlock. Use page.on('dialog', auto-accept) to handle the confirm() prompts on lock/flag actions — toggleMinorLock and toggleCreatorFlag both call window.confirm. Onboarding modal can intercept clicks on first run — press Esc after each navigation, or use force=True clicks.",
+  "verified_flows": {
+    "backend_lookup_admin_ok": "GET /api/admin/users/by-handle/bob as admin → 200 with all 13 expected keys",
+    "backend_lookup_404": "GET /api/admin/users/by-handle/nonexistent_handle_zzz → 404",
+    "backend_lookup_non_admin": "GET /api/admin/users/by-handle/bob as alice → 401/403",
+    "backend_mark18_missing_reason": "POST /mark-18plus {is_creator:true} no reason → 400",
+    "backend_mark18_set": "POST /mark-18plus {is_creator:true, reason:'app approved'} → 200, nsfw_account+flagged_18plus_by_admin true, reason persisted",
+    "backend_mark18_unset_no_reason": "POST /mark-18plus {is_creator:false} → 200, fields cleared, no reason required",
+    "backend_mark_minor_missing_reason": "POST /mark-minor {locked:true} no reason → 400",
+    "backend_mark_minor_set": "POST /mark-minor {locked:true, reason:'safety hold'} → 200, is_minor true even though DOB is adult, minor_locked_by_admin true",
+    "backend_mark_minor_unset": "POST /mark-minor {locked:false} → 200, is_minor reverts to DOB-derived (false for bob)",
+    "backend_mutex_18plus_then_minor": "Flag 18+ then lock minor → 409 'Account is flagged as 18+ creator. Remove that flag first.'",
+    "backend_mutex_minor_then_18plus": "Lock minor then flag 18+ → 409 'Account is a minor (DOB or admin-locked). Cannot flag as 18+ creator.'",
+    "backend_applied_locked_minor_blocks_follow": "alice POST /follow/{bob_id} after bob is admin-locked-minor → 403",
+    "backend_applied_18plus_hidden_from_teen": "teen GET /users/search?q=bob after bob flagged 18+ → bob NOT in results",
+    "backend_audit_trail": "GET /admin/audit?limit=30 includes admin_mark_minor and admin_mark_18plus events with target_user_id, target_handle, reason, admin_id, at",
+    "frontend_users_tab_visible": "All 5 admin tabs (reports, csam, watchlist, users, audit) render with correct data-testid",
+    "frontend_lookup_form": "user-lookup-handle input + user-lookup-submit button render and submit on Enter or click",
+    "frontend_user_card_render": "user-card-bob shows two status boxes (is_minor + 18+ creator) with DOB-derived flag and admin-flagged indicator",
+    "frontend_reason_required_toast": "Clicking user-toggle-18plus with empty user-flag-reason → toast 'Reason required (audit trail)' appears",
+    "frontend_flag_18plus_flow": "Fill reason → click user-toggle-18plus → confirm dialog auto-accepted → card refreshes with nsfw_account:true, admin-flagged label, button text becomes 'Remove 18+ flag'",
+    "frontend_mutex_minor_disabled": "When bob is flagged 18+, user-toggle-minor button is_disabled=True; after removing flag it re-enables",
+    "frontend_mutex_18plus_disabled": "When bob is locked as minor, user-toggle-18plus button is_disabled=True; after unlock it re-enables",
+    "frontend_cleanup": "Bob ends run with no flags (verified via /admin/users/by-handle/bob)"
+  },
+  "rca of the issue": "n/a — no production bug. Feature works end-to-end as specified."
+}
