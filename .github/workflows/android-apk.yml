@@ -1,0 +1,102 @@
+name: Build Android APK
+
+# Builds a debug-signed APK for ClanChat on every push to main and on every
+# manually-triggered run. The APK is uploaded as a workflow artifact that
+# testers can download directly from the Actions tab — no Android Studio
+# required on the user's machine.
+#
+# Workflow Dispatch URL (after first push):
+#   https://github.com/<your-account>/<repo>/actions/workflows/android-apk.yml
+#
+# Each successful run produces:
+#   - ClanChat-debug.apk  (sideload-ready, ~10 MB)
+# Testers install it by enabling "Install unknown apps" for their browser
+# or file manager on Android, then tapping the APK file.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/android-apk.yml"
+  workflow_dispatch: {}
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "yarn"
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: yarn install --frozen-lockfile
+
+      - name: Build web bundle
+        working-directory: frontend
+        env:
+          # Production API base — testers' APK talks to the live deploy.
+          # Override this to point at staging/preview if you fork the
+          # workflow for testing branches.
+          REACT_APP_BACKEND_URL: https://clanchat.app
+          CI: "false"  # CRA treats warnings as errors when CI=true; we don't want that to fail the APK
+        run: yarn build
+
+      - name: Add Capacitor Android platform
+        working-directory: frontend
+        run: |
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
+      - name: Copy launcher icons
+        working-directory: frontend
+        run: |
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            src="android-resources/mipmap-$d"
+            dest="android/app/src/main/res/mipmap-$d"
+            mkdir -p "$dest"
+            cp "$src/ic_launcher.png" "$dest/ic_launcher.png"
+            cp "$src/ic_launcher_round.png" "$dest/ic_launcher_round.png"
+            cp "$src/ic_launcher_foreground.png" "$dest/ic_launcher_foreground.png"
+          done
+
+      - name: Make gradlew executable
+        working-directory: frontend/android
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        working-directory: frontend/android
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Rename APK
+        working-directory: frontend/android
+        run: |
+          src="app/build/outputs/apk/debug/app-debug.apk"
+          mkdir -p ../../dist
+          cp "$src" "../../dist/ClanChat-debug.apk"
+          ls -lh ../../dist/
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClanChat-debug-apk
+          path: dist/ClanChat-debug.apk
+          retention-days: 30
+          if-no-files-found: error

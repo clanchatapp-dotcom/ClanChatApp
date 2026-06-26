@@ -1,101 +1,103 @@
-# ClanChat — Native App (Capacitor) Build Guide
+# ClanChat — Native APK Build Guide
 
-This document explains how to wrap the existing React web app into native
-**iOS** and **Android** binaries using [Capacitor](https://capacitorjs.com)
-so we can ship to the App Store / Play Store without rewriting in React Native.
+## TL;DR for testers
 
-## What's already in place
+1. Go to the repo's **Actions** tab on GitHub.
+2. Click the latest successful **Build Android APK** run.
+3. Download the **`ClanChat-debug-apk`** artifact (~10 MB zip → `ClanChat-debug.apk` inside).
+4. Open the APK on the Android phone. If Android warns about an unknown source, allow it for your browser or file manager. Install.
+5. Open ClanChat — it logs you in to the live production data at https://clanchat.app.
 
-- `frontend/capacitor.config.js` — app id `app.clanchat.mobile`, status bar
-  + splash screen tuned for the true-black aesthetic, mixed content blocked.
-- The web app is already mobile-first, so no UI changes are required.
-- All API calls go through `REACT_APP_BACKEND_URL` — Capacitor passes that
-  through to the webview, so prod/staging URLs work the same.
+## How it works
 
-## One-time setup (on a Mac for iOS)
+This repo's GitHub Actions workflow at `.github/workflows/android-apk.yml` builds a debug-signed APK on every push to `main` (and any manual trigger via the **Run workflow** button). The APK is a thin Capacitor shell wrapping the React web app — same code that ships to https://clanchat.app, same data.
+
+- App ID: `app.clanchat.mobile`
+- Display name: **ClanChat**
+- Launcher icon: brand shield-and-sword from `frontend/android-resources/`
+- Splash + status bar: true-black
+
+## How to ship a new build
 
 ```bash
-cd /app/frontend
+# 1. Make code changes in this repo (or via Emergent → Save to GitHub)
+# 2. Push to main
+git push origin main
 
-# 1. Install Capacitor core + CLI + iOS/Android platforms
-yarn add @capacitor/core @capacitor/cli
-yarn add @capacitor/ios @capacitor/android
-yarn add @capacitor/splash-screen @capacitor/status-bar @capacitor/preferences
+# 3. GitHub Actions auto-runs (~6-8 minutes total)
+#    Watch progress at: https://github.com/<you>/<repo>/actions
 
-# 2. Build the React app
-yarn build
-
-# 3. Initialise native platforms (creates ios/ and android/ folders)
-npx cap add ios
-npx cap add android
-
-# 4. Sync web build into native projects
-npx cap sync
+# 4. Once green, download the artifact. Distribute to testers.
 ```
 
-## Auth migration required for native
+## Local Android Studio build (alternative)
 
-The current web app authenticates via **httpOnly cookies** (set by the
-backend on `/api/auth/login`). Webviews on iOS/Android either drop or
-sandbox these cookies, causing logout-on-relaunch issues.
+If you want to iterate locally with Android Studio:
 
-**Required change before shipping native:**
+```bash
+cd frontend
+yarn install
+yarn build
+npx cap add android        # first time only
+npx cap sync android
+# Copy launcher icons (first time only):
+for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+  cp android-resources/mipmap-$d/ic_launcher.png         android/app/src/main/res/mipmap-$d/
+  cp android-resources/mipmap-$d/ic_launcher_round.png   android/app/src/main/res/mipmap-$d/
+  cp android-resources/mipmap-$d/ic_launcher_foreground.png android/app/src/main/res/mipmap-$d/
+done
+npx cap open android       # opens Android Studio
+```
 
-1. Add a `/api/auth/login-bearer` endpoint that returns the JWT in the
-   response body instead of setting cookies. (Easy — pull JWT issuance out of
-   the existing `set_auth_cookies` helper.)
-2. On native, store the token via `@capacitor/preferences` (secure encrypted
-   storage on iOS Keychain / Android EncryptedSharedPreferences).
-3. Update `lib/api.js` axios interceptor to attach `Authorization: Bearer
-   <token>` when running in Capacitor (`Capacitor.isNativePlatform()`).
+## iOS build (Mac required)
 
-The backend already supports bearer auth via the same `get_current_user`
-dependency — we just need a body-returning login endpoint.
+```bash
+cd frontend
+yarn add @capacitor/ios
+yarn build
+npx cap add ios
+npx cap sync ios
+npx cap open ios           # opens Xcode — sign with your team, archive, distribute via TestFlight
+```
 
-## Push notifications (FCM + APNs)
+## Auth — current state & migration plan
+
+The APK loads `https://clanchat.app` directly. Cookies set by login on that domain are stored in the Capacitor WebView's cookie jar, so sessions persist across app launches the same way they do in a phone browser.
+
+**This works today.** If you ever notice testers getting logged out on cold launch, that's the trigger to migrate to bearer tokens:
+
+1. Add `POST /api/auth/login-bearer` that returns `{ access_token }` in body (same JWT, just not in a cookie).
+2. On native, store the token via `@capacitor/preferences` (encrypted keychain / EncryptedSharedPreferences).
+3. Update `frontend/src/lib/api.js` axios interceptor to attach `Authorization: Bearer <token>` when `Capacitor.isNativePlatform()` is true.
+4. Comment out the `server.url` block in `capacitor.config.js` so the bundled `build/` ships instead.
+
+## Push notifications (deferred)
+
+Not in the testing APK. Hook-up path:
 
 ```bash
 yarn add @capacitor/push-notifications
 ```
 
-Backend needs to:
-1. Store device tokens per user (`device_tokens` collection: `{user_id, token, platform, last_seen}`).
-2. Add a worker that sends push on: new follow/IC accept, new DM, new
-   group chat message, tag approved, strike issued.
-3. Use FCM HTTP v1 API (free tier) + APNs HTTP/2.
+Backend needs a `device_tokens` collection + a worker that fires FCM/APNs on new follow/IC accept/new DM/new group message/tag approved/strike issued. Roughly 4 hours of work when you're ready.
 
-## Deep links
+## Deep links (deferred)
 
-Capacitor supports universal links / app links out of the box. Recommended scheme:
+Out of scope for testing APK. When you want them:
 
-- `https://clanchat.app/u/<handle>` → opens Profile
-- `https://clanchat.app/p/<post_id>` → opens Post
-- `clanchat://t/<tag>` → opens TagView
+- `https://clanchat.app/u/<handle>` → Profile (works today via in-app navigation)
+- `clanchat://p/<post_id>` → Post detail
+- Configure via Android `intent-filter` in `AndroidManifest.xml` and iOS Associated Domains entitlement.
 
-Configure in `capacitor.config.js` under `server.androidScheme` and the iOS
-Associated Domains entitlement.
+## Estimated time to App Store + Play Store
 
-## Build & ship
-
-```bash
-# iOS — open in Xcode, sign with team, archive, upload to App Store Connect
-npx cap open ios
-
-# Android — open in Android Studio, signed APK / AAB for Play Console
-npx cap open android
-```
-
-## Estimated effort to ship
-
-| Step                              | Time     |
-|-----------------------------------|----------|
-| Capacitor install + first sync    | 30 min   |
-| Auth → bearer token migration     | 2 hours  |
-| Push notifications wiring         | 4 hours  |
-| Deep links                        | 1 hour   |
-| App icons / splash assets         | 1 hour   |
-| Beta builds → TestFlight + Play   | 1 hour   |
-| Store listings + screenshots      | 2 hours  |
-| **Total**                         | ~1.5 days|
-
-App Store / Play Store review queues add 1–3 days of waiting on top.
+| Step                                      | Time     |
+|-------------------------------------------|----------|
+| GitHub Actions APK (already done)         | ✅ 0     |
+| Auth → bearer token migration             | 2 hours  |
+| Push notifications wiring                 | 4 hours  |
+| Deep links                                | 1 hour   |
+| iOS first build (TestFlight beta)         | 1 hour   |
+| Play Console signed AAB + listing         | 2 hours  |
+| Store review queues                       | 1–3 days |
+| **Total active work**                     | ~1.5 days|

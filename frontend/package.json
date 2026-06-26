@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@capacitor-community/privacy-screen": "^8.0.0",
+    "@capacitor/android": "^7",
+    "@capacitor/cli": "^7",
+    "@capacitor/core": "^7",
+    "@capacitor/preferences": "^7",
+    "@capacitor/splash-screen": "^7",
+    "@capacitor/status-bar": "^7",
     "@hookform/resolvers": "5.0.1",
     "@radix-ui/react-accordion": "1.2.8",
     "@radix-ui/react-alert-dialog": "1.1.11",

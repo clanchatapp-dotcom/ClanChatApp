@@ -1,8 +1,34 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import api, { fileUrl, formatApiError } from "../lib/api";
-import { Send, Paperclip, X, Search } from "lucide-react";
+import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
+
+// Native screenshot-block bridge. On the Android Capacitor APK we set
+// FLAG_SECURE on the window while a "no screenshots" thread is open. On
+// web/iOS this is a no-op (no platform API exists to block screenshots).
+async function setNativeScreenshotBlock(block) {
+  try {
+    const Cap = window.Capacitor;
+    if (!Cap?.isNativePlatform?.()) return false;
+    if (Cap.getPlatform?.() !== "android") return false;
+    // Try the community privacy-screen plugin first (most ergonomic).
+    if (Cap.Plugins?.PrivacyScreen?.enable && block) {
+      await Cap.Plugins.PrivacyScreen.enable();
+      return true;
+    }
+    if (Cap.Plugins?.PrivacyScreen?.disable && !block) {
+      await Cap.Plugins.PrivacyScreen.disable();
+      return true;
+    }
+    // Fallback: WindowSecure plugin if PrivacyScreen isn't installed.
+    if (Cap.Plugins?.WindowSecure?.setSecure) {
+      await Cap.Plugins.WindowSecure.setSecure({ secure: !!block });
+      return true;
+    }
+  } catch (e) { console.warn("native screenshot block failed", e); }
+  return false;
+}
 
 export function Messages() {
   const [threads, setThreads] = useState([]);
@@ -72,6 +98,16 @@ export function MessageThread() {
   };
   useEffect(() => { load(); }, [userId]);
 
+  // Activate native screenshot block when allowed===false. Cleared on unmount
+  // OR when the user navigates to another thread that does allow screenshots.
+  useEffect(() => {
+    if (!data) return;
+    // Self-DM is always treated as allowed (you can screenshot your own notes)
+    const block = !data.screenshots_allowed && !data.with?.is_self;
+    setNativeScreenshotBlock(block);
+    return () => { setNativeScreenshotBlock(false); };
+  }, [data?.screenshots_allowed, data?.with?.is_self, data]);
+
   const onPickFiles = async (e) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
@@ -136,6 +172,28 @@ export function MessageThread() {
           <Link to={`/u/${data.with?.handle}`} className="font-heading text-2xl">#{data.with?.handle}</Link>
         )}
       </header>
+
+      {/* Screenshot policy banner — hidden on the self thread (no need). */}
+      {!data.with?.is_self && (
+        <div
+          data-testid="dm-screenshot-banner"
+          className={`mb-3 px-3 py-2 rounded-xl text-[11px] flex items-start gap-2 ${
+            data.screenshots_allowed
+              ? "border border-emerald-500/30 bg-emerald-500/5 text-emerald-200"
+              : "border border-amber-500/30 bg-amber-500/5 text-amber-200"
+          }`}
+        >
+          {data.screenshots_allowed ? <ShieldCheck size={13} className="mt-0.5 shrink-0" /> : <ShieldAlert size={13} className="mt-0.5 shrink-0" />}
+          <span>
+            {data.screenshots_allowed
+              ? <>Both of you allow screenshots in this thread.</>
+              : <>
+                  Screenshots blocked on the ClanChat Android app (one or both of you opted in to privacy).
+                  On web &amp; iOS the platform can&apos;t actually prevent screenshots — assume any message could be captured.
+                </>}
+          </span>
+        </div>
+      )}
 
       {/* Search bar — shown on every thread, especially useful for self-DM */}
       <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-900 rounded-full px-3 py-1.5 mb-4">

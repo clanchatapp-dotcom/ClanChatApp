@@ -18,6 +18,7 @@ export default function Settings() {
   const [taggableBy, setTaggableBy] = useState(s.taggable_by || "followers");
   const [tagApproval, setTagApproval] = useState(!!s.tag_approval_mode);
   const [realNameVis, setRealNameVis] = useState(s.real_name_visibility || "nobody");
+  const [dmScreenshots, setDmScreenshots] = useState(!!s.dm_screenshots_allowed);
   // comfort zone
   const [nsfw, setNsfw] = useState(!!cz.nsfw);
   const [ai, setAi] = useState(cz.ai_content !== false);
@@ -40,6 +41,7 @@ export default function Settings() {
           taggable_by: taggableBy,
           tag_approval_mode: tagApproval,
           real_name_visibility: realNameVis,
+          dm_screenshots_allowed: dmScreenshots,
           comfort_zone: {
             nsfw, ai_content: ai, strong_language: strong, violence,
             sensitive, anonymous_accounts: anon,
@@ -141,6 +143,20 @@ export default function Settings() {
         <Toggle label="Allow DMs from approved followers (Tier 2)"
           checked={dmsFollowers} onChange={setDmsFollowers} testId="toggle-dms-followers" />
         <p className="text-xs text-zinc-600 mt-2">Tier 1 has no DMs. Inner Circle DMs are controlled per-member.</p>
+
+        <div className="mt-4 pt-4 border-t border-zinc-900">
+          <Toggle
+            label="Allow screenshots of my DMs"
+            checked={dmScreenshots}
+            onChange={setDmScreenshots}
+            testId="toggle-dm-screenshots"
+          />
+          <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
+            Off by default. Screenshots are only allowed in a thread when <strong>both</strong> people have this on.
+            On the <strong>Android app</strong> this triggers the OS-level screenshot block (FLAG_SECURE) and prevents screen recording too.
+            On the <strong>web and iOS</strong> the platforms don&apos;t allow apps to block screenshots — we show a warning banner instead so both parties know the protection is partial.
+          </p>
+        </div>
       </Section>
 
       <Section title="My Comfort Zone">
@@ -195,10 +211,19 @@ function Section({ title, children }) {
 
 function Toggle({ label, checked, onChange, testId, disabled }) {
   return (
-    <label className={`flex items-center justify-between p-3 border border-zinc-900 rounded-xl mt-2 ${disabled ? "opacity-50" : "cursor-pointer"}`}>
+    <label
+      data-testid={testId}
+      className={`flex items-center justify-between p-3 border border-zinc-900 rounded-xl mt-2 ${disabled ? "opacity-50" : "cursor-pointer"}`}
+    >
       <span className="text-sm">{label}</span>
-      <input data-testid={testId} type="checkbox" checked={checked} disabled={disabled}
-        onChange={e => onChange(e.target.checked)} className="accent-[#FF5A00]" />
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="accent-[#FF5A00] pointer-events-none"
+        aria-label={label}
+      />
     </label>
   );
 }

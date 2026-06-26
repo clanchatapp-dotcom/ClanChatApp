@@ -193,6 +193,7 @@ def default_settings() -> dict:
         "taggable_by": "followers",       # anyone | followers | inner | nobody
         "tag_approval_mode": False,       # if True, all tags require approval
         "real_name_visibility": "nobody", # nobody | inner | followers | everyone
+        "dm_screenshots_allowed": False,  # both parties must opt-in; default OFF (privacy-first)
         "onboarded": False,
         "comfort_zone": {
             "nsfw": False,
@@ -1534,12 +1535,22 @@ async def dm_history(other_id: str, user=Depends(get_current_user)):
         msgs.append(m)
     if is_self:
         other = {**user, "display_name": "Me, myself and I"}
-        return {"messages": msgs, "with": {**public_user(other), "is_self": True}, "can_send": True, "reason": ""}
+        return {"messages": msgs, "with": {**public_user(other), "is_self": True}, "can_send": True, "reason": "", "screenshots_allowed": True}
     other = await db.users.find_one({"user_id": other_id}, {"_id": 0})
     ok, reason = (False, "")
     if other:
         ok, reason = await can_dm(user, other)
-    return {"messages": msgs, "with": public_user(other) if other else None, "can_send": ok, "reason": reason}
+    # Screenshots allowed only when BOTH sides have opted in. Default off.
+    my_pref = (user.get("settings") or {}).get("dm_screenshots_allowed", False)
+    other_pref = ((other or {}).get("settings") or {}).get("dm_screenshots_allowed", False)
+    screenshots_allowed = bool(my_pref and other_pref)
+    return {
+        "messages": msgs,
+        "with": public_user(other) if other else None,
+        "can_send": ok,
+        "reason": reason,
+        "screenshots_allowed": screenshots_allowed,
+    }
 
 
 # ------------------------------------------------------------------
