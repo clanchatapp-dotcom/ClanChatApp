@@ -22,6 +22,7 @@ import Admin from "./pages/Admin";
 import AdminWatch from "./pages/AdminWatch";
 import TagApprovals from "./pages/TagApprovals";
 import MyConnections from "./pages/MyConnections";
+import Install from "./pages/Install";
 import { Toaster } from "sonner";
 
 function Protected({ children }) {
@@ -60,6 +61,7 @@ function AppRouter() {
         <Route path="/admin/watch/:userId" element={<Protected><AdminWatch /></Protected>} />
         <Route path="/tags" element={<Protected><TagApprovals /></Protected>} />
         <Route path="/me/:kind" element={<Protected><MyConnections /></Protected>} />
+        <Route path="/install" element={<Install />} />
         <Route path="/b/:boardId" element={<Protected><BoardView /></Protected>} />
         <Route path="/t/:tag" element={<Protected><TagView /></Protected>} />
         <Route path="*" element={<Navigate to="/feed" replace />} />

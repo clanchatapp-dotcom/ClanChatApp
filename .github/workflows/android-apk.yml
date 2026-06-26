@@ -65,6 +65,30 @@ jobs:
           fi
           npx cap sync android
 
+      - name: Inject Android media permissions
+        working-directory: frontend/android/app/src/main
+        run: |
+          # Add READ_MEDIA_IMAGES + READ_MEDIA_VIDEO (Android 13+) and the
+          # legacy READ_EXTERNAL_STORAGE for older devices, scoped to
+          # <33 via maxSdkVersion. This lets users pick photos/videos for
+          # posts and DMs after granting consent.
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("AndroidManifest.xml")
+          x = p.read_text()
+          perms = [
+              '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />',
+              '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
+              '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
+          ]
+          for line in perms:
+              if line.split('android:name="')[1].split('"')[0] not in x:
+                  x = x.replace("<application", line + "\n    <application", 1)
+          p.write_text(x)
+          print("manifest patched:")
+          print(x)
+          PY
+
       - name: Copy launcher icons
         working-directory: frontend
         run: |

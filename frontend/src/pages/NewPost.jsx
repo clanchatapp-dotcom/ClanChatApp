@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import api, { formatApiError, fileUrl } from "../lib/api";
 import { Sparkles, X, ImagePlus, AlertTriangle, ShieldAlert, AtSign, Music2 } from "lucide-react";
 import { toast } from "sonner";
+import useMediaPermission from "../hooks/useMediaPermission";
 
 const TIERS = [
   { id: "public", label: "Public", desc: "Everyone can see" },
@@ -36,6 +37,7 @@ export default function NewPost() {
   // Audio track
   const [isAudio, setIsAudio] = useState(false);
   const fileRef = useRef(null);
+  const { ensureMediaPermission, MediaPermissionDialog } = useMediaPermission();
 
   const runPeopleSearch = async (v) => {
     setPeopleSearch(v);
@@ -176,7 +178,7 @@ export default function NewPost() {
       )}
 
       <div className="flex items-center gap-3 mt-3">
-        <button onClick={() => fileRef.current?.click()} className="cc-btn-secondary py-2 px-4 text-sm inline-flex items-center gap-2" data-testid="upload-btn">
+        <button onClick={async () => { if (await ensureMediaPermission()) fileRef.current?.click(); }} className="cc-btn-secondary py-2 px-4 text-sm inline-flex items-center gap-2" data-testid="upload-btn">
           <ImagePlus size={16} /> Add media
         </button>
         <input ref={fileRef} type="file" accept="image/*,video/*" multiple onChange={onFiles} className="hidden" data-testid="upload-input" />
@@ -324,6 +326,7 @@ export default function NewPost() {
       <button onClick={submit} disabled={busy} className="cc-btn-primary w-full mt-6" data-testid="submit-post">
         {busy ? "Posting…" : `Post to ${TIERS.find(t => t.id === tier).label}`}
       </button>
+      <MediaPermissionDialog />
     </div>
   );
 }

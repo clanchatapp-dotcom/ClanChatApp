@@ -3,6 +3,7 @@ import { Link, useParams, useNavigate } from "react-router-dom";
 import api, { fileUrl, formatApiError } from "../lib/api";
 import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
+import useMediaPermission from "../hooks/useMediaPermission";
 
 // Native screenshot-block bridge. On the Android Capacitor APK we set
 // FLAG_SECURE on the window while a "no screenshots" thread is open. On
@@ -88,6 +89,7 @@ export function MessageThread() {
   const [pendingMedia, setPendingMedia] = useState([]); // [{path, kind, name}]
   const [query, setQuery] = useState("");
   const fileRef = useRef(null);
+  const { ensureMediaPermission, MediaPermissionDialog } = useMediaPermission();
 
   const load = async () => {
     try {
@@ -279,7 +281,7 @@ export function MessageThread() {
           <button
             type="button"
             data-testid="dm-attach"
-            onClick={() => fileRef.current?.click()}
+            onClick={async () => { if (await ensureMediaPermission()) fileRef.current?.click(); }}
             disabled={!data.can_send || pendingMedia.length >= 4 || busy}
             className="p-2 text-zinc-400 hover:text-[#FF5A00] disabled:opacity-40"
             aria-label="Attach"
@@ -312,6 +314,7 @@ export function MessageThread() {
           </button>
         </div>
       </form>
+      <MediaPermissionDialog />
     </div>
   );
 }
