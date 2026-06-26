@@ -12,12 +12,15 @@ const config = {
   server: {
     androidScheme: "https",
     // Self-contained mode: the APK loads the bundled React build from
-    // `frontend/build/` instead of fetching the live web app from
-    // clanchat.app every time it opens. This means UI updates ship with
-    // each new APK and the app works fully offline (apart from API calls).
-    // Auth uses bearer tokens (see frontend/src/lib/api.js) because the
-    // Capacitor WebView origin is `https://localhost`, which can't share
-    // cookies with the `clanchat.app` backend.
+    // `frontend/build/` (no remote URL). The WebView origin is
+    // `https://localhost`, so we use bearer tokens for auth (see
+    // frontend/src/lib/api.js) — cookies can't be shared across origins
+    // with the clanchat.app backend.
+    //
+    // For login to work, the production backend at clanchat.app MUST have
+    // the updated CORS regex that allows `https://localhost` (added in
+    // server.py). Redeploy the backend before installing a new APK or
+    // logins will fail with "Disallowed CORS origin".
     cleartext: false,
   },
   android: {
