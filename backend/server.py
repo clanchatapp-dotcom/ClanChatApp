@@ -2584,7 +2584,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     allow_origins=[os.environ.get("FRONTEND_URL", "*")],
-    allow_origin_regex=r"https://.*\.preview\.emergentagent\.com",
+    # Allow Emergent preview URLs and the Capacitor APK WebView origins.
+    # On Android the bundled APK serves from `https://localhost` (set by
+    # `androidScheme: "https"` in capacitor.config.js); the older capacitor
+    # scheme `capacitor://localhost` is kept for safety.
+    allow_origin_regex=r"https://.*\.preview\.emergentagent\.com|https://localhost(:\d+)?|capacitor://localhost",
     allow_methods=["*"], allow_headers=["*"],
 )
 

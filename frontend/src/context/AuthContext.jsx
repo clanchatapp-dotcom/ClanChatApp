@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
-import api from "../lib/api";
+import api, { rememberToken, forgetToken } from "../lib/api";
 
 const AuthContext = createContext(null);
 
@@ -31,16 +31,19 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
+    if (data.access_token) await rememberToken(data.access_token);
     setUser(data.user);
     return data.user;
   };
   const register = async (payload) => {
     const { data } = await api.post("/auth/register", payload);
+    if (data.access_token) await rememberToken(data.access_token);
     setUser(data.user);
     return data.user;
   };
   const logout = async () => {
     try { await api.post("/auth/logout"); } catch (e) { console.warn("logout failed", e); }
+    await forgetToken();
     setUser(null);
   };
   const refresh = async () => {

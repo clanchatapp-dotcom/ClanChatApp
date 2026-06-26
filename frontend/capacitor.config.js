@@ -11,11 +11,13 @@ const config = {
   bundledWebRuntime: false,
   server: {
     androidScheme: "https",
-    // Until we ship a bearer-token auth migration (see CAPACITOR.md), the
-    // native APK loads the production web app directly so cookies & login
-    // continue to work seamlessly. Once auth migrates to tokens, comment
-    // these out and Capacitor will load the bundled `build/` directory.
-    url: "https://clanchat.app",
+    // Self-contained mode: the APK loads the bundled React build from
+    // `frontend/build/` instead of fetching the live web app from
+    // clanchat.app every time it opens. This means UI updates ship with
+    // each new APK and the app works fully offline (apart from API calls).
+    // Auth uses bearer tokens (see frontend/src/lib/api.js) because the
+    // Capacitor WebView origin is `https://localhost`, which can't share
+    // cookies with the `clanchat.app` backend.
     cleartext: false,
   },
   android: {
