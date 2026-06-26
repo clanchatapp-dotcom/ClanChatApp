@@ -75,8 +75,8 @@ export default function Settings() {
           <details className="mt-2">
             <summary className="text-xs text-zinc-500 cursor-pointer">View history</summary>
             <ul className="mt-2 space-y-1">
-              {user.strike_history.map((h, i) => (
-                <li key={i} className="text-xs text-zinc-400 border-l-2 border-zinc-800 pl-2">
+              {user.strike_history.map((h) => (
+                <li key={`${h.applied_at}-${h.level}`} className="text-xs text-zinc-400 border-l-2 border-zinc-800 pl-2">
                   Strike {h.level} · {h.reason} · {new Date(h.applied_at).toLocaleDateString()}
                 </li>
               ))}

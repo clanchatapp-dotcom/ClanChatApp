@@ -163,7 +163,7 @@ export default function NewPost() {
       {media.length > 0 && (
         <div className="grid grid-cols-2 gap-2 mt-3">
           {media.map((m, i) => (
-            <div key={i} className="relative aspect-square rounded-2xl overflow-hidden border border-zinc-900">
+            <div key={m.path} className="relative aspect-square rounded-2xl overflow-hidden border border-zinc-900">
               {m.content_type?.startsWith("video") ? (
                 <video src={fileUrl(m.path)} className="w-full h-full object-cover" />
               ) : (

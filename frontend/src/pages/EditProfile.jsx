@@ -12,7 +12,11 @@ export default function EditProfile() {
   const [bio, setBio] = useState(user.bio || "");
   const [realName, setRealName] = useState(user.real_name || "");
   const [realNameVis, setRealNameVis] = useState(user.settings?.real_name_visibility || "nobody");
-  const [links, setLinks] = useState(user.links?.length ? user.links : []);
+  const [links, setLinks] = useState(
+    user.links?.length
+      ? user.links.map((l, i) => ({ ...l, _key: l._key || `seed-${i}-${l.url || ""}` }))
+      : []
+  );
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
@@ -22,7 +26,10 @@ export default function EditProfile() {
         display_name: displayName, bio,
         real_name: realName,
         real_name_visibility: realNameVis,
-        links: links.filter(l => l.label && l.url),
+        links: links
+          .filter(l => l.label && l.url)
+          // Strip internal `_key` (used only for stable React keys on this form)
+          .map(({ label, url }) => ({ label, url })),
       });
       toast.success("Profile updated");
       refresh();
@@ -67,7 +74,7 @@ export default function EditProfile() {
       <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">Links</label>
       <div className="flex flex-col gap-2 mt-2 mb-4">
         {links.map((l, i) => (
-          <div key={i} className="flex gap-2">
+          <div key={l._key} className="flex gap-2">
             <input className="cc-input flex-1" placeholder="Label" value={l.label}
               data-testid={`link-label-${i}`}
               onChange={e => setLinks(links.map((x, idx) => idx === i ? { ...x, label: e.target.value } : x))} />
@@ -78,7 +85,7 @@ export default function EditProfile() {
           </div>
         ))}
         {links.length < 10 && (
-          <button data-testid="add-link" onClick={() => setLinks([...links, { label: "", url: "" }])} className="cc-btn-secondary text-xs py-2 inline-flex items-center gap-2 justify-center">
+          <button data-testid="add-link" onClick={() => setLinks([...links, { label: "", url: "", _key: `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }])} className="cc-btn-secondary text-xs py-2 inline-flex items-center gap-2 justify-center">
             <Plus size={14} /> Add link
           </button>
         )}

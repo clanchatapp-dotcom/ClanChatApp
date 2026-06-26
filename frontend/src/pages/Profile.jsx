@@ -137,8 +137,8 @@ export default function Profile() {
 
         {target.links?.length > 0 && (
           <div className="flex flex-wrap gap-2 justify-center mt-3">
-            {target.links.map((l, i) => (
-              <a key={i} href={l.url} target="_blank" rel="noopener noreferrer"
+            {target.links.map((l) => (
+              <a key={`${l.url}-${l.label}`} href={l.url} target="_blank" rel="noopener noreferrer"
                 className="text-xs text-[#FF5A00] inline-flex items-center gap-1 hover:underline">
                 <LinkIcon size={12} /> {l.label}
               </a>

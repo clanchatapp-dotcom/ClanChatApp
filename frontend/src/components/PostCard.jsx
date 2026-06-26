@@ -134,8 +134,8 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
 
       {post.media?.length > 0 && (
         <div className={`grid gap-2 ${post.media.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
-          {post.media.map((m, i) => (
-            <div key={i} className="overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950">
+          {post.media.map((m) => (
+            <div key={m} className="overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950">
               {/\.(mp4|webm|mov)$/i.test(m) ? (
                 <video src={fileUrl(m)} controls className="w-full h-full object-cover" />
               ) : (
