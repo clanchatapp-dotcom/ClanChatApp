@@ -235,6 +235,5 @@ export default function AdminWatch() {
           </div>
         )}
       </div>
-    </div>
   );
 }
