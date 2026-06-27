@@ -88,6 +88,10 @@ html.light, html.light body, html.light #root { background: #ffffff; color: #0a0
     min-height: 100vh;
     position: relative;
     padding-bottom: 88px;
+    /* Add safe-area-inset-top so the page header sits below the Android
+       status bar (battery / time / wifi icons) instead of underlapping it.
+       Falls back to 0 on the web where the inset isn't set. */
+    padding-top: env(safe-area-inset-top, 0px);
     border-left: 1px solid #18181B;
     border-right: 1px solid #18181B;
 }
@@ -97,6 +101,7 @@ html.light, html.light body, html.light #root { background: #ffffff; color: #0a0
         max-width: none;
         margin: 0;
         padding-bottom: 0;
+        padding-top: 0;
         border-left: none;
         border-right: none;
     }

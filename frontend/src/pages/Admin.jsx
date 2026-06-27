@@ -214,13 +214,13 @@ export default function Admin() {
         </div>
       )}
 
-      <div className="flex gap-1 mb-4 border-b border-zinc-900">
+      <div className="flex gap-1 mb-4 border-b border-zinc-900 overflow-x-auto no-scrollbar -mx-5 px-5">
         {TABS.map((t) => (
           <button
             key={t.id}
             data-testid={`admin-tab-${t.id}`}
             onClick={() => setTab(t.id)}
-            className={`px-4 py-2 text-xs uppercase tracking-[0.2em] border-b-2 transition ${
+            className={`shrink-0 px-3 py-2 text-[11px] uppercase tracking-[0.12em] border-b-2 transition whitespace-nowrap ${
               tab === t.id ? "border-[#FF5A00] text-[#FF5A00]" : "border-transparent text-zinc-500"
             }`}
           >
