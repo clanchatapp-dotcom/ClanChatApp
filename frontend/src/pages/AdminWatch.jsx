@@ -183,13 +183,6 @@ export default function AdminWatch() {
     })}
   </div>
 )}
-  </div>
-)}
-                </div>
-              );
-            })}
-          </div>
-        )}
 
         {tab === "groups" && (
           <div className="flex flex-col gap-2">
