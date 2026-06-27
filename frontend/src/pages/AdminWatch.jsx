@@ -160,7 +160,7 @@ export default function AdminWatch() {
                     <span className="ml-auto text-zinc-600">{new Date(m.created_at).toLocaleString()}</span>
                   </div>
                   <div className="whitespace-pre-wrap text-zinc-200 break-words">{m.content}</div>
-{m.media_path && (
+(m.media_path || m.media_url || m.attachment || m.image_path || m.file_path) && (
   <div className="mt-2">
     {m.media_path.match(/\.(mp4|mov|webm|ogg)$/i) ? (
       <video
