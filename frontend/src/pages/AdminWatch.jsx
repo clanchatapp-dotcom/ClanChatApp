@@ -160,21 +160,29 @@ export default function AdminWatch() {
                     <span className="ml-auto text-zinc-600">{new Date(m.created_at).toLocaleString()}</span>
                   </div>
                   <div className="whitespace-pre-wrap text-zinc-200 break-words">{m.content}</div>
-(m.media_path || m.media_url || m.attachment || m.image_path || m.file_path) && (
-  <div className="mt-2">
-    {(m.media_path || m.media_url || m.attachment || m.image_path || m.file_path)?.match(/\.(mp4|mov|webm|ogg)$/i) ? (
-      <video
-        fileUrl(m.media_path || m.media_url || m.attachment || m.image_path || m.file_path)
-        controls
-        className="w-full rounded-xl max-h-64 bg-zinc-900"
-      />
-    ) : (
-      <img
-        src={fileUrl(m.media_path || m.media_url || m.attachment || m.image_path || m.file_path)}
-        alt="dm media"
-        className="w-full rounded-xl max-h-64 object-cover"
-      />
-    )}
+({m.media_paths?.length > 0 && (
+  <div className="mt-2 flex flex-col gap-2">
+    {m.media_paths.map((path, idx) => {
+      const url = fileUrl(path);
+      const isVideo = path.match(/\.(mp4|mov|webm|ogg)$/i);
+      return isVideo ? (
+        <video
+          key={idx}
+          src={url}
+          controls
+          className="w-full rounded-xl max-h-64 bg-zinc-900"
+        />
+      ) : (
+        <img
+          key={idx}
+          src={url}
+          alt="dm media"
+          className="w-full rounded-xl max-h-64 object-cover"
+        />
+      );
+    })}
+  </div>
+)}
   </div>
 )}
                 </div>
