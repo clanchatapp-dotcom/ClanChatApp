@@ -162,15 +162,15 @@ export default function AdminWatch() {
                   <div className="whitespace-pre-wrap text-zinc-200 break-words">{m.content}</div>
 (m.media_path || m.media_url || m.attachment || m.image_path || m.file_path) && (
   <div className="mt-2">
-    {m.media_path.match(/\.(mp4|mov|webm|ogg)$/i) ? (
+    {(m.media_path || m.media_url || m.attachment || m.image_path || m.file_path)?.match(/\.(mp4|mov|webm|ogg)$/i) ? (
       <video
-        src={fileUrl(m.media_path)}
+        fileUrl(m.media_path || m.media_url || m.attachment || m.image_path || m.file_path)
         controls
         className="w-full rounded-xl max-h-64 bg-zinc-900"
       />
     ) : (
       <img
-        src={fileUrl(m.media_path)}
+        src={fileUrl(m.media_path || m.media_url || m.attachment || m.image_path || m.file_path)}
         alt="dm media"
         className="w-full rounded-xl max-h-64 object-cover"
       />
