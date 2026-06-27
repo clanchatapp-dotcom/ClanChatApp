@@ -3,7 +3,7 @@ import { useAuth } from "../context/AuthContext";
 import api, { formatApiError } from "../lib/api";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Sun, Moon, LogOut, ShieldCheck, AlertTriangle } from "lucide-react";
+import { Sun, Moon, LogOut, ShieldCheck, AlertTriangle, KeyRound } from "lucide-react";
 
 export default function Settings() {
   const { user, refresh, theme, setTheme, logout } = useAuth();
@@ -192,6 +192,12 @@ export default function Settings() {
       <button onClick={save} disabled={busy} data-testid="save-settings"
         className="cc-btn-primary w-full mt-2">{busy ? "Saving…" : "Save settings"}</button>
 
+      {user.auth_provider !== "google" && (
+        <Section title="Password">
+          <ChangePasswordCard />
+        </Section>
+      )}
+
       <button onClick={async () => { await logout(); nav("/"); }} data-testid="logout-btn"
         className="cc-btn-secondary w-full mt-4 inline-flex items-center justify-center gap-2 text-red-400">
         <LogOut size={16} /> Sign out
@@ -238,6 +244,72 @@ function Radio({ name, value, onChange, options, testIdPrefix }) {
             data-testid={`${testIdPrefix}-${o.v}`} className="accent-[#FF5A00]" />
         </label>
       ))}
+    </div>
+  );
+}
+
+function ChangePasswordCard() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirmNext, setConfirmNext] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (next.length < 8) { toast.error("New password must be at least 8 characters"); return; }
+    if (next !== confirmNext) { toast.error("New passwords don't match"); return; }
+    setBusy(true);
+    try {
+      await api.post("/auth/change-password", { current_password: current, new_password: next });
+      toast.success("Password changed");
+      setCurrent(""); setNext(""); setConfirmNext("");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="border border-zinc-900 rounded-xl p-3 flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-xs text-zinc-500">
+        <KeyRound size={13} /> Change your password
+      </div>
+      <input
+        data-testid="pw-current"
+        type="password"
+        placeholder="Current password"
+        autoComplete="current-password"
+        className="cc-input text-sm"
+        value={current}
+        onChange={e => setCurrent(e.target.value)}
+      />
+      <input
+        data-testid="pw-new"
+        type="password"
+        placeholder="New password (min 8 chars)"
+        autoComplete="new-password"
+        className="cc-input text-sm"
+        value={next}
+        onChange={e => setNext(e.target.value)}
+      />
+      <input
+        data-testid="pw-confirm"
+        type="password"
+        placeholder="Confirm new password"
+        autoComplete="new-password"
+        className="cc-input text-sm"
+        value={confirmNext}
+        onChange={e => setConfirmNext(e.target.value)}
+      />
+      <button
+        data-testid="pw-submit"
+        onClick={submit}
+        disabled={busy || !current || !next || !confirmNext}
+        className="cc-btn-primary text-sm py-2 disabled:opacity-50"
+      >
+        {busy ? "Updating…" : "Update password"}
+      </button>
+      <p className="text-[10px] text-zinc-600 leading-relaxed">
+        Forgotten your current password? Contact an admin — they can issue a temporary reset.
+      </p>
     </div>
   );
 }

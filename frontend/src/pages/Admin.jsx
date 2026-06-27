@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { formatApiError } from "../lib/api";
 import { toast } from "sonner";
-import { ShieldCheck, ShieldAlert, FileText, AlertTriangle, Eye, EyeOff } from "lucide-react";
+import { ShieldCheck, ShieldAlert, FileText, AlertTriangle, Eye, EyeOff, KeyRound } from "lucide-react";
 
 const TABS = [
   { id: "reports", label: "Reports" },
@@ -154,6 +154,33 @@ export default function Admin() {
       await api.post(`/admin/users/${lookupUser.user_id}/mark-18plus`, { is_creator: willFlag, reason: flagReason.trim() });
       toast.success(willFlag ? "Flagged as 18+ creator · audit logged" : "18+ flag removed");
       setFlagReason(""); reloadLookup();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const resetPassword = async () => {
+    if (!lookupUser) return;
+    if (lookupUser.auth_provider === "google") {
+      toast.error("This account signs in with Google — password can't be reset here.");
+      return;
+    }
+    const reason = window.prompt(
+      `Reset password for #${lookupUser.handle}? Enter the audit reason (e.g. "User contacted support — forgot password").`,
+      ""
+    );
+    if (reason === null) return;
+    if (!reason.trim()) { toast.error("Reason required"); return; }
+    const newPw = window.prompt(
+      `Enter a temporary password for #${lookupUser.handle} (min 8 chars). Pass this to them out-of-band; they should change it on first sign-in.`,
+      ""
+    );
+    if (newPw === null) return;
+    if (!newPw || newPw.length < 8) { toast.error("Password must be at least 8 chars"); return; }
+    try {
+      await api.post(`/admin/users/${lookupUser.user_id}/reset-password`, {
+        new_password: newPw,
+        reason: reason.trim(),
+      });
+      toast.success(`Password reset for #${lookupUser.handle} · audit logged`);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
@@ -395,6 +422,15 @@ export default function Admin() {
                   }`}
                 >
                   {lookupUser.flagged_18plus_by_admin ? "Remove 18+ flag" : "Flag as 18+ creator"}
+                </button>
+                <button
+                  data-testid="user-reset-password"
+                  onClick={resetPassword}
+                  disabled={lookupUser.auth_provider === "google"}
+                  className="text-xs py-1.5 px-3 rounded-full transition border border-zinc-800 hover:border-sky-500/40 inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={lookupUser.auth_provider === "google" ? "Google sign-in users manage their password via Google" : "Issue a temporary password"}
+                >
+                  <KeyRound size={11} /> Reset password
                 </button>
               </div>
 

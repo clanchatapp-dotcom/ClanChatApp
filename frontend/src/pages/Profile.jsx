@@ -338,12 +338,33 @@ function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoard
         <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mt-2">Wall notes</div>
       )}
       {wall.length === 0 && textPosts.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">Wall is quiet.</div>}
-      {wall.map(w => (
-        <div key={w.wall_post_id} className="border border-zinc-900 rounded-2xl p-4">
-          <div className="text-xs text-zinc-500 mb-1">#{w.author?.handle}</div>
-          <div className="text-sm whitespace-pre-wrap">{w.content}</div>
-        </div>
-      ))}
+      {wall.map(w => {
+        const canDelete = w.author_id === me?.user_id || ownerId === me?.user_id;
+        return (
+          <div key={w.wall_post_id} className="border border-zinc-900 rounded-2xl p-4 relative group">
+            <div className="text-xs text-zinc-500 mb-1">#{w.author?.handle}</div>
+            <div className="text-sm whitespace-pre-wrap">{w.content}</div>
+            {canDelete && (
+              <button
+                data-testid={`wall-delete-${w.wall_post_id}`}
+                onClick={async () => {
+                  if (!window.confirm("Delete this wall note?")) return;
+                  try {
+                    await api.delete(`/wall/${w.wall_post_id}`);
+                    toast.success("Deleted");
+                    reload();
+                  } catch (err) {
+                    toast.error(formatApiError(err.response?.data?.detail));
+                  }
+                }}
+                className="absolute top-3 right-3 text-[11px] text-zinc-500 hover:text-red-400 uppercase tracking-wider opacity-0 group-hover:opacity-100 sm:opacity-0 max-sm:opacity-100 transition"
+              >
+                Delete
+              </button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

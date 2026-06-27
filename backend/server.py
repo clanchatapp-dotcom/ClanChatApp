@@ -517,6 +517,28 @@ async def logout(response: Response, request: Request):
     return {"ok": True}
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+@api.post("/auth/change-password")
+async def change_password(payload: ChangePasswordIn, user=Depends(get_current_user)):
+    """Logged-in user updates their own password. Requires the current
+    password — protects against session-hijack attacks where a stolen token
+    is used to silently take over the account."""
+    if user.get("auth_provider") != "password" or not user.get("password_hash"):
+        # Google-only accounts don't have a password to change.
+        raise HTTPException(400, "This account signs in with Google. Manage your password in your Google Account settings.")
+    if not verify_password(payload.current_password, user["password_hash"]):
+        raise HTTPException(401, "Current password is incorrect")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(400, "New password must be different from the current one")
+    new_hash = hash_password(payload.new_password)
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"password_hash": new_hash}})
+    return {"ok": True}
+
+
 @api.get("/auth/me")
 async def me(user=Depends(get_current_user)):
     return private_user(user)
@@ -637,8 +659,12 @@ async def get_user_by_handle(handle: str, viewer=Depends(get_optional_user)):
     if not target:
         raise HTTPException(404, "Not found")
     if viewer and target["user_id"] != viewer["user_id"]:
-        # Adults can NEVER find minors. No exceptions.
-        if target.get("is_minor") and not is_minor(viewer):
+        # Admins can see EVERY account, including minors — they need this to
+        # action reports targeting minors. The hardcoded protections still
+        # apply to all non-admins.
+        is_admin = viewer.get("role") == "admin"
+        # Adults can NEVER find minors. No exceptions (admins exempt).
+        if target.get("is_minor") and not is_minor(viewer) and not is_admin:
             raise HTTPException(404, "Not found")
         # Minors can NEVER find NSFW-flagged accounts. No exceptions.
         if is_minor(viewer) and target.get("nsfw_account"):
@@ -656,13 +682,15 @@ async def search_users(q: str = Query(..., min_length=1), viewer=Depends(get_cur
     if not re.fullmatch(r"[a-z0-9_]{1,20}", q):
         return {"results": []}
     cursor = db.users.find({"handle": {"$regex": f"^{re.escape(q)}"}}, {"_id": 0}).limit(20)
+    is_admin = viewer.get("role") == "admin"
     results = []
     async for u in cursor:
         if u["user_id"] == viewer["user_id"]:
             results.append(public_user(u))
             continue
-        # Adults can NEVER find minors. No exceptions.
-        if u.get("is_minor") and not is_minor(viewer):
+        # Adults can NEVER find minors. No exceptions (admins exempt — they need
+        # to be able to search for minor accounts to action reports about them).
+        if u.get("is_minor") and not is_minor(viewer) and not is_admin:
             continue
         # Minors can NEVER find NSFW-flagged accounts. No exceptions.
         if is_minor(viewer) and u.get("nsfw_account"):
@@ -1322,6 +1350,25 @@ async def get_wall(owner_id: str, viewer=Depends(get_current_user)):
         u = await db.users.find_one({"user_id": w["author_id"]}, {"_id": 0})
         out.append({**w, "author": public_user(u) if u else None})
     return {"posts": out}
+
+
+@api.delete("/wall/{wall_post_id}")
+async def delete_wall_post(wall_post_id: str, user=Depends(get_current_user)):
+    """Delete a wall note. Allowed for: the note's author, the wall's owner, or an admin."""
+    w = await db.wall_posts.find_one({"wall_post_id": wall_post_id}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Not found")
+    is_admin = user.get("role") == "admin"
+    if w["author_id"] != user["user_id"] and w["owner_id"] != user["user_id"] and not is_admin:
+        raise HTTPException(403, "Not allowed")
+    await db.wall_posts.delete_one({"wall_post_id": wall_post_id})
+    if is_admin and w["author_id"] != user["user_id"] and w["owner_id"] != user["user_id"]:
+        await db.audit_events.insert_one({
+            "event": "wall.delete_admin", "admin_id": user["user_id"],
+            "target_user_id": w["owner_id"], "wall_post_id": wall_post_id,
+            "author_id": w["author_id"], "at": now_iso(),
+        })
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------
@@ -2147,7 +2194,41 @@ async def admin_user_lookup(handle: str, admin=Depends(require_admin)):
         "deleted": bool(u.get("deleted")),
         "suspended_until": u.get("suspended_until"),
         "strikes": u.get("strikes", 0),
+        "auth_provider": u.get("auth_provider", "password"),
     }
+
+
+@api.post("/admin/users/{user_id}/reset-password")
+async def admin_reset_password(user_id: str, payload: dict, admin=Depends(require_admin)):
+    """Admin sets a temporary password for a user (support flow — user
+    forgot password and there's no email reset yet). The new password is
+    NOT returned in plaintext anywhere persistent; the admin must read it
+    once from the response and pass it to the user out-of-band. Reason is
+    required and the action is audit-logged."""
+    reason = (payload.get("reason") or "").strip()
+    new_password = (payload.get("new_password") or "").strip()
+    if not reason:
+        raise HTTPException(400, "reason required (audit trail)")
+    if len(new_password) < 8 or len(new_password) > 128:
+        raise HTTPException(400, "new_password must be 8-128 chars")
+    target = await db.users.find_one({"user_id": user_id})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("auth_provider") != "password":
+        raise HTTPException(400, "Account uses Google sign-in — cannot set a password.")
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {"password_hash": hash_password(new_password)}},
+    )
+    await db.audit_events.insert_one({
+        "event": "admin_reset_password",
+        "target_user_id": user_id,
+        "target_handle": target.get("handle"),
+        "reason": reason,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "handle": target.get("handle")}
 
 
 # ------------------------------------------------------------------
