@@ -113,8 +113,28 @@ export default function AdminWatch() {
                 </div>
                 <div className="whitespace-pre-wrap text-zinc-200">{p.content}</div>
                 {p.media_paths?.length > 0 && (
-                  <div className="text-[10px] text-zinc-600 mt-1">{p.media_paths.length} media file(s)</div>
-                )}
+  <div className="mt-2 flex flex-col gap-2">
+    {p.media_paths.map((path, idx) => {
+      const url = fileUrl(path);
+      const isVideo = path.match(/\.(mp4|mov|webm|ogg)$/i);
+      return isVideo ? (
+        <video
+          key={idx}
+          src={url}
+          controls
+          className="w-full rounded-xl max-h-64 bg-zinc-900"
+        />
+      ) : (
+        <img
+          key={idx}
+          src={url}
+          alt="post media"
+          className="w-full rounded-xl max-h-64 object-cover"
+        />
+      );
+    })}
+  </div>
+)}
                 {p.tags?.length > 0 && (
                   <div className="text-[10px] text-zinc-600 mt-1">#{p.tags.join(" #")}</div>
                 )}
