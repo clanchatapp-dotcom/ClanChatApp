@@ -204,16 +204,12 @@ export default function Profile() {
         </div>
       )}
 
-      <div className="flex gap-1 mt-4 mb-4 border-b border-zinc-900 no-scrollbar overflow-x-auto">
-        {TABS.map(t => (
-          <button key={t} data-testid={`tab-${t}`} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-xs uppercase tracking-[0.2em] border-b-2 transition ${
-              tab === t ? "border-[#FF5A00] text-[#FF5A00]" : "border-transparent text-zinc-500"
-            }`}>
-            {t}
-          </button>
-        ))}
-      </div>
+      <div className="flex mt-4 mb-4 border-b border-zinc-900">
+  {TABS.map(t => (
+    <button key={t} data-testid={`tab-${t}`} onClick={() => setTab(t)}
+      className={`flex-1 py-2 text-xs uppercase tracking-[0.2em] border-b-2 transition text-center ${
+        tab === t ? "border-[#FF5A00] text-[#FF5A00]" : "border-transparent text-zinc-500"
+      }`}>
 
       {tab === "media" && (
         <div className="flex flex-col gap-3">
