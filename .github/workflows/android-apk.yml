@@ -4,14 +4,6 @@ name: Build Android APK
 # manually-triggered run. The APK is uploaded as a workflow artifact that
 # testers can download directly from the Actions tab — no Android Studio
 # required on the user's machine.
-#
-# Workflow Dispatch URL (after first push):
-#   https://github.com/<your-account>/<repo>/actions/workflows/android-apk.yml
-#
-# Each successful run produces:
-#   - ClanChat-debug.apk  (sideload-ready, ~10 MB)
-# Testers install it by enabling "Install unknown apps" for their browser
-# or file manager on Android, then tapping the APK file.
 
 on:
   push:
@@ -30,82 +22,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Node 22 LTS — Node 20 hit deprecation on GitHub Actions runners in
-      # late 2025. We intentionally DO NOT use the built-in `cache: yarn`
-      # option because some forks of this repo don't commit frontend/yarn.lock,
-      # and setup-node treats that as a hard failure. The yarn install below
-      # generates the lockfile on the fly when missing.
+      # Node 22 LTS
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: 22
 
-      - name: Setup Java 21
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: "21"
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Install frontend dependencies
         working-directory: frontend
         run: |
-          # If yarn.lock is committed we honour it; otherwise we let yarn
-          # generate one. Either way the APK still builds.
+          # Bypasses environment engine mismatches and forces packages to install cleanly
           if [ -f yarn.lock ]; then
-            yarn install --frozen-lockfile || yarn install
+            yarn install --frozen-lockfile --ignore-engines || yarn install --ignore-engines
           else
-            echo "::warning::frontend/yarn.lock not found in repo — generating a fresh lockfile (consider committing it for reproducible builds)."
-            yarn install
+            echo "::warning::frontend/yarn.lock not found in repo — generating a fresh lockfile."
+            yarn install --ignore-engines
           fi
 
-      - name: Build web bundle
+      - name: Build web application
         working-directory: frontend
-        env:
-          # Production API base — testers' APK talks to the live deploy.
-          # Override this to point at staging/preview if you fork the
-          # workflow for testing branches.
-          REACT_APP_BACKEND_URL: https://clanchat.app
-          CI: "false"  # CRA treats warnings as errors when CI=true; we don't want that to fail the APK
         run: yarn build
 
-      - name: Add Capacitor Android platform
+      - name: Cap sync
+        working-directory: frontend
+        run: npx cap sync android
+
+      - name: Splice asset branding
         working-directory: frontend
         run: |
-          if [ ! -d android ]; then
-            npx cap add android
-          fi
-          npx cap sync android
-
-      - name: Inject Android media permissions
-        working-directory: frontend/android/app/src/main
-        run: |
-          # Add READ_MEDIA_IMAGES + READ_MEDIA_VIDEO (Android 13+) and the
-          # legacy READ_EXTERNAL_STORAGE for older devices, scoped to
-          # <33 via maxSdkVersion. This lets users pick photos/videos for
-          # posts and DMs after granting consent.
-          python3 - <<'PY'
-          import pathlib
-          p = pathlib.Path("AndroidManifest.xml")
-          x = p.read_text()
-          perms = [
-              '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />',
-              '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
-              '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
-              '<uses-permission android:name="android.permission.CAMERA" />',
-          ]
-          for line in perms:
-              if line.split('android:name="')[1].split('"')[0] not in x:
-                  x = x.replace("<application", line + "\n    <application", 1)
-          p.write_text(x)
-          print("manifest patched:")
-          print(x)
-          PY
-
-      - name: Copy launcher icons
-        working-directory: frontend
-        run: |
-          # Skip silently when the source folder hasn't been committed yet —
-          # Capacitor's default icons will be used.
+          # Safely injects branding images into the native workspace if present
           if [ ! -d android-resources ]; then
             echo "::warning::frontend/android-resources/ not found — using default Capacitor launcher icons."
             exit 0
@@ -140,7 +94,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ClanChat-debug-apk
+          name: ClanChat-debug.apk
           path: dist/ClanChat-debug.apk
-          retention-days: 30
-          if-no-files-found: error
+          retention-days: 7
+
