@@ -132,6 +132,18 @@ export function MessageThread() {
     finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
   };
 
+  const startCall = async (kind) => {
+    if (!data || !data.with?.user_id || data.with?.is_self) return;
+    try {
+      const { data: session } = await api.post("/calls/start", {
+        callee_id: data.with.user_id, kind,
+      });
+      nav(`/call/${session.call_id}`, { state: { session } });
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || "Could not start call");
+    }
+  };
+
   const send = async (e) => {
     e?.preventDefault?.();
     if ((!text.trim() && pendingMedia.length === 0) || busy) return;
@@ -322,22 +334,22 @@ export function MessageThread() {
           <button
             type="button"
             data-testid="dm-call-audio"
-            onClick={() => toast.info("Voice calls — coming in the next build")}
-            disabled={!data.can_send || busy}
+            onClick={() => startCall("audio")}
+            disabled={!data.can_send || busy || data.with?.is_self}
             className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
-            aria-label="Voice call (coming soon)"
-            title="Voice call — coming in the next build"
+            aria-label="Voice call"
+            title="Voice call"
           >
             <Phone size={16} />
           </button>
           <button
             type="button"
             data-testid="dm-call-video"
-            onClick={() => toast.info("Video calls — coming in the next build")}
-            disabled={!data.can_send || busy}
+            onClick={() => startCall("video")}
+            disabled={!data.can_send || busy || data.with?.is_self}
             className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
-            aria-label="Video call (coming soon)"
-            title="Video call — coming in the next build"
+            aria-label="Video call"
+            title="Video call"
           >
             <Video size={16} />
           </button>

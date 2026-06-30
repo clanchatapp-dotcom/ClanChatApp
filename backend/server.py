@@ -2752,6 +2752,157 @@ async def shutdown_event():
     client.close()
 
 
+# ----------------------------------------------------------------------
+# LiveKit voice / video calling
+#
+# Server-side: mints short-lived per-call JWT tokens scoped to a single
+# room. The api key/secret never leave the server — the client only
+# receives the room name, the LiveKit URL, and a join token that expires
+# automatically.
+#
+# Call lifecycle:
+#   1. Caller -> POST /calls/start  (creates room + db row + notification)
+#   2. Recipient polls /calls/incoming/{me}  (every 3s in the UI)
+#   3. Either side -> POST /calls/{id}/answer or /reject
+#   4. Both sides connect to LiveKit using the returned join token
+#   5. POST /calls/{id}/end when hanging up
+#
+# Every call insert + end is audit-logged so the admin panel can show
+# call history for accounts under review.
+# ----------------------------------------------------------------------
+try:
+    from livekit import api as livekit_api  # noqa: F401  (loaded lazily below)
+    _LIVEKIT_URL = os.environ.get("LIVEKIT_URL", "").strip()
+    _LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "").strip()
+    _LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "").strip()
+    _LIVEKIT_OK = bool(_LIVEKIT_URL and _LIVEKIT_API_KEY and _LIVEKIT_API_SECRET)
+    if not _LIVEKIT_OK:
+        logging.warning("LiveKit env vars missing — voice/video calls disabled.")
+except Exception as _e:
+    _LIVEKIT_OK = False
+    logging.warning("LiveKit SDK not available: %s", _e)
+
+
+def _mint_livekit_token(room_name: str, identity: str, display_name: str, ttl_seconds: int = 60 * 60) -> str:
+    """Mint a JWT scoped to one room. TTL defaults to 1h — long enough for
+    a normal call but short enough that a leaked token can't be reused
+    days later."""
+    from livekit import api as _lk
+    from datetime import timedelta as _td
+    at = _lk.AccessToken(_LIVEKIT_API_KEY, _LIVEKIT_API_SECRET)
+    at = at.with_identity(identity).with_name(display_name).with_ttl(_td(seconds=ttl_seconds))
+    at = at.with_grants(_lk.VideoGrants(
+        room_join=True, room=room_name,
+        can_publish=True, can_subscribe=True, can_publish_data=True,
+    ))
+    return at.to_jwt()
+
+
+class CallStartIn(BaseModel):
+    callee_id: str = Field(min_length=1)
+    kind: str = Field(default="video", pattern="^(audio|video)$")
+
+
+@api.post("/calls/start")
+async def call_start(payload: CallStartIn, user=Depends(get_current_user)):
+    """Caller initiates a 1-on-1 call. Re-uses the existing DM tier-gating —
+    if the caller can't DM the callee, they can't call them either."""
+    if not _LIVEKIT_OK:
+        raise HTTPException(503, "Calling is not configured on this server")
+    if payload.callee_id == user["user_id"]:
+        raise HTTPException(400, "Cannot call yourself")
+    callee = await db.users.find_one({"user_id": payload.callee_id}, {"_id": 0})
+    if not callee:
+        raise HTTPException(404, "User not found")
+    # Re-use the DM permission check — same trust gates apply.
+    allow, reason = await can_dm(user, callee)
+    if not allow:
+        raise HTTPException(403, reason or "Cannot call this user")
+
+    call_id = f"call_{uuid.uuid4().hex[:12]}"
+    room_name = f"room_{uuid.uuid4().hex[:14]}"
+    now = now_iso()
+    await db.calls.insert_one({
+        "call_id": call_id, "room_name": room_name,
+        "caller_id": user["user_id"], "callee_id": payload.callee_id,
+        "kind": payload.kind, "status": "ringing",
+        "created_at": now, "ended_at": None,
+    })
+    await db.audit_events.insert_one({
+        "event": "call_start", "call_id": call_id, "caller_id": user["user_id"],
+        "callee_id": payload.callee_id, "kind": payload.kind, "at": now,
+    })
+    token = _mint_livekit_token(room_name, user["user_id"], user.get("display_name") or user["handle"])
+    return {
+        "call_id": call_id, "room_name": room_name, "kind": payload.kind,
+        "livekit_url": _LIVEKIT_URL, "token": token,
+    }
+
+
+@api.get("/calls/incoming")
+async def calls_incoming(user=Depends(get_current_user)):
+    """Recipient poll. Returns at most one ringing call so we never overwhelm
+    the UI — calls auto-time-out after 60s if untouched."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    # Auto-expire stale rings without admin intervention.
+    await db.calls.update_many(
+        {"status": "ringing", "created_at": {"$lt": cutoff}},
+        {"$set": {"status": "missed", "ended_at": now_iso()}},
+    )
+    c = await db.calls.find_one(
+        {"callee_id": user["user_id"], "status": "ringing"},
+        {"_id": 0}, sort=[("created_at", -1)],
+    )
+    if not c:
+        return {"call": None}
+    caller = await db.users.find_one({"user_id": c["caller_id"]}, {"_id": 0})
+    return {"call": {**c, "caller": public_user(caller) if caller else None}}
+
+
+@api.post("/calls/{call_id}/answer")
+async def call_answer(call_id: str, user=Depends(get_current_user)):
+    if not _LIVEKIT_OK:
+        raise HTTPException(503, "Calling is not configured on this server")
+    c = await db.calls.find_one({"call_id": call_id}, {"_id": 0})
+    if not c or c["callee_id"] != user["user_id"]:
+        raise HTTPException(404, "Call not found")
+    if c["status"] != "ringing":
+        raise HTTPException(409, f"Call is already {c['status']}")
+    await db.calls.update_one({"call_id": call_id}, {"$set": {"status": "active", "answered_at": now_iso()}})
+    token = _mint_livekit_token(c["room_name"], user["user_id"], user.get("display_name") or user["handle"])
+    return {
+        "call_id": call_id, "room_name": c["room_name"], "kind": c.get("kind", "video"),
+        "livekit_url": _LIVEKIT_URL, "token": token,
+    }
+
+
+@api.post("/calls/{call_id}/reject")
+async def call_reject(call_id: str, user=Depends(get_current_user)):
+    c = await db.calls.find_one({"call_id": call_id}, {"_id": 0})
+    if not c or c["callee_id"] != user["user_id"]:
+        raise HTTPException(404, "Call not found")
+    await db.calls.update_one({"call_id": call_id}, {"$set": {"status": "rejected", "ended_at": now_iso()}})
+    return {"ok": True}
+
+
+@api.post("/calls/{call_id}/end")
+async def call_end(call_id: str, user=Depends(get_current_user)):
+    c = await db.calls.find_one({"call_id": call_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Call not found")
+    if user["user_id"] not in (c["caller_id"], c["callee_id"]):
+        raise HTTPException(403, "Not a participant")
+    if c["status"] not in ("ended", "rejected", "missed"):
+        await db.calls.update_one({"call_id": call_id}, {"$set": {"status": "ended", "ended_at": now_iso()}})
+        await db.audit_events.insert_one({
+            "event": "call_end", "call_id": call_id, "ended_by": user["user_id"], "at": now_iso(),
+        })
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------
+
+
 # include
 app.include_router(api)
 

@@ -21,6 +21,7 @@ import { Groups, GroupChat } from "./pages/Groups";
 import Admin from "./pages/Admin";
 import AdminWatch from "./pages/AdminWatch";
 import AdminShowcase from "./pages/AdminShowcase";
+import Call from "./pages/Call";
 import TagApprovals from "./pages/TagApprovals";
 import MyConnections from "./pages/MyConnections";
 import Install from "./pages/Install";
@@ -60,6 +61,7 @@ function AppRouter() {
         <Route path="/g/:groupId" element={<Protected><GroupChat /></Protected>} />
         <Route path="/admin" element={<Protected><Admin /></Protected>} />
         <Route path="/admin/showcase" element={<Protected><AdminShowcase /></Protected>} />
+        <Route path="/call/:callId" element={<Protected><Call /></Protected>} />
         <Route path="/admin/watch/:userId" element={<Protected><AdminWatch /></Protected>} />
         <Route path="/tags" element={<Protected><TagApprovals /></Protected>} />
         <Route path="/me/:kind" element={<Protected><MyConnections /></Protected>} />

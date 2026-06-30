@@ -92,6 +92,13 @@ jobs:
               '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
               '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
               '<uses-permission android:name="android.permission.CAMERA" />',
+              # LiveKit voice/video calls need RECORD_AUDIO (mic). Network state
+              # is needed so the SDK can negotiate ICE servers correctly.
+              '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
+              '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
+              '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />',
+              '<uses-feature android:name="android.hardware.camera" android:required="false" />',
+              '<uses-feature android:name="android.hardware.microphone" android:required="false" />',
           ]
           for line in perms:
               if line.split('android:name="')[1].split('"')[0] not in x:
