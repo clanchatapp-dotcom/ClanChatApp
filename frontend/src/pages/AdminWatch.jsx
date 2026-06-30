@@ -113,7 +113,11 @@ export default function AdminWatch() {
                 </div>
                 <div className="whitespace-pre-wrap text-zinc-200">{p.content}</div>
                 {p.media_paths?.length > 0 && (
-                  <div className="text-[10px] text-zinc-600 mt-1">{p.media_paths.length} media file(s)</div>
+                  <div className="grid grid-cols-2 gap-1.5 mt-2" data-testid={`watch-post-media-${p.post_id}`}>
+                    {p.media_paths.map((path, idx) => (
+                      <WatchMedia key={`${p.post_id}-${idx}`} path={path} />
+                    ))}
+                  </div>
                 )}
                 {p.tags?.length > 0 && (
                   <div className="text-[10px] text-zinc-600 mt-1">#{p.tags.join(" #")}</div>
@@ -139,7 +143,17 @@ export default function AdminWatch() {
                     {m.read === false && !outgoing && <span className="bg-amber-500/20 text-amber-200 px-1.5 py-0.5 rounded text-[9px]">UNREAD</span>}
                     <span className="ml-auto text-zinc-600">{new Date(m.created_at).toLocaleString()}</span>
                   </div>
-                  <div className="whitespace-pre-wrap text-zinc-200 break-words">{m.content}</div>
+                  {m.content && <div className="whitespace-pre-wrap text-zinc-200 break-words">{m.content}</div>}
+                  {m.media_paths?.length > 0 && (
+                    <div
+                      className="grid grid-cols-2 gap-1.5 mt-2"
+                      data-testid={`watch-dm-media-${m.message_id}`}
+                    >
+                      {m.media_paths.map((p, idx) => (
+                        <WatchMedia key={`${m.message_id}-${idx}`} path={p} />
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -198,5 +212,49 @@ export default function AdminWatch() {
         )}
       </div>
     </div>
+  );
+}
+
+// Renders DM/post media for the admin watch view. External URLs (e.g. GIF
+// links) load directly; uploaded paths route through the file proxy.
+// Videos get native controls; audio renders as a player.
+function WatchMedia({ path }) {
+  if (!path) return null;
+  const url = path.startsWith("http") ? path : fileUrl(path);
+  const lower = path.toLowerCase();
+  const isVideo = lower.match(/\.(mp4|mov|webm|m4v)(\?|$)/);
+  const isAudio = lower.match(/\.(mp3|wav|m4a|ogg|aac|flac)(\?|$)/);
+  if (isVideo) {
+    return (
+      <video
+        src={url}
+        controls
+        preload="metadata"
+        className="rounded-lg w-full max-h-56 bg-black border border-zinc-900"
+        data-testid="watch-media-video"
+      />
+    );
+  }
+  if (isAudio) {
+    return (
+      <audio
+        src={url}
+        controls
+        preload="metadata"
+        className="w-full col-span-2"
+        data-testid="watch-media-audio"
+      />
+    );
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="block">
+      <img
+        src={url}
+        alt=""
+        loading="lazy"
+        className="rounded-lg w-full max-h-56 object-cover border border-zinc-900"
+        data-testid="watch-media-image"
+      />
+    </a>
   );
 }

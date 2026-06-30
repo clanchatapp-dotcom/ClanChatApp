@@ -9,6 +9,7 @@ const TABS = [
   { id: "csam", label: "CSAM queue" },
   { id: "watchlist", label: "Watchlist" },
   { id: "users", label: "Users" },
+  { id: "resets", label: "Password resets" },
   { id: "audit", label: "Audit log" },
 ];
 
@@ -24,12 +25,14 @@ export default function Admin() {
   const [lookupHandle, setLookupHandle] = useState("");
   const [lookupUser, setLookupUser] = useState(null);
   const [flagReason, setFlagReason] = useState("");
+  const [resetRequests, setResetRequests] = useState([]);
 
   const loadStats = () => api.get("/admin/stats").then((r) => setStats(r.data)).catch(() => {});
   const loadReports = () => api.get("/admin/reports?status=pending").then((r) => setReports(r.data.reports)).catch(() => {});
   const loadCsam = () => api.get("/admin/csam/queue?status=queued").then((r) => setCsam(r.data.queue)).catch(() => {});
   const loadAudit = () => api.get("/admin/audit?limit=100").then((r) => setAudit(r.data.events)).catch(() => {});
   const loadWatched = () => api.get("/admin/watch").then((r) => setWatched(r.data.watched)).catch(() => {});
+  const loadResetRequests = () => api.get("/admin/password-resets?status=open").then((r) => setResetRequests(r.data.requests)).catch(() => {});
 
   useEffect(() => { loadStats(); }, []);
   useEffect(() => {
@@ -37,6 +40,7 @@ export default function Admin() {
     if (tab === "csam") loadCsam();
     if (tab === "audit") loadAudit();
     if (tab === "watchlist") loadWatched();
+    if (tab === "resets") loadResetRequests();
   }, [tab]);
 
   const strike = async (id, level) => {
@@ -469,6 +473,13 @@ export default function Admin() {
         </div>
       )}
 
+      {tab === "resets" && (
+        <PasswordResetsPanel
+          requests={resetRequests}
+          reload={loadResetRequests}
+        />
+      )}
+
       <section className="mt-10 border border-red-500/30 bg-red-500/5 rounded-2xl p-4">
         <div className="flex items-center gap-2 mb-2">
           <AlertTriangle size={14} className="text-red-400" />
@@ -493,6 +504,100 @@ export default function Admin() {
           Purges every related record: posts, comments, follows, IC, DMs, groups, boards, walls, reports, CSAM, tags, blocks, mutes, restricts. The calling admin is never deleted, even via the &quot;purge all&quot; option.
         </p>
       </section>
+    </div>
+  );
+}
+
+/**
+ * Password-reset request queue. Users who can't sign in submit a ticket
+ * from /forgot-password. Admins:
+ *
+ *   1. See the ticket here with email + handle + (optional) verification
+ *      reason the user provided.
+ *   2. Contact the user out-of-band (their own email, phone, etc.) to
+ *      confirm it's really them — never trust the form alone.
+ *   3. If satisfied, click "Reset password" which jumps to the Users tab
+ *      pre-filled. Issue a temp password with the existing reset tool.
+ *   4. Click "Mark resolved" to close the ticket.
+ *
+ * Every action is audit-logged via the underlying admin endpoints.
+ */
+function PasswordResetsPanel({ requests, reload }) {
+  const close = async (id) => {
+    if (!window.confirm("Mark this reset request resolved?")) return;
+    try {
+      await api.post(`/admin/password-resets/${id}/close`);
+      toast.success("Closed");
+      reload();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+  return (
+    <div className="flex flex-col gap-2" data-testid="admin-password-resets">
+      <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.3em] text-zinc-500 mb-2">
+        <KeyRound size={11} /> Open requests
+      </div>
+      {requests.length === 0 && (
+        <div className="text-zinc-600 text-sm text-center py-8">No open password-reset requests.</div>
+      )}
+      {requests.map((r) => (
+        <div
+          key={r.request_id}
+          className="border border-zinc-900 rounded-2xl p-3 flex flex-col gap-2"
+          data-testid={`reset-${r.request_id}`}
+        >
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-500 flex-wrap">
+            <span className="text-zinc-400">{new Date(r.created_at).toLocaleString()}</span>
+            {r.target_user_id ? (
+              <span className="bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded">Match found</span>
+            ) : (
+              <span className="bg-amber-500/10 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded">No match</span>
+            )}
+          </div>
+          <div className="text-sm">
+            <span className="text-zinc-400">Email </span>
+            <span className="font-mono text-zinc-200">{r.email}</span>
+          </div>
+          <div className="text-sm">
+            <span className="text-zinc-400">Handle </span>
+            <span className="font-mono text-zinc-200">#{r.handle}</span>
+          </div>
+          {r.reason && (
+            <div className="text-xs text-zinc-300 bg-zinc-900/40 rounded-lg p-2 border border-zinc-800">
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">User says</div>
+              {r.reason}
+            </div>
+          )}
+          <div className="flex gap-2 mt-1">
+            {r.target_handle && (
+              <a
+                href={`#users-${r.target_handle}`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  // Hand the handle off to the Users tab — they paste into
+                  // the lookup box, then use the existing "Reset password"
+                  // button on the user card.
+                  navigator.clipboard?.writeText(r.target_handle).catch(() => {});
+                  toast.info(`#${r.target_handle} copied. Switch to the Users tab and paste.`);
+                }}
+                data-testid={`reset-jump-${r.request_id}`}
+                className="text-xs py-1.5 px-3 rounded-full border border-sky-500/40 text-sky-200 hover:bg-sky-500/10 inline-flex items-center gap-1"
+              >
+                <KeyRound size={11} /> Copy handle &amp; open Users
+              </a>
+            )}
+            <button
+              data-testid={`reset-close-${r.request_id}`}
+              onClick={() => close(r.request_id)}
+              className="text-xs py-1.5 px-3 rounded-full border border-zinc-800 hover:border-emerald-500/40 hover:text-emerald-200"
+            >
+              Mark resolved
+            </button>
+          </div>
+        </div>
+      ))}
+      <p className="text-[10px] text-zinc-600 leading-relaxed mt-2">
+        We never confirm to the requester whether the email/handle exists — that prevents account enumeration. Always verify the user out-of-band (DM, secondary email, phone) before issuing a temp password.
+      </p>
     </div>
   );
 }

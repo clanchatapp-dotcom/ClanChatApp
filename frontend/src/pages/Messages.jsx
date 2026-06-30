@@ -4,7 +4,6 @@ import api, { fileUrl, formatApiError } from "../lib/api";
 import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smile } from "lucide-react";
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
-import StickerPicker from "../components/StickerPicker";
 
 // Native screenshot-block bridge. On the Android Capacitor APK we set
 // FLAG_SECURE on the window while a "no screenshots" thread is open. On
@@ -100,17 +99,6 @@ export function MessageThread() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
   useEffect(() => { load(); }, [userId]);
-  const [stickerOpen, setStickerOpen] = useState(false);
-
-  const sendQuick = async (content, media = []) => {
-    if (busy || !data?.can_send) return;
-    try {
-      await api.post("/dms", {
-        recipient_id: userId, content, media_paths: media,
-      });
-      load();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-  };
 
   // Activate native screenshot block when allowed===false. Cleared on unmount
   // OR when the user navigates to another thread that does allow screenshots.
@@ -372,11 +360,11 @@ export function MessageThread() {
           <button
             type="button"
             data-testid="dm-stickers"
-            onClick={() => setStickerOpen(true)}
+            onClick={() => toast.info("Stickers & GIFs — coming soon")}
             disabled={!data.can_send || busy}
             className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
-            aria-label="Stickers"
-            title="Stickers & GIFs"
+            aria-label="Stickers (coming soon)"
+            title="Stickers & GIFs — coming soon"
           >
             <Smile size={16} />
           </button>
@@ -398,12 +386,6 @@ export function MessageThread() {
         </div>
       </form>
       <MediaPermissionDialog />
-      <StickerPicker
-        open={stickerOpen}
-        onClose={() => setStickerOpen(false)}
-        onSendEmoji={(e) => sendQuick(e)}
-        onSendGif={(url) => sendQuick("", [url])}
-      />
     </div>
   );
 }
