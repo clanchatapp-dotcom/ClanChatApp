@@ -6,23 +6,25 @@ import {
   ParticipantTile,
   useTracks,
   useLocalParticipant,
-  GridLayout,
 } from "@livekit/components-react";
 import { Track } from "livekit-client";
 import { Mic, MicOff, Video as VideoIcon, VideoOff, PhoneOff, SwitchCamera } from "lucide-react";
 import "@livekit/components-styles";
 import api from "../lib/api";
+import { startCallAudio, stopCallAudio } from "../lib/callAudio";
 
 /**
  * /call/:callId  — full-screen call UI.
  *
- * Layout is explicitly z-stacked instead of relying on flex distribution
- * inside <LiveKitRoom>, because LiveKit's internal CSS sometimes consumed
- * the entire viewport on small mobile screens, hiding the controls bar.
- * Now:
- *   - <CallStage>   absolutely fills the screen (the video grid / audio art)
- *   - <CallControls> sits on top with `fixed` + safe-area bottom inset,
- *     so hang-up / mute / camera-switch are always reachable.
+ * Layout:
+ *   - Remote participant fills the screen (main view).
+ *   - Local participant is a small picture-in-picture tile pinned
+ *     to the top-right.
+ *   - Controls sit at the bottom with safe-area inset.
+ *
+ * On Android (Capacitor) we route audio through the in-call earpiece via
+ * the CallAudio native plugin so the volume rocker controls call volume
+ * and the audio doesn't play as media.
  */
 export default function Call() {
   const { callId } = useParams();
@@ -33,6 +35,17 @@ export default function Call() {
   useEffect(() => {
     if (!session?.token) nav("/messages", { replace: true });
   }, [session, nav]);
+
+  // Switch Android into in-communication audio mode for the lifetime of
+  // the call. No-op on web. Always restored on unmount even if the call
+  // ends abnormally.
+  useEffect(() => {
+    if (!session?.token) return;
+    startCallAudio({ speaker: false }).catch((e) => console.warn("call audio start failed", e));
+    return () => {
+      stopCallAudio().catch((e) => console.warn("call audio stop failed", e));
+    };
+  }, [session]);
 
   const onDisconnect = useCallback(async () => {
     if (hungUp) return;
@@ -64,6 +77,9 @@ export default function Call() {
 }
 
 function CallStage({ kind }) {
+  // Pull every camera track in the room. We split into local vs remote so
+  // the remote participant gets the fullscreen and the local goes into a
+  // small PiP tile.
   const tracks = useTracks(
     [
       { source: Track.Source.Camera, withPlaceholder: true },
@@ -72,6 +88,13 @@ function CallStage({ kind }) {
     { onlySubscribed: false }
   );
 
+  const localTracks = tracks.filter((t) => t.participant?.isLocal);
+  const remoteTracks = tracks.filter((t) => !t.participant?.isLocal);
+  // Pick the first remote camera track if any, otherwise fall back to the
+  // local one so the user sees themselves while waiting.
+  const mainTrack = remoteTracks[0] || localTracks[0];
+  const pipTrack = remoteTracks.length > 0 ? localTracks[0] : null;
+
   if (kind === "audio") {
     return (
       <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6 pb-40">
@@ -79,26 +102,50 @@ function CallStage({ kind }) {
           <Mic size={36} className="text-zinc-500" />
         </div>
         <div className="text-zinc-400 text-sm uppercase tracking-[0.2em]">Voice call</div>
-        <div className="text-zinc-600 text-xs mt-2">{tracks.length} participant{tracks.length === 1 ? "" : "s"}</div>
+        <div className="text-zinc-600 text-xs mt-2">
+          {remoteTracks.length > 0 ? "Connected" : "Waiting for the other person…"}
+        </div>
       </div>
     );
   }
 
-  // Video: explicitly position the grid to fill the *visible* viewport
-  // minus the bottom control bar height so participant tiles never get
-  // cropped/off-centre on small phones.
   return (
     <div
       className="absolute inset-0 overflow-hidden"
       style={{
-        // Pad bottom by the control bar height (≈112px including safe area)
-        // so participant tiles aren't centred behind the controls.
         paddingBottom: "calc(7rem + env(safe-area-inset-bottom, 0px))",
       }}
     >
-      <GridLayout tracks={tracks} className="h-full w-full">
-        <ParticipantTile />
-      </GridLayout>
+      {/* Main view — remote participant fullscreen. Falls back to a soft
+          placeholder while we're still waiting for them to join. */}
+      <div className="absolute inset-0">
+        {mainTrack ? (
+          <ParticipantTile trackRef={mainTrack} className="!h-full !w-full" />
+        ) : (
+          <div className="h-full w-full flex flex-col items-center justify-center text-zinc-500">
+            <VideoIcon size={36} className="mb-3 opacity-60" />
+            <div className="text-sm">Waiting for the other person…</div>
+          </div>
+        )}
+      </div>
+
+      {/* Picture-in-picture — local camera in the top-right.
+          Only shown when there's an actual remote participant, otherwise
+          the local feed is already the main view. */}
+      {pipTrack && (
+        <div
+          className="absolute right-3 z-20 rounded-xl overflow-hidden border border-zinc-700 shadow-xl"
+          style={{
+            top: "calc(env(safe-area-inset-top, 0px) + 0.75rem)",
+            width: "28%",
+            maxWidth: 160,
+            aspectRatio: "3 / 4",
+          }}
+          data-testid="call-pip"
+        >
+          <ParticipantTile trackRef={pipTrack} className="!h-full !w-full" />
+        </div>
+      )}
     </div>
   );
 }
@@ -123,10 +170,6 @@ function CallControls({ onHangup, kind }) {
     if (switching) return;
     setSwitching(true);
     try {
-      // Find the current camera track and swap deviceId between user-facing
-      // and environment-facing cameras. The LiveKit client exposes the
-      // underlying MediaStreamTrack so we can read facingMode and ask for
-      // the opposite one.
       const cameraPub = localParticipant.getTrackPublication?.(Track.Source.Camera);
       const mediaTrack = cameraPub?.track?.mediaStreamTrack;
       const currentFacing = mediaTrack?.getSettings?.().facingMode || "user";
@@ -141,7 +184,7 @@ function CallControls({ onHangup, kind }) {
 
   return (
     <div
-      className="absolute left-0 right-0 bottom-0 z-10 bg-black/85 backdrop-blur border-t border-zinc-900 px-6 pt-4"
+      className="absolute left-0 right-0 bottom-0 z-30 bg-black/85 backdrop-blur border-t border-zinc-900 px-6 pt-4"
       style={{ paddingBottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))" }}
       data-testid="call-controls"
     >

@@ -46,6 +46,42 @@ export default function usePushNotifications(user) {
           return;
         }
         if (cancelled) return;
+
+        // Register Android notification channels that match the backend
+        // channel_ids in server.py `fcm_push`. Without these, Android 8+
+        // silently drops every notification because the channel doesn't
+        // exist on the device.
+        //
+        // Importance levels (Capacitor maps to NotificationManager.IMPORTANCE_*):
+        //   5 = HIGH  -> heads-up banner + sound  (calls, DMs)
+        //   4 = DEFAULT-ish -> shows but no heads-up
+        //   3 = LOW   -> silent
+        if (Capacitor.getPlatform() === "android") {
+          const channels = [
+            { id: "clanchat_dms",           name: "Direct messages",   importance: 5, description: "New chat messages" },
+            { id: "clanchat_calls",         name: "Incoming calls",    importance: 5, description: "Voice and video calls" },
+            { id: "clanchat_follows",       name: "Follow activity",   importance: 4, description: "Follow requests and new followers" },
+            { id: "clanchat_inner_invites", name: "Inner Circle invites", importance: 5, description: "Inner Circle invitations" },
+            { id: "clanchat_generic",       name: "General",           importance: 4, description: "Other ClanChat notifications" },
+          ];
+          for (const ch of channels) {
+            try {
+              await PushNotifications.createChannel({
+                id: ch.id,
+                name: ch.name,
+                description: ch.description,
+                importance: ch.importance,
+                visibility: 1, // VISIBILITY_PUBLIC — show on lock screen
+                vibration: true,
+                lights: true,
+                sound: "default",
+              });
+            } catch (e) {
+              console.warn(`channel ${ch.id} create failed`, e);
+            }
+          }
+        }
+
         await PushNotifications.register();
       } catch (e) {
         // PushNotifications throws on simulators / older webviews. Ignore.
