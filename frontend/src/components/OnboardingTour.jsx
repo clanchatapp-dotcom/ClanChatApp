@@ -48,12 +48,12 @@ export default function OnboardingTour() {
     } catch { /* ignore */ }
   }, [user?.user_id]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => { if (e.key === "Escape") close(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+useEffect(() => {
+  if (!open) return;
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  window.addEventListener("keydown", onKey);
+  return () => window.removeEventListener("keydown", onKey);
+}, [open, close]);
 
   const close = () => {
     if (user?.user_id) {
