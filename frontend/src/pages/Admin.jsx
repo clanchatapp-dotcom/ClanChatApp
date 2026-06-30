@@ -192,7 +192,10 @@ export default function Admin() {
         <h1 className="font-heading text-3xl flex items-center gap-2">
           <ShieldCheck size={22} className="text-[#FF5A00]" /> Admin
         </h1>
-        <Link to="/feed" className="text-zinc-500 text-sm">Back</Link>
+        <div className="flex items-center gap-3">
+          <Link to="/admin/showcase" data-testid="admin-showcase-link" className="text-zinc-500 text-xs hover:text-zinc-300">Showcase</Link>
+          <Link to="/feed" className="text-zinc-500 text-sm">Back</Link>
+        </div>
       </header>
 
       <section className="grid grid-cols-3 gap-2 mb-6">
