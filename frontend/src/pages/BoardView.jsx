@@ -9,7 +9,7 @@ export default function BoardView() {
   const [text, setText] = useState("");
 
   const load = () => api.get(`/boards/${boardId}/messages`).then(r => setData(r.data)).catch(e => toast.error(formatApiError(e.response?.data?.detail)));
-  useEffect(() => { load(); }, [boardId]);
+  useEffect(() => { load(); }, [boardId, load]);
 
   const post = async (e) => {
     e.preventDefault();
