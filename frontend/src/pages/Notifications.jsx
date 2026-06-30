@@ -2,25 +2,35 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { fileUrl, formatApiError } from "../lib/api";
 import { toast } from "sonner";
+import { MessageCircle } from "lucide-react";
 
 export default function Notifications() {
   const [followRequests, setFollowRequests] = useState([]);
   const [innerInvites, setInnerInvites] = useState([]);
   const [tagPending, setTagPending] = useState([]);
   const [warnings, setWarnings] = useState([]);
+  const [unreadThreads, setUnreadThreads] = useState([]);
 
   const load = async () => {
     try {
-      const [fr, ii, tp, w] = await Promise.all([
+      const [fr, ii, tp, w, threads] = await Promise.all([
         api.get("/follow/requests"),
         api.get("/inner/invites"),
         api.get("/tags/pending"),
         api.get("/me/warnings"),
+        api.get("/dms/threads"),
       ]);
       setFollowRequests(fr.data.requests);
       setInnerInvites(ii.data.invites);
       setTagPending(tp.data.pending);
       setWarnings(w.data.warnings);
+      // Surface threads with an unread last message FROM the other person —
+      // outgoing messages don't count as unread for us.
+      setUnreadThreads(
+        (threads.data.threads || []).filter(
+          (t) => t.last?.read === false && t.last?.from_id !== undefined && !t.with?.is_self
+        )
+      );
     } catch (e) { console.warn("notifications load failed", e); }
   };
   useEffect(() => {
@@ -58,6 +68,31 @@ export default function Notifications() {
               <p className="text-sm text-amber-100">{w.message}</p>
               <button data-testid={`dismiss-warning-${w.warning_id}`} onClick={() => dismissWarn(w.warning_id)} className="text-xs text-amber-300 mt-2">Got it</button>
             </div>
+          ))}
+        </section>
+      )}
+
+      {unreadThreads.length > 0 && (
+        <section className="mb-6" data-testid="notif-unread-messages">
+          <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mb-3 flex items-center gap-1.5">
+            <MessageCircle size={11} /> New messages
+          </div>
+          {unreadThreads.map((t) => (
+            <Link
+              key={t.with.user_id}
+              to={`/messages/${t.with.user_id}`}
+              data-testid={`unread-thread-${t.with.handle}`}
+              className="flex items-center gap-3 p-3 border border-[#FF5A00]/30 bg-[#FF5A00]/5 rounded-2xl mb-2 hover:border-[#FF5A00] transition"
+            >
+              <Avatar u={t.with} />
+              <div className="flex-1 text-sm min-w-0">
+                <div className="font-medium truncate">#{t.with.handle}</div>
+                <div className="text-xs text-zinc-400 truncate">
+                  {t.last?.content || (t.last?.media_paths?.length ? "📎 Sent media" : "")}
+                </div>
+              </div>
+              <div className="text-[10px] uppercase tracking-wider text-[#FF5A00] shrink-0">Unread</div>
+            </Link>
           ))}
         </section>
       )}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import api, { formatApiError } from "../lib/api";
+import api, { formatApiError, rememberToken } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
 
@@ -27,6 +27,7 @@ export default function AuthCallback() {
         if (data.needs_profile) {
           setNeedsProfile(data);
         } else {
+          if (data.access_token) await rememberToken(data.access_token);
           setUser(data.user);
           window.history.replaceState({}, "", "/feed");
           nav("/feed", { replace: true });
@@ -47,6 +48,7 @@ export default function AuthCallback() {
         dob,
         handle,
       });
+      if (data.access_token) await rememberToken(data.access_token);
       setUser(data.user);
       window.history.replaceState({}, "", "/feed");
       nav("/feed", { replace: true });

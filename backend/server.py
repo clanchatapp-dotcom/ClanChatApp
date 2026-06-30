@@ -784,7 +784,17 @@ async def google_session(payload: GoogleSessionIn, response: Response):
     })
     response.set_cookie("session_token", session_token, httponly=True, secure=True,
                         samesite="none", max_age=60 * 60 * 24 * 7, path="/")
-    return {"user": private_user(user), "new_user": new_user}
+    # Also mint a bearer JWT so the Capacitor APK (which serves the bundled
+    # build from https://localhost and can't share cookies with clanchat.app)
+    # has a persistent auth token. Without this, Google sign-in users get
+    # logged out the moment the app reloads.
+    access_token = create_access_token(user["user_id"])
+    refresh_token = create_refresh_token(user["user_id"])
+    response.set_cookie("access_token", access_token, httponly=True, secure=True,
+                        samesite="none", max_age=60 * 60 * 24, path="/")
+    response.set_cookie("refresh_token", refresh_token, httponly=True, secure=True,
+                        samesite="none", max_age=60 * 60 * 24 * 7, path="/")
+    return {"user": private_user(user), "new_user": new_user, "access_token": access_token}
 
 
 # ------------------------------------------------------------------
