@@ -38,9 +38,14 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install frontend dependencies
+              - name: Add Capacitor Android platform
         working-directory: frontend
         run: |
-          # Bypasses environment engine mismatches and forces packages to install cleanly
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
           if [ -f yarn.lock ]; then
             yarn install --frozen-lockfile --ignore-engines || yarn install --ignore-engines
           else
