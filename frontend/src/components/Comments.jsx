@@ -27,7 +27,7 @@ export default function Comments({ post, currentUserId, onChange }) {
       toast.error(formatApiError(e.response?.data?.detail));
     }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [post.post_id]);
+  useEffect(() => { load(); }, [post.post_id]);
 
   const send = async (e) => {
     e.preventDefault();
