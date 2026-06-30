@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "286762294730",
+    "project_id": "clanchat-66513",
+    "storage_bucket": "clanchat-66513.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:286762294730:android:d187cdf44ff9f6d9430333",
+        "android_client_info": {
+          "package_name": "app.clanchat.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCQmdoGYSOAbxeyJxgkqjwIllpjGu1zasw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
