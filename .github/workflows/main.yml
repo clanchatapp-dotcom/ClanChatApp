@@ -31,12 +31,12 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install frontend dependencies
+      - name: Install dependencies
         run: |
           cd frontend
           yarn install
 
-      - name: Build frontend
+      - name: Build React app
         run: |
           cd frontend
           yarn build
@@ -54,10 +54,9 @@ jobs:
       - name: Build APK
         run: |
           cd frontend/android
-          chmod +x gradlew
           ./gradlew assembleDebug
 
-      - name: Upload APK to artifacts
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ClanChat-debug-apk
