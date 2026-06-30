@@ -118,8 +118,7 @@ export function GroupChat() {
       setData(data);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); nav("/groups"); }
   };
-  useEffect(() => { load(); }, [groupId]);
-
+  useEffect(() => { load(); }, [groupId, nav]);
   const send = async (e) => {
     e.preventDefault();
     if (!text.trim()) return;
