@@ -26,8 +26,9 @@ jobs:
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: "22"
 
+      # Java 17 for matching native build compatibility
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -38,14 +39,9 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install frontend dependencies
-              - name: Add Capacitor Android platform
         working-directory: frontend
         run: |
-          if [ ! -d android ]; then
-            npx cap add android
-          fi
-          npx cap sync android
-
+          # Bypasses environment engine mismatches and forces packages to install cleanly
           if [ -f yarn.lock ]; then
             yarn install --frozen-lockfile --ignore-engines || yarn install --ignore-engines
           else
@@ -53,16 +49,20 @@ jobs:
             yarn install --ignore-engines
           fi
 
-      - name: Build web application
+      - name: Build web bundle
         working-directory: frontend
         env:
-          CI: "false"
           REACT_APP_BACKEND_URL: https://clanchat.app
+          CI: "false"
         run: yarn build
 
-      - name: Cap sync
+      - name: Add Capacitor Android platform
         working-directory: frontend
-        run: npx cap sync android
+        run: |
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+          npx cap sync android
 
       - name: Splice asset branding
         working-directory: frontend
@@ -102,6 +102,8 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ClanChat-debug.apk
+          name: ClanChat-debug-apk
           path: dist/ClanChat-debug.apk
-          retention-days: 7
+          retention-days: 30
+          if-no-files-found: error
+
