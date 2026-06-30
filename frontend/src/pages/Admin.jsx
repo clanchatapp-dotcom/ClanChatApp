@@ -490,7 +490,7 @@ export default function Admin() {
           </button>
         </div>
         <p className="text-[10px] text-zinc-600 mt-3 leading-relaxed">
-          Purges every related record: posts, comments, follows, IC, DMs, groups, boards, walls, reports, CSAM, tags, blocks, mutes, restricts. The calling admin is never deleted, even via the "purge all" option.
+          Purges every related record: posts, comments, follows, IC, DMs, groups, boards, walls, reports, CSAM, tags, blocks, mutes, restricts. The calling admin is never deleted, even via the &quot;purge all&quot; option.
         </p>
       </section>
     </div>

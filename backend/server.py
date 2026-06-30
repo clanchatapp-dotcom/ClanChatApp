@@ -89,6 +89,81 @@ def clear_auth_cookies(response: Response):
     response.delete_cookie("session_token", path="/")
 
 
+# ----------------------------------------------------------------------
+# DM encryption — AES-256-GCM at rest.
+#
+# This is *server-side* encryption (a.k.a. "encryption at rest"), NOT end-to-
+# end. ClanChat holds the key. The threat model this protects against:
+#   • Stolen MongoDB dumps / leaked backups — ciphertext only
+#   • Casual ops or contractor poking around the DB outside the watchlist
+#     flow — they see opaque base64 strings, not message content
+#   • A leaked read-replica or accidental fixture export
+#
+# It does NOT protect against:
+#   • A compromised app server (the key sits in memory there)
+#   • An admin abusing the watchlist (the audit log is the deterrent)
+#
+# The UI surfaces this as "Encrypted" — never "End-to-end encrypted". When
+# we ship Signal-protocol E2E later we'll flip the label.
+# ----------------------------------------------------------------------
+import base64 as _base64
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _AESGCM
+import secrets as _secrets
+
+_DM_KEY_RAW = os.environ.get("DM_ENCRYPTION_KEY", "").strip()
+if _DM_KEY_RAW:
+    try:
+        _DM_KEY = _base64.urlsafe_b64decode(_DM_KEY_RAW)
+        if len(_DM_KEY) != 32:
+            raise ValueError(f"DM_ENCRYPTION_KEY must decode to 32 bytes, got {len(_DM_KEY)}")
+    except Exception as _e:
+        raise RuntimeError(f"Invalid DM_ENCRYPTION_KEY in env: {_e}")
+else:
+    # Dev fallback so the server still boots locally; in production the env
+    # var MUST be set or every restart re-keys and prior messages become
+    # unreadable. We log a loud warning so this isn't silent.
+    _DM_KEY = _AESGCM.generate_key(bit_length=256)
+    logging.warning("DM_ENCRYPTION_KEY not set — using ephemeral key. DMs will not survive a server restart.")
+
+_DM_CIPHER = _AESGCM(_DM_KEY)
+
+
+def encrypt_dm(plaintext: str) -> str:
+    """Encrypt a DM body. Returns base64(nonce || ciphertext+tag)."""
+    if not plaintext:
+        return ""
+    nonce = _secrets.token_bytes(12)  # AES-GCM standard nonce length
+    ct = _DM_CIPHER.encrypt(nonce, plaintext.encode("utf-8"), None)
+    return _base64.urlsafe_b64encode(nonce + ct).decode("ascii")
+
+
+def decrypt_dm(payload: str) -> str:
+    """Reverse of encrypt_dm. Returns '' on bad/empty input — never raises
+    into the request handler, because a single corrupt row should not nuke
+    the whole thread fetch."""
+    if not payload:
+        return ""
+    try:
+        blob = _base64.urlsafe_b64decode(payload.encode("ascii"))
+        nonce, ct = blob[:12], blob[12:]
+        return _DM_CIPHER.decrypt(nonce, ct, None).decode("utf-8")
+    except Exception as e:
+        logging.warning("decrypt_dm failed: %s", e)
+        return "[unreadable]"
+
+
+def hydrate_dm(doc: dict) -> dict:
+    """Read-path helper: if a stored DM row has `content_enc`, decrypt it
+    into `content` for the response. Legacy rows (pre-encryption) keep their
+    plaintext `content` untouched."""
+    if not doc:
+        return doc
+    if doc.get("content_enc"):
+        doc = {**doc, "content": decrypt_dm(doc["content_enc"])}
+        doc.pop("content_enc", None)
+    return doc
+
+
 def calc_age(dob_str: str) -> int:
     try:
         d = date.fromisoformat(dob_str)
@@ -621,8 +696,8 @@ async def update_me(payload: ProfileUpdateIn, user=Depends(get_current_user)):
     if payload.avatar_path is not None:
         update["avatar_path"] = payload.avatar_path
     if payload.links is not None:
-        update["links"] = [{"label": (l.get("label") or "")[:30], "url": (l.get("url") or "")[:200]}
-                           for l in payload.links[:10]]
+        update["links"] = [{"label": (link.get("label") or "")[:30], "url": (link.get("url") or "")[:200]}
+                           for link in payload.links[:10]]
     if payload.follow_mode in ("open", "approval"):
         update["follow_mode"] = payload.follow_mode
     if payload.nsfw_account is not None and not user.get("is_minor"):
@@ -741,6 +816,12 @@ async def follow_user(target_id: str, user=Depends(get_current_user)):
 @api.delete("/follow/{target_id}")
 async def unfollow(target_id: str, user=Depends(get_current_user)):
     await db.follows.delete_one({"follower_id": user["user_id"], "followee_id": target_id})
+    # Bug 5 fix: removing the follow relationship must also evict the user
+    # from the target's Inner Circle if they were a member. Inner Circle
+    # presupposes the follow relationship — keeping IC membership without
+    # the follow creates a stale orphan state that bypasses tier gating on
+    # IC-only DMs and posts.
+    await db.inner_circle.delete_one({"owner_id": target_id, "member_id": user["user_id"]})
     return {"ok": True}
 
 
@@ -1142,6 +1223,15 @@ async def get_feed(user=Depends(get_current_user), limit: int = 50, before: Opti
     if before:
         query["created_at"] = {"$lt": before}
 
+    # Bug 1 fix: Minors are completely invisible on the global/public feed
+    # to non-minor, non-admin viewers. Hardcoded — no override. Their posts
+    # only surface to other minors or to admins acting on reports.
+    if not is_minor(user) and user.get("role") != "admin":
+        minor_ids = [u["user_id"] async for u in db.users.find({"is_minor": True}, {"_id": 0, "user_id": 1})]
+        if minor_ids:
+            existing_nin = query.get("author_id", {}).get("$nin", []) if isinstance(query.get("author_id"), dict) else []
+            query["author_id"] = {"$nin": list(set(existing_nin + minor_ids))}
+
     # Quarantined content is invisible to everyone (admin still sees via /admin/csam/queue).
     # This is the same rule enforced in can_view_post — applied at the Mongo layer here
     # because /posts/feed does not iterate through that helper for performance.
@@ -1509,7 +1599,9 @@ async def send_dm(payload: DMIn, user=Depends(get_current_user)):
     mid = f"dm_{uuid.uuid4().hex[:10]}"
     doc = {
         "message_id": mid, "from_id": user["user_id"], "to_id": payload.recipient_id,
-        "content": content,
+        # Encrypted content at rest. Plaintext is never persisted.
+        "content_enc": encrypt_dm(content),
+        "content": "",  # legacy column, intentionally blank for new rows
         "media_paths": payload.media_paths,  # capped at 4 via DMIn validator
         "created_at": now_iso(),
         # Self-DMs are pre-marked read since you're sending to yourself —
@@ -1518,7 +1610,9 @@ async def send_dm(payload: DMIn, user=Depends(get_current_user)):
     }
     await db.dms.insert_one(doc)
     doc.pop("_id", None)
-    return doc
+    # Return the decrypted form to the caller so the optimistic UI matches
+    # the persisted version when re-fetched.
+    return hydrate_dm(doc)
 
 
 @api.get("/dms/threads")
@@ -1543,7 +1637,7 @@ async def list_threads(user=Depends(get_current_user)):
             # Pin the self thread to the top later, don't bucket with the rest.
             self_thread = {
                 "with": {**public_user(user), "is_self": True, "display_name": "Me, myself and I"},
-                "last": {k: v for k, v in t["last_message"].items() if k != "_id"},
+                "last": hydrate_dm({k: v for k, v in t["last_message"].items() if k != "_id"}),
             }
             continue
         other = await db.users.find_one({"user_id": other_id}, {"_id": 0})
@@ -1551,7 +1645,7 @@ async def list_threads(user=Depends(get_current_user)):
             continue
         threads.append({
             "with": public_user(other),
-            "last": {k: v for k, v in t["last_message"].items() if k != "_id"},
+            "last": hydrate_dm({k: v for k, v in t["last_message"].items() if k != "_id"}),
         })
     # Always surface the self thread, even if empty.
     if self_thread is None:
@@ -1579,7 +1673,7 @@ async def dm_history(other_id: str, user=Depends(get_current_user)):
     }, {"_id": 0}).sort("created_at", 1).limit(500)
     msgs = []
     async for m in cursor:
-        msgs.append(m)
+        msgs.append(hydrate_dm(m))
     if is_self:
         other = {**user, "display_name": "Me, myself and I"}
         return {"messages": msgs, "with": {**public_user(other), "is_self": True}, "can_send": True, "reason": "", "screenshots_allowed": True}
@@ -2355,7 +2449,7 @@ async def admin_watch_overview(user_id: str, admin=Depends(require_admin)):
     dms = []
     counterpart_ids = set()
     async for m in dms_cursor:
-        dms.append(m)
+        dms.append(hydrate_dm(m))
         counterpart_ids.add(m["from_id"] if m["from_id"] != user_id else m["to_id"])
     # Resolve counterpart handles for the UI
     counterparts = {}

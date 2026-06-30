@@ -32,7 +32,7 @@ export default function Search() {
           value={q} onChange={e => setQ(e.target.value)}
         />
       </div>
-      <p className="text-xs text-zinc-600 mt-2"># handles only · adults can't find minors</p>
+      <p className="text-xs text-zinc-600 mt-2"># handles only · adults can&apos;t find minors</p>
 
       <div className="mt-6 flex flex-col gap-1">
         {results.map(u => (

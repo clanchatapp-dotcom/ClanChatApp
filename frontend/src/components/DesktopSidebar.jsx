@@ -2,6 +2,7 @@ import { NavLink, Link } from "react-router-dom";
 import { Home, Search, MessageCircle, User, Users, Bell, Settings as Cog, ShieldCheck, Plus } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import useNotifCounts from "../hooks/useNotifCounts";
+import { fileUrl } from "../lib/api";
 
 export default function DesktopSidebar() {
   const { user } = useAuth();
@@ -82,7 +83,16 @@ export default function DesktopSidebar() {
           className="mt-4 flex items-center gap-3 p-2 rounded-2xl hover:bg-zinc-900 transition"
         >
           <div className="w-9 h-9 rounded-full bg-zinc-800 overflow-hidden flex items-center justify-center shrink-0">
-            <span className="font-heading text-sm text-zinc-400">{user.handle?.[0]?.toUpperCase()}</span>
+            {user.avatar_path ? (
+              <img
+                src={fileUrl(user.avatar_path)}
+                alt=""
+                className="w-full h-full object-cover"
+                data-testid="sidebar-avatar-img"
+              />
+            ) : (
+              <span className="font-heading text-sm text-zinc-400">{user.handle?.[0]?.toUpperCase()}</span>
+            )}
           </div>
           <div className="min-w-0">
             <div className="text-sm font-medium truncate">#{user.handle}</div>

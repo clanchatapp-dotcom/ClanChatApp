@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import api, { fileUrl, formatApiError } from "../lib/api";
-import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smile } from "lucide-react";
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
 
@@ -174,7 +174,16 @@ export function MessageThread() {
             </div>
           </div>
         ) : (
-          <Link to={`/u/${data.with?.handle}`} className="font-heading text-2xl">#{data.with?.handle}</Link>
+          <div className="flex items-center gap-2 flex-1">
+            <Link to={`/u/${data.with?.handle}`} className="font-heading text-2xl">#{data.with?.handle}</Link>
+            <span
+              data-testid="dm-encrypted-badge"
+              className="inline-flex items-center gap-1 text-[9px] uppercase tracking-[0.18em] text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded ml-auto"
+              title="Messages are encrypted at rest with AES-256. ClanChat holds the keys — this is server-side encryption, not end-to-end."
+            >
+              <ShieldCheck size={9} /> Encrypted
+            </span>
+          </div>
         )}
       </header>
 
@@ -310,6 +319,39 @@ export function MessageThread() {
             onChange={onPickFiles}
             data-testid="dm-file-input"
           />
+          <button
+            type="button"
+            data-testid="dm-call-audio"
+            onClick={() => toast.info("Voice calls — coming in the next build")}
+            disabled={!data.can_send || busy}
+            className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
+            aria-label="Voice call (coming soon)"
+            title="Voice call — coming in the next build"
+          >
+            <Phone size={16} />
+          </button>
+          <button
+            type="button"
+            data-testid="dm-call-video"
+            onClick={() => toast.info("Video calls — coming in the next build")}
+            disabled={!data.can_send || busy}
+            className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
+            aria-label="Video call (coming soon)"
+            title="Video call — coming in the next build"
+          >
+            <Video size={16} />
+          </button>
+          <button
+            type="button"
+            data-testid="dm-stickers"
+            onClick={() => toast.info("Stickers & GIFs — coming in the next build")}
+            disabled={!data.can_send || busy}
+            className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
+            aria-label="Stickers (coming soon)"
+            title="Stickers & GIFs — coming in the next build"
+          >
+            <Smile size={16} />
+          </button>
           <input
             data-testid="dm-input"
             className="flex-1 bg-transparent px-1 py-1 outline-none text-sm"

@@ -247,9 +247,7 @@ function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoard
   const [boardsOpen, setBoardsOpen] = useState(false);
   const [creatingBoard, setCreatingBoard] = useState(false);
   const [boardTitle, setBoardTitle] = useState("");
-  const [boardTier, setBoardTier] = useState("public");
-
-  const post = async () => {
+  const [boardTier, setBoardTier] = useState("public");  const post = async () => {
     if (!text.trim()) return;
     try {
       await api.post(`/wall/${ownerId}`, { content: text });
@@ -267,7 +265,7 @@ function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoard
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 mx-auto w-full max-w-md lg:max-w-lg" data-testid="wall-tab-content">
       <div className="border border-zinc-900 rounded-2xl p-3">
         <textarea data-testid="wall-input" value={text} onChange={e => setText(e.target.value)}
           placeholder={isMine ? "Post to your wall…" : "Write on wall…"}

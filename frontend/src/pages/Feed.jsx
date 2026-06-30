@@ -22,7 +22,11 @@ export default function Feed() {
 
   useEffect(() => { load(); api.get("/notifications/counts").then(r => setCounts(r.data)).catch(() => {}); }, []);
 
-  const filtered = mode === "gallery" ? posts.filter(p => p.media?.length > 0) : posts;
+  // Words = text-only posts (no media attached). Gallery = posts with media.
+  // Audio tracks are treated as media for the purpose of the toggle.
+  const filtered = mode === "gallery"
+    ? posts.filter(p => p.media?.length > 0)
+    : posts.filter(p => !p.media || p.media.length === 0);
   const notif = counts.follow_requests + counts.inner_invites;
 
   return (
