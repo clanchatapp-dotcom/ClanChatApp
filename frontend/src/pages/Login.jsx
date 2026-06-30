@@ -74,6 +74,13 @@ export default function Login() {
           className="cc-btn-primary mt-2" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
+        <Link
+          to="/forgot-password"
+          data-testid="forgot-password-link"
+          className="text-xs text-zinc-500 hover:text-[#FF5A00] mt-1 self-end"
+        >
+          Forgot password?
+        </Link>
       </form>
       <div className="flex items-center gap-3 my-6 text-zinc-600 text-xs uppercase tracking-[0.2em]">
         <div className="flex-1 h-px bg-zinc-900" /> or <div className="flex-1 h-px bg-zinc-900" />

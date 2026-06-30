@@ -4,6 +4,7 @@ import api, { fileUrl, formatApiError } from "../lib/api";
 import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smile } from "lucide-react";
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
+import StickerPicker from "../components/StickerPicker";
 
 // Native screenshot-block bridge. On the Android Capacitor APK we set
 // FLAG_SECURE on the window while a "no screenshots" thread is open. On
@@ -99,6 +100,17 @@ export function MessageThread() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
   useEffect(() => { load(); }, [userId]);
+  const [stickerOpen, setStickerOpen] = useState(false);
+
+  const sendQuick = async (content, media = []) => {
+    if (busy || !data?.can_send) return;
+    try {
+      await api.post("/dms", {
+        recipient_id: userId, content, media_paths: media,
+      });
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
 
   // Activate native screenshot block when allowed===false. Cleared on unmount
   // OR when the user navigates to another thread that does allow screenshots.
@@ -173,29 +185,55 @@ export function MessageThread() {
 
   return (
     <div className="px-5 pt-6 pb-40 flex flex-col min-h-screen">
-      <header className="flex items-center gap-3 mb-4">
-        <button onClick={() => nav(-1)} className="text-zinc-500 text-sm">← Back</button>
+      <header
+        data-testid="dm-thread-header"
+        className="sticky top-0 -mx-5 px-5 z-30 bg-black/95 backdrop-blur border-b border-zinc-900 pt-3 pb-3 mb-3 flex items-center gap-2"
+        style={{ top: "env(safe-area-inset-top, 0px)" }}
+      >
+        <button onClick={() => nav(-1)} className="text-zinc-500 text-sm shrink-0" data-testid="dm-back">← Back</button>
         {data.with?.is_self ? (
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#FF5A00] to-[#A00B00] flex items-center justify-center">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#FF5A00] to-[#A00B00] flex items-center justify-center shrink-0">
               <span className="font-heading text-black">★</span>
             </div>
-            <div>
-              <div className="font-heading text-xl leading-none">Me, myself and I</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-[#FF5A00]">Saved · only you can see this</div>
+            <div className="min-w-0">
+              <div className="font-heading text-lg leading-none truncate">Me, myself and I</div>
+              <div className="text-[10px] uppercase tracking-[0.2em] text-[#FF5A00]">Saved · only you</div>
             </div>
           </div>
         ) : (
-          <div className="flex items-center gap-2 flex-1">
-            <Link to={`/u/${data.with?.handle}`} className="font-heading text-2xl">#{data.with?.handle}</Link>
+          <>
+            <Link to={`/u/${data.with?.handle}`} className="font-heading text-lg truncate flex-1 min-w-0" data-testid="dm-handle">#{data.with?.handle}</Link>
             <span
               data-testid="dm-encrypted-badge"
-              className="inline-flex items-center gap-1 text-[9px] uppercase tracking-[0.18em] text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded ml-auto"
-              title="Messages are encrypted at rest with AES-256. ClanChat holds the keys — this is server-side encryption, not end-to-end."
+              className="inline-flex items-center gap-1 text-[9px] uppercase tracking-[0.18em] text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded shrink-0"
+              title="AES-256 server-side encryption at rest. Not end-to-end."
             >
-              <ShieldCheck size={9} /> Encrypted
+              <ShieldCheck size={9} /> Enc
             </span>
-          </div>
+            <button
+              type="button"
+              data-testid="dm-header-call-audio"
+              onClick={() => startCall("audio")}
+              disabled={!data.can_send || busy}
+              className="p-1.5 text-zinc-400 hover:text-[#FF5A00] disabled:opacity-40 shrink-0"
+              aria-label="Voice call"
+              title="Voice call"
+            >
+              <Phone size={17} />
+            </button>
+            <button
+              type="button"
+              data-testid="dm-header-call-video"
+              onClick={() => startCall("video")}
+              disabled={!data.can_send || busy}
+              className="p-1.5 text-zinc-400 hover:text-[#FF5A00] disabled:opacity-40 shrink-0"
+              aria-label="Video call"
+              title="Video call"
+            >
+              <Video size={17} />
+            </button>
+          </>
         )}
       </header>
 
@@ -333,34 +371,12 @@ export function MessageThread() {
           />
           <button
             type="button"
-            data-testid="dm-call-audio"
-            onClick={() => startCall("audio")}
-            disabled={!data.can_send || busy || data.with?.is_self}
-            className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
-            aria-label="Voice call"
-            title="Voice call"
-          >
-            <Phone size={16} />
-          </button>
-          <button
-            type="button"
-            data-testid="dm-call-video"
-            onClick={() => startCall("video")}
-            disabled={!data.can_send || busy || data.with?.is_self}
-            className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
-            aria-label="Video call"
-            title="Video call"
-          >
-            <Video size={16} />
-          </button>
-          <button
-            type="button"
             data-testid="dm-stickers"
-            onClick={() => toast.info("Stickers & GIFs — coming in the next build")}
+            onClick={() => setStickerOpen(true)}
             disabled={!data.can_send || busy}
             className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
-            aria-label="Stickers (coming soon)"
-            title="Stickers & GIFs — coming in the next build"
+            aria-label="Stickers"
+            title="Stickers & GIFs"
           >
             <Smile size={16} />
           </button>
@@ -382,13 +398,21 @@ export function MessageThread() {
         </div>
       </form>
       <MediaPermissionDialog />
+      <StickerPicker
+        open={stickerOpen}
+        onClose={() => setStickerOpen(false)}
+        onSendEmoji={(e) => sendQuick(e)}
+        onSendGif={(url) => sendQuick("", [url])}
+      />
     </div>
   );
 }
 
 // Inline media renderer for DMs. Images load lazily; video/audio get native controls.
 function DMMedia({ path }) {
-  const url = fileUrl(path);
+  // Tenor / external GIF URLs are stored verbatim; render them directly
+  // without prepending the file proxy.
+  const url = path.startsWith("http") ? path : fileUrl(path);
   const lower = path.toLowerCase();
   const isVideo = lower.match(/\.(mp4|mov|webm|m4v)(\?|$)/);
   const isAudio = lower.match(/\.(mp3|wav|m4a|ogg|aac|flac)(\?|$)/);

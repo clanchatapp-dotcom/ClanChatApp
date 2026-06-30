@@ -22,6 +22,7 @@ import Admin from "./pages/Admin";
 import AdminWatch from "./pages/AdminWatch";
 import AdminShowcase from "./pages/AdminShowcase";
 import Call from "./pages/Call";
+import ForgotPassword from "./pages/ForgotPassword";
 import TagApprovals from "./pages/TagApprovals";
 import MyConnections from "./pages/MyConnections";
 import Install from "./pages/Install";
@@ -45,6 +46,7 @@ function AppRouter() {
       <Route element={<AppShell />}>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/register" element={<Register />} />
         <Route path="/feed" element={<Protected><Feed /></Protected>} />
         <Route path="/compose" element={<Protected><NewPost /></Protected>} />

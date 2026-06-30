@@ -614,6 +614,110 @@ async def change_password(payload: ChangePasswordIn, user=Depends(get_current_us
     return {"ok": True}
 
 
+class PasswordResetRequestIn(BaseModel):
+    email: EmailStr
+    handle: str = Field(min_length=1, max_length=30)
+    reason: str = Field(default="", max_length=300)
+
+
+@api.post("/auth/request-reset")
+async def request_password_reset(payload: PasswordResetRequestIn):
+    """Public endpoint: user who can't log in submits an admin-support
+    ticket requesting a manual reset. We never confirm whether the email/
+    handle actually exists — that would leak account enumeration. The
+    admin sees the request in /admin → Reports → Password resets and uses
+    the existing /admin/users/{id}/reset-password tool to issue a temp
+    password, then contacts the user out-of-band.
+
+    Rate-limited at one request per email per hour to stop spam."""
+    email = payload.email.lower().strip()
+    handle = payload.handle.lstrip("#").lower().strip()
+    one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    recent = await db.password_reset_requests.count_documents({
+        "email": email, "created_at": {"$gt": one_hour_ago},
+    })
+    if recent >= 1:
+        # Always return ok so we don't leak rate-limit state to attackers.
+        return {"ok": True}
+    # Look the user up but don't tell the caller if we found them.
+    target = await db.users.find_one({"$or": [{"email": email}, {"handle": handle}]}, {"_id": 0})
+    await db.password_reset_requests.insert_one({
+        "request_id": f"prr_{uuid.uuid4().hex[:10]}",
+        "email": email, "handle": handle, "reason": payload.reason.strip()[:300],
+        "target_user_id": target["user_id"] if target else None,
+        "target_handle": target.get("handle") if target else None,
+        "status": "open",
+        "created_at": now_iso(),
+        "resolved_by": None, "resolved_at": None,
+    })
+    return {"ok": True}
+
+
+@api.get("/admin/password-resets")
+async def admin_list_password_resets(admin=Depends(get_current_user), status: str = "open"):
+    if admin.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    cursor = db.password_reset_requests.find({"status": status}, {"_id": 0}).sort("created_at", -1).limit(200)
+    return {"requests": [r async for r in cursor]}
+
+
+@api.post("/admin/password-resets/{request_id}/close")
+async def admin_close_password_reset(request_id: str, admin=Depends(get_current_user)):
+    if admin.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    await db.password_reset_requests.update_one(
+        {"request_id": request_id},
+        {"$set": {"status": "closed", "resolved_by": admin["user_id"], "resolved_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------
+# Stickers / GIFs — Tenor v2 proxy
+#
+# The Tenor API key (TENOR_API_KEY) stays server-side. The client only
+# ever calls our /stickers/* endpoints. If the key is unset the picker
+# shows bundled emoji reactions only.
+# ----------------------------------------------------------------------
+_TENOR_API_KEY = os.environ.get("TENOR_API_KEY", "").strip()
+
+
+@api.get("/stickers/config")
+async def stickers_config(user=Depends(get_current_user)):
+    return {"tenor_enabled": bool(_TENOR_API_KEY)}
+
+
+@api.get("/stickers/tenor-search")
+async def stickers_tenor_search(q: str, user=Depends(get_current_user)):
+    if not _TENOR_API_KEY:
+        raise HTTPException(503, "Tenor not configured")
+    q = (q or "").strip()[:60]
+    if not q:
+        return {"results": []}
+    import httpx
+    params = {
+        "q": q, "key": _TENOR_API_KEY, "client_key": "clanchat",
+        "limit": 24, "media_filter": "gif,tinygif", "contentfilter": "high",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get("https://tenor.googleapis.com/v2/search", params=params)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logging.warning("tenor search failed: %s", e)
+        raise HTTPException(502, "Tenor search failed")
+    results = []
+    for item in data.get("results", []):
+        media = item.get("media_formats", {})
+        gif = media.get("gif") or media.get("tinygif") or {}
+        preview = (media.get("tinygif") or media.get("gif") or {}).get("url")
+        if gif.get("url"):
+            results.append({"id": item.get("id"), "url": gif["url"], "preview": preview or gif["url"]})
+    return {"results": results}
+
+
+
 @api.get("/auth/me")
 async def me(user=Depends(get_current_user)):
     return private_user(user)
