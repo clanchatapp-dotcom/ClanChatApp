@@ -50,6 +50,9 @@ jobs:
 
       - name: Build web application
         working-directory: frontend
+        env:
+          CI: "false"
+          REACT_APP_BACKEND_URL: https://clanchat.app
         run: yarn build
 
       - name: Cap sync
@@ -97,4 +100,3 @@ jobs:
           name: ClanChat-debug.apk
           path: dist/ClanChat-debug.apk
           retention-days: 7
-
