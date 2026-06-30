@@ -19,21 +19,32 @@ export default function IncomingCallRinger() {
   const [busy, setBusy] = useState(false);
   const audioRef = useRef(null);
 
-  // Poll only while authenticated.
+  // Poll only when the AuthContext has definitively confirmed a real
+  // logged-in user. `user === undefined` is the initial loading state —
+  // we must NOT poll then or we get the bug where the ringer flashes
+  // over the splash/login screen because the bearer token in
+  // localStorage is still valid even though the React user state hasn't
+  // hydrated yet.
   useEffect(() => {
-    if (!user) return;
+    if (!user?.user_id) { setCall(null); return; }
     let stopped = false;
     const tick = async () => {
       if (stopped) return;
       try {
         const { data } = await api.get("/calls/incoming");
         if (!stopped) setCall(data.call || null);
-      } catch { /* silent — next tick will retry */ }
+      } catch (e) {
+        // 401 here means the token went bad mid-session. Clear any stale
+        // ringing-call state so we don't show a phantom dialog on top of
+        // the login screen after the AuthContext logs us out on the next
+        // /auth/me poll.
+        if (e?.response?.status === 401 && !stopped) setCall(null);
+      }
     };
     tick();
     const id = setInterval(tick, POLL_MS);
     return () => { stopped = true; clearInterval(id); };
-  }, [user]);
+  }, [user?.user_id]);
 
   // Play a subtle ringtone loop while the dialog is up. Capacitor WebView
   // allows looping audio after the first user gesture; on cold-load some

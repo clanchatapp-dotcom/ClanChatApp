@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   LiveKitRoom,
@@ -9,26 +9,20 @@ import {
   GridLayout,
 } from "@livekit/components-react";
 import { Track } from "livekit-client";
-import { Mic, MicOff, Video as VideoIcon, VideoOff, PhoneOff } from "lucide-react";
+import { Mic, MicOff, Video as VideoIcon, VideoOff, PhoneOff, SwitchCamera } from "lucide-react";
 import "@livekit/components-styles";
 import api from "../lib/api";
-import { useAuth } from "../context/AuthContext";
 
 /**
  * /call/:callId  — full-screen call UI.
  *
- * Two entry paths land here:
- *   1. Caller has just hit POST /calls/start and was redirected here with
- *      the token in router state. They wait in the room until callee joins.
- *   2. Callee has just accepted an incoming-call dialog and was redirected
- *      here with the token from POST /calls/{id}/answer.
- *
- * Both paths receive: { token, livekit_url, room_name, kind }
- *
- * The Capacitor APK needs the user to grant native CAMERA + RECORD_AUDIO
- * permissions which are declared in AndroidManifest.xml (added in the
- * github workflow). LiveKit's client SDK triggers the OS prompt the first
- * time we publish a track.
+ * Layout is explicitly z-stacked instead of relying on flex distribution
+ * inside <LiveKitRoom>, because LiveKit's internal CSS sometimes consumed
+ * the entire viewport on small mobile screens, hiding the controls bar.
+ * Now:
+ *   - <CallStage>   absolutely fills the screen (the video grid / audio art)
+ *   - <CallControls> sits on top with `fixed` + safe-area bottom inset,
+ *     so hang-up / mute / camera-switch are always reachable.
  */
 export default function Call() {
   const { callId } = useParams();
@@ -36,11 +30,8 @@ export default function Call() {
   const session = window.history.state?.usr?.session;
   const [hungUp, setHungUp] = useState(false);
 
-  // If the user refreshed mid-call the token state is lost. Send them home.
   useEffect(() => {
-    if (!session?.token) {
-      nav("/messages", { replace: true });
-    }
+    if (!session?.token) nav("/messages", { replace: true });
   }, [session, nav]);
 
   const onDisconnect = useCallback(async () => {
@@ -53,7 +44,7 @@ export default function Call() {
   if (!session?.token) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black flex flex-col" data-testid="call-screen">
+    <div className="fixed inset-0 z-[100] bg-black" data-testid="call-screen">
       <LiveKitRoom
         token={session.token}
         serverUrl={session.livekit_url}
@@ -61,7 +52,7 @@ export default function Call() {
         audio
         video={session.kind === "video"}
         onDisconnected={onDisconnect}
-        className="flex-1 flex flex-col"
+        className="absolute inset-0 flex flex-col"
         data-lk-theme="default"
       >
         <RoomAudioRenderer />
@@ -83,7 +74,7 @@ function CallStage({ kind }) {
 
   if (kind === "audio") {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6 pb-40">
         <div className="w-28 h-28 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-6">
           <Mic size={36} className="text-zinc-500" />
         </div>
@@ -92,9 +83,20 @@ function CallStage({ kind }) {
       </div>
     );
   }
+
+  // Video: explicitly position the grid to fill the *visible* viewport
+  // minus the bottom control bar height so participant tiles never get
+  // cropped/off-centre on small phones.
   return (
-    <div className="flex-1 relative">
-      <GridLayout tracks={tracks} className="h-full">
+    <div
+      className="absolute inset-0 overflow-hidden"
+      style={{
+        // Pad bottom by the control bar height (≈112px including safe area)
+        // so participant tiles aren't centred behind the controls.
+        paddingBottom: "calc(7rem + env(safe-area-inset-bottom, 0px))",
+      }}
+    >
+      <GridLayout tracks={tracks} className="h-full w-full">
         <ParticipantTile />
       </GridLayout>
     </div>
@@ -105,52 +107,84 @@ function CallControls({ onHangup, kind }) {
   const { localParticipant } = useLocalParticipant();
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(kind === "video");
-  const hungUpRef = useRef(false);
+  const [switching, setSwitching] = useState(false);
 
   const toggleMic = async () => {
     const next = !micOn;
-    await localParticipant.setMicrophoneEnabled(next);
-    setMicOn(next);
+    try { await localParticipant.setMicrophoneEnabled(next); setMicOn(next); }
+    catch (e) { console.warn("mic toggle failed", e); }
   };
   const toggleCam = async () => {
     const next = !camOn;
-    await localParticipant.setCameraEnabled(next);
-    setCamOn(next);
+    try { await localParticipant.setCameraEnabled(next); setCamOn(next); }
+    catch (e) { console.warn("cam toggle failed", e); }
   };
-  const hangup = () => {
-    if (hungUpRef.current) return;
-    hungUpRef.current = true;
-    onHangup();
+  const switchCam = async () => {
+    if (switching) return;
+    setSwitching(true);
+    try {
+      // Find the current camera track and swap deviceId between user-facing
+      // and environment-facing cameras. The LiveKit client exposes the
+      // underlying MediaStreamTrack so we can read facingMode and ask for
+      // the opposite one.
+      const cameraPub = localParticipant.getTrackPublication?.(Track.Source.Camera);
+      const mediaTrack = cameraPub?.track?.mediaStreamTrack;
+      const currentFacing = mediaTrack?.getSettings?.().facingMode || "user";
+      const nextFacing = currentFacing === "user" ? "environment" : "user";
+      await localParticipant.setCameraEnabled(true, { facingMode: nextFacing });
+    } catch (e) {
+      console.warn("camera switch failed", e);
+    } finally {
+      setSwitching(false);
+    }
   };
 
   return (
-    <div className="bg-black/70 backdrop-blur border-t border-zinc-900 px-6 py-5 flex items-center justify-center gap-5" data-testid="call-controls">
-      <button
-        data-testid="call-toggle-mic"
-        onClick={toggleMic}
-        className={`w-12 h-12 rounded-full flex items-center justify-center border ${micOn ? "border-zinc-700 bg-zinc-900 text-white" : "border-red-500/40 bg-red-500/10 text-red-300"}`}
-        aria-label={micOn ? "Mute" : "Unmute"}
-      >
-        {micOn ? <Mic size={18} /> : <MicOff size={18} />}
-      </button>
-      {kind === "video" && (
+    <div
+      className="absolute left-0 right-0 bottom-0 z-10 bg-black/85 backdrop-blur border-t border-zinc-900 px-6 pt-4"
+      style={{ paddingBottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))" }}
+      data-testid="call-controls"
+    >
+      <div className="flex items-center justify-center gap-5">
         <button
-          data-testid="call-toggle-cam"
-          onClick={toggleCam}
-          className={`w-12 h-12 rounded-full flex items-center justify-center border ${camOn ? "border-zinc-700 bg-zinc-900 text-white" : "border-red-500/40 bg-red-500/10 text-red-300"}`}
-          aria-label={camOn ? "Camera off" : "Camera on"}
+          data-testid="call-toggle-mic"
+          onClick={toggleMic}
+          className={`w-12 h-12 rounded-full flex items-center justify-center border ${micOn ? "border-zinc-700 bg-zinc-900 text-white" : "border-red-500/40 bg-red-500/10 text-red-300"}`}
+          aria-label={micOn ? "Mute" : "Unmute"}
         >
-          {camOn ? <VideoIcon size={18} /> : <VideoOff size={18} />}
+          {micOn ? <Mic size={18} /> : <MicOff size={18} />}
         </button>
-      )}
-      <button
-        data-testid="call-hangup"
-        onClick={hangup}
-        className="w-14 h-14 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center"
-        aria-label="Hang up"
-      >
-        <PhoneOff size={20} />
-      </button>
+        {kind === "video" && (
+          <>
+            <button
+              data-testid="call-toggle-cam"
+              onClick={toggleCam}
+              className={`w-12 h-12 rounded-full flex items-center justify-center border ${camOn ? "border-zinc-700 bg-zinc-900 text-white" : "border-red-500/40 bg-red-500/10 text-red-300"}`}
+              aria-label={camOn ? "Camera off" : "Camera on"}
+            >
+              {camOn ? <VideoIcon size={18} /> : <VideoOff size={18} />}
+            </button>
+            <button
+              data-testid="call-switch-cam"
+              onClick={switchCam}
+              disabled={switching || !camOn}
+              className="w-12 h-12 rounded-full flex items-center justify-center border border-zinc-700 bg-zinc-900 text-white disabled:opacity-40"
+              aria-label="Switch camera"
+              title="Switch camera"
+            >
+              <SwitchCamera size={18} />
+            </button>
+          </>
+        )}
+        <button
+          data-testid="call-hangup"
+          onClick={onHangup}
+          className="w-14 h-14 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-lg"
+          aria-label="Hang up"
+        >
+          <PhoneOff size={20} />
+        </button>
+      </div>
     </div>
   );
 }
