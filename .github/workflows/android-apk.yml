@@ -76,7 +76,48 @@ jobs:
           fi
           npx cap sync android
 
-      - name: Inject Android media permissions
+      - name: Wire Firebase Cloud Messaging
+        working-directory: frontend
+        run: |
+          # 1) Drop google-services.json into android/app/ where the Gradle
+          #    plugin expects to find it. Without this file the APK can't
+          #    register for FCM and push notifications are dead-on-arrival.
+          if [ ! -f android-resources/google-services.json ]; then
+            echo "::warning::android-resources/google-services.json missing — push notifications will not work in this build."
+          else
+            cp android-resources/google-services.json android/app/google-services.json
+            echo "Copied google-services.json into android/app/"
+          fi
+          # 2) Apply the Google services Gradle plugin. We patch the two
+          #    files Capacitor generates: the project-level build.gradle
+          #    (declares the plugin classpath) and the app-level build.gradle
+          #    (applies it). Idempotent — re-running the workflow doesn't
+          #    duplicate the entries.
+          python3 - <<'PY'
+          import pathlib, re
+          proj = pathlib.Path("android/build.gradle")
+          if proj.exists():
+              src = proj.read_text()
+              if "com.google.gms:google-services" not in src:
+                  # Add the classpath line inside the buildscript dependencies block.
+                  src = re.sub(
+                      r"(dependencies\s*\{)",
+                      r"\1\n        classpath 'com.google.gms:google-services:4.5.0'",
+                      src, count=1,
+                  )
+                  proj.write_text(src)
+                  print("project build.gradle patched with google-services classpath")
+          app = pathlib.Path("android/app/build.gradle")
+          if app.exists():
+              src = app.read_text()
+              if "com.google.gms.google-services" not in src:
+                  # Apply line goes at the very bottom of the app build.gradle.
+                  src = src.rstrip() + "\napply plugin: 'com.google.gms.google-services'\n"
+                  app.write_text(src)
+                  print("app build.gradle patched with google-services apply line")
+          PY
+
+      - name: Inject Android media + push permissions
         working-directory: frontend/android/app/src/main
         run: |
           # Add READ_MEDIA_IMAGES + READ_MEDIA_VIDEO (Android 13+) and the
@@ -97,6 +138,13 @@ jobs:
               '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
               '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
               '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />',
+              # FCM push notifications. POST_NOTIFICATIONS is the runtime
+              # permission Android 13+ requires for showing a notification
+              # overlay. WAKE_LOCK lets the FCM service wake the device for
+              # incoming-call rings even when idle.
+              '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+              '<uses-permission android:name="android.permission.WAKE_LOCK" />',
+              '<uses-permission android:name="android.permission.VIBRATE" />',
               '<uses-feature android:name="android.hardware.camera" android:required="false" />',
               '<uses-feature android:name="android.hardware.microphone" android:required="false" />',
           ]

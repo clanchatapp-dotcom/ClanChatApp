@@ -83,6 +83,9 @@ def set_auth_cookies(response: Response, access: str, refresh: str):
                         samesite="none", max_age=60 * 60 * 24 * 7, path="/")
 
 
+# ----------------------------------------------------------------------
+
+
 def clear_auth_cookies(response: Response):
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
@@ -419,6 +422,89 @@ async def relation(viewer_id: str, target_id: str) -> dict:
 # ------------------------------------------------------------------
 app = FastAPI()
 api = APIRouter(prefix="/api")
+
+
+# ----------------------------------------------------------------------
+# Firebase Cloud Messaging — push notifications for Android.
+#
+# The service account JSON is stored base64-encoded in
+# FCM_SERVICE_ACCOUNT_JSON_B64 so it never sits in plaintext on disk. If
+# unset (e.g. local dev), push is a no-op and never raises — DMs/calls/
+# etc. still work in-app, you just don't get notified when the app is
+# backgrounded.
+# ----------------------------------------------------------------------
+_FCM_OK = False
+_fb_messaging = None
+try:
+    _FCM_RAW = os.environ.get("FCM_SERVICE_ACCOUNT_JSON_B64", "").strip()
+    if _FCM_RAW:
+        import json as _json
+        import firebase_admin as _firebase_admin
+        from firebase_admin import credentials as _fb_creds, messaging as _fb_messaging
+        _sa_dict = _json.loads(_base64.b64decode(_FCM_RAW).decode("utf-8"))
+        if not _firebase_admin._apps:
+            _firebase_admin.initialize_app(_fb_creds.Certificate(_sa_dict))
+        _FCM_OK = True
+        logging.info("Firebase Cloud Messaging initialised for project %s", _sa_dict.get("project_id"))
+except Exception as _e:
+    logging.warning("FCM init failed: %s — push notifications disabled.", _e)
+
+
+async def fcm_push(user_id: str, title: str, body: str, *, data: dict | None = None,
+                   notif_type: str = "generic") -> int:
+    """Send a push to every registered device of a user. Honours per-type
+    toggles. Dead tokens are pruned automatically."""
+    if not _FCM_OK or _fb_messaging is None:
+        return 0
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0, "push_prefs": 1})
+    if u and u.get("push_prefs", {}).get(notif_type) is False:
+        return 0
+    cursor = db.device_tokens.find({"user_id": user_id}, {"_id": 0, "token": 1})
+    tokens = [t["token"] async for t in cursor]
+    if not tokens:
+        return 0
+    delivered, dead = 0, []
+    for tok in tokens:
+        try:
+            msg = _fb_messaging.Message(
+                token=tok,
+                notification=_fb_messaging.Notification(title=title[:80], body=body[:240]),
+                data={k: str(v) for k, v in (data or {}).items()},
+                android=_fb_messaging.AndroidConfig(
+                    priority="high",
+                    notification=_fb_messaging.AndroidNotification(
+                        channel_id=f"clanchat_{notif_type}",
+                        sound="default",
+                        default_vibrate_timings=True,
+                    ),
+                ),
+            )
+            _fb_messaging.send(msg)
+            delivered += 1
+        except _fb_messaging.UnregisteredError:
+            dead.append(tok)
+        except Exception as e:
+            logging.warning("fcm send to %s failed: %s", tok[:12], e)
+    if dead:
+        await db.device_tokens.delete_many({"token": {"$in": dead}})
+    return delivered
+
+
+class DeviceTokenIn(BaseModel):
+    token: str = Field(min_length=10, max_length=512)
+    platform: str = Field(default="android", pattern="^(android|ios|web)$")
+
+
+class PushPrefsIn(BaseModel):
+    dms: bool | None = None
+    calls: bool | None = None
+    follows: bool | None = None
+    inner_invites: bool | None = None
+
+
+# Note: the @api endpoints for register-device / unregister-device /
+# prefs are declared near the end of the file (after get_current_user
+# is defined), so the route registration happens in dependency order.
 
 
 # ------------------------------------------------------------------
@@ -924,6 +1010,19 @@ async def follow_user(target_id: str, user=Depends(get_current_user)):
         "follower_id": user["user_id"], "followee_id": target_id,
         "status": status, "created_at": now_iso(),
     })
+    try:
+        if status == "pending":
+            await fcm_push(target_id, "New follow request",
+                           f"#{user.get('handle', 'someone')} wants to follow you",
+                           data={"type": "follow_request", "from_id": user["user_id"]},
+                           notif_type="follows")
+        else:
+            await fcm_push(target_id, "New follower",
+                           f"#{user.get('handle', 'someone')} is now following you",
+                           data={"type": "new_follower", "from_id": user["user_id"]},
+                           notif_type="follows")
+    except Exception as _e:
+        logging.warning("follow push failed: %s", _e)
     return {"status": status}
 
 
@@ -1005,6 +1104,15 @@ async def invite_inner(payload: InnerInviteIn, user=Depends(get_current_user)):
         "owner_id": user["user_id"], "member_id": payload.user_id,
         "permissions": perms, "status": "pending", "created_at": now_iso(),
     })
+    try:
+        await fcm_push(
+            payload.user_id, "Inner Circle invite",
+            f"#{user.get('handle', 'someone')} invited you to their Inner Circle",
+            data={"type": "inner_invite", "from_id": user["user_id"]},
+            notif_type="inner_invites",
+        )
+    except Exception as _e:
+        logging.warning("inner invite push failed: %s", _e)
     return {"status": "pending"}
 
 
@@ -1724,6 +1832,21 @@ async def send_dm(payload: DMIn, user=Depends(get_current_user)):
     }
     await db.dms.insert_one(doc)
     doc.pop("_id", None)
+    # Fire-and-forget push notification. Self-DMs and recipients who muted
+    # DMs in their push prefs get skipped automatically inside fcm_push.
+    if not is_self:
+        sender_handle = user.get("handle", "someone")
+        preview = content[:80] if content else ("📎 Sent media" if payload.media_paths else "New message")
+        try:
+            await fcm_push(
+                payload.recipient_id,
+                f"#{sender_handle}",
+                preview,
+                data={"type": "dm", "from_id": user["user_id"], "from_handle": sender_handle},
+                notif_type="dms",
+            )
+        except Exception as _e:
+            logging.warning("dm push failed: %s", _e)
     # Return the decrypted form to the caller so the optimistic UI matches
     # the persisted version when re-fetched.
     return hydrate_dm(doc)
@@ -2947,6 +3070,20 @@ async def call_start(payload: CallStartIn, user=Depends(get_current_user)):
         "callee_id": payload.callee_id, "kind": payload.kind, "at": now,
     })
     token = _mint_livekit_token(room_name, user["user_id"], user.get("display_name") or user["handle"])
+    # Wake the callee's phone with a push so they hear/see the ring even
+    # when ClanChat is backgrounded. The Capacitor APK handles the
+    # `incoming_call` data payload by showing a fullscreen ringer.
+    try:
+        await fcm_push(
+            payload.callee_id,
+            f"Incoming {payload.kind} call",
+            f"#{user.get('handle', 'someone')} is calling",
+            data={"type": "incoming_call", "call_id": call_id, "kind": payload.kind,
+                  "caller_id": user["user_id"], "caller_handle": user.get("handle", "")},
+            notif_type="calls",
+        )
+    except Exception as _e:
+        logging.warning("call push failed: %s", _e)
     return {
         "call_id": call_id, "room_name": room_name, "kind": payload.kind,
         "livekit_url": _LIVEKIT_URL, "token": token,
@@ -3018,6 +3155,52 @@ async def call_end(call_id: str, user=Depends(get_current_user)):
 
 
 # include
+# ----------------------------------------------------------------------
+# Push notification endpoints (live here so they're declared after
+# get_current_user). See the FCM init block near the top of the file
+# for the actual sender helper.
+# ----------------------------------------------------------------------
+@api.post("/notifications/register-device")
+async def register_device(payload: DeviceTokenIn, user=Depends(get_current_user)):
+    """Called by the APK after the OS hands us a push token. Idempotent.
+    A given token can only ever belong to one ClanChat account at a time —
+    re-registering steals it from any previously-signed-in user, which
+    is what happens when two people share a phone."""
+    await db.device_tokens.delete_many({"token": payload.token})
+    await db.device_tokens.update_one(
+        {"user_id": user["user_id"], "token": payload.token},
+        {"$set": {"platform": payload.platform, "last_seen": now_iso()},
+         "$setOnInsert": {"user_id": user["user_id"], "token": payload.token, "created_at": now_iso()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.post("/notifications/unregister-device")
+async def unregister_device(payload: DeviceTokenIn, user=Depends(get_current_user)):
+    """Called on logout. Silently no-ops if the token isn't ours."""
+    await db.device_tokens.delete_one({"user_id": user["user_id"], "token": payload.token})
+    return {"ok": True}
+
+
+@api.post("/notifications/prefs")
+async def update_push_prefs(payload: PushPrefsIn, user=Depends(get_current_user)):
+    """Per-category toggles. Default is all-on so users get the
+    safety-relevant pushes without explicit setup."""
+    current = user.get("push_prefs", {}) or {}
+    for k in ("dms", "calls", "follows", "inner_invites"):
+        v = getattr(payload, k)
+        if v is not None:
+            current[k] = bool(v)
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"push_prefs": current}})
+    return {"prefs": current}
+
+
+@api.get("/notifications/prefs")
+async def get_push_prefs(user=Depends(get_current_user)):
+    return {"prefs": user.get("push_prefs", {})}
+
+
 app.include_router(api)
 
 app.add_middleware(
