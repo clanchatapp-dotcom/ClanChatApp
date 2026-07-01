@@ -8,7 +8,9 @@ const TABS = [
   { id: "reports", label: "Reports" },
   { id: "csam", label: "CSAM queue" },
   { id: "watchlist", label: "Watchlist" },
-  { id: "users", label: "Users" },
+  { id: "users", label: "User lookup" },
+  { id: "all_users", label: "All users" },
+  { id: "words", label: "Blocked words" },
   { id: "resets", label: "Password resets" },
   { id: "audit", label: "Audit log" },
 ];
@@ -187,6 +189,64 @@ export default function Admin() {
       toast.success(`Password reset for #${lookupUser.handle} · audit logged`);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
+
+  // ---- Reusable moderation actions (warn / strike / ban / unban) ----
+  // These call the new /admin/users/:uid/{warn,strike,ban,unban} endpoints
+  // and are wired to both the single-user lookup card and each row of the
+  // "All users" tab.
+  const warnUser = async (uid, handle, onDone) => {
+    const reason = window.prompt(`Send a soft warning to #${handle}? Enter the reason.`, "");
+    if (reason === null) return;
+    if (!reason.trim()) { toast.error("Reason required"); return; }
+    try {
+      await api.post(`/admin/users/${uid}/warn`, { reason: reason.trim() });
+      toast.success(`Warning sent to #${handle}`);
+      onDone?.();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+  const strikeUser = async (uid, handle, level, onDone) => {
+    const labels = { 1: "48h suspension", 2: "7-day suspension", 3: "account deletion" };
+    if (!window.confirm(`Strike ${level} on #${handle} — ${labels[level]}. Continue?`)) return;
+    const reason = window.prompt(`Reason for Strike ${level} on #${handle}?`, "Community guidelines violation");
+    if (reason === null) return;
+    if (!reason.trim()) { toast.error("Reason required"); return; }
+    try {
+      await api.post(`/admin/users/${uid}/strike?level=${level}`, { reason: reason.trim() });
+      toast.success(`Strike ${level} applied to #${handle}`);
+      onDone?.();
+      loadStats();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+  const banUser = async (uid, handle, onDone) => {
+    const hoursStr = window.prompt(`Ban #${handle} for how many hours? (1-8760)`, "24");
+    if (hoursStr === null) return;
+    const hours = parseInt(hoursStr, 10);
+    if (!Number.isFinite(hours) || hours < 1 || hours > 8760) {
+      toast.error("Hours must be between 1 and 8760 (1 year)"); return;
+    }
+    const reason = window.prompt(`Reason for the ban? (audit trail)`, "");
+    if (reason === null) return;
+    if (!reason.trim()) { toast.error("Reason required"); return; }
+    try {
+      const { data } = await api.post(`/admin/users/${uid}/ban`, { reason: reason.trim(), hours });
+      toast.success(`Banned #${handle} until ${new Date(data.suspended_until).toLocaleString()}`);
+      onDone?.();
+      loadStats();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+  const unbanUser = async (uid, handle, onDone) => {
+    if (!window.confirm(`Lift suspension for #${handle}? (Strike history is kept.)`)) return;
+    const reason = window.prompt(`Reason for lifting the ban?`, "");
+    if (reason === null) return;
+    if (!reason.trim()) { toast.error("Reason required"); return; }
+    try {
+      await api.post(`/admin/users/${uid}/unban`, { reason: reason.trim() });
+      toast.success(`#${handle} unbanned`);
+      onDone?.();
+      loadStats();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
 
   if (!stats) return <div className="p-10 text-zinc-500 text-sm">Loading admin…</div>;
 
@@ -441,12 +501,87 @@ export default function Admin() {
                 </button>
               </div>
 
+              {/* Moderation actions — warn / strike / ban / unban */}
+              <div className="border-t border-zinc-900 pt-3 mt-1">
+                <div className="text-[10px] uppercase tracking-[0.25em] text-zinc-500 mb-2">Moderation</div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    data-testid="user-warn"
+                    onClick={() => warnUser(lookupUser.user_id, lookupUser.handle, reloadLookup)}
+                    className="text-xs py-1.5 px-3 rounded-full transition border border-zinc-800 hover:border-yellow-500/40 hover:text-yellow-200"
+                  >
+                    Warn
+                  </button>
+                  <button
+                    data-testid="user-strike-1"
+                    onClick={() => strikeUser(lookupUser.user_id, lookupUser.handle, 1, reloadLookup)}
+                    className="text-xs py-1.5 px-3 rounded-full transition border border-amber-500/40 text-amber-200"
+                  >
+                    Strike 1 · 48h
+                  </button>
+                  <button
+                    data-testid="user-strike-2"
+                    onClick={() => strikeUser(lookupUser.user_id, lookupUser.handle, 2, reloadLookup)}
+                    className="text-xs py-1.5 px-3 rounded-full transition border border-orange-500/40 text-orange-200"
+                  >
+                    Strike 2 · 7d
+                  </button>
+                  <button
+                    data-testid="user-strike-3"
+                    onClick={() => strikeUser(lookupUser.user_id, lookupUser.handle, 3, reloadLookup)}
+                    className="text-xs py-1.5 px-3 rounded-full transition bg-red-500 text-white"
+                  >
+                    Strike 3 · Delete
+                  </button>
+                  {(lookupUser.suspended || lookupUser.deleted) ? (
+                    <button
+                      data-testid="user-unban"
+                      onClick={() => unbanUser(lookupUser.user_id, lookupUser.handle, reloadLookup)}
+                      className="text-xs py-1.5 px-3 rounded-full transition border border-emerald-500/40 text-emerald-200"
+                    >
+                      Unban / restore
+                    </button>
+                  ) : (
+                    <button
+                      data-testid="user-ban"
+                      onClick={() => banUser(lookupUser.user_id, lookupUser.handle, reloadLookup)}
+                      className="text-xs py-1.5 px-3 rounded-full transition border border-red-500/40 text-red-200"
+                    >
+                      Manual ban…
+                    </button>
+                  )}
+                </div>
+                {lookupUser.suspended && lookupUser.suspended_until && (
+                  <div className="text-[11px] text-amber-300 mt-2">
+                    Currently suspended until {new Date(lookupUser.suspended_until).toLocaleString()}
+                  </div>
+                )}
+                {lookupUser.deleted && (
+                  <div className="text-[11px] text-red-300 mt-2">
+                    Account is deleted (strike 3 or manual delete). Unban restores it.
+                  </div>
+                )}
+              </div>
+
               <p className="text-[10px] text-zinc-600 leading-relaxed">
                 Minors cannot post NSFW (hardcoded). Adults cannot follow/DM/invite minors unless minor initiates (hardcoded). 18+ creators are invisible to minors in search. Every change is audit-logged.
               </p>
             </div>
           )}
         </div>
+      )}
+
+      {tab === "all_users" && (
+        <AllUsersPanel
+          warnUser={warnUser}
+          strikeUser={strikeUser}
+          banUser={banUser}
+          unbanUser={unbanUser}
+        />
+      )}
+
+      {tab === "words" && (
+        <BlockedWordsPanel />
       )}
 
       {tab === "audit" && (
@@ -601,3 +736,302 @@ function PasswordResetsPanel({ requests, reload }) {
     </div>
   );
 }
+
+/**
+ * All-users directory. Paginated list with search + status filter and
+ * inline moderation actions on every row. Handles active/suspended/deleted
+ * accounts the same way — the row buttons swap between Ban and Unban based
+ * on current state.
+ */
+function AllUsersPanel({ warnUser, strikeUser, banUser, unbanUser }) {
+  const [users, setUsers] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("all");
+  const [skip, setSkip] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const limit = 25;
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/admin/users", {
+        params: { q, status, limit, skip },
+      });
+      setUsers(data.users || []);
+      setTotal(data.total || 0);
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, [status, skip]);
+
+  const submitSearch = (e) => { e.preventDefault(); setSkip(0); load(); };
+  const reloadCurrent = () => load();
+
+  return (
+    <div className="flex flex-col gap-3" data-testid="admin-all-users">
+      <form onSubmit={submitSearch} className="flex flex-wrap gap-2 items-center border border-zinc-900 rounded-2xl p-3">
+        <input
+          data-testid="all-users-search"
+          className="cc-input text-sm flex-1 min-w-[180px]"
+          placeholder="Search handle, email or display name…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <select
+          data-testid="all-users-status"
+          className="cc-input text-sm py-2"
+          value={status}
+          onChange={(e) => { setSkip(0); setStatus(e.target.value); }}
+        >
+          <option value="all">All</option>
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
+          <option value="deleted">Deleted</option>
+        </select>
+        <button type="submit" data-testid="all-users-search-submit" className="cc-btn-primary text-xs py-2 px-4">Search</button>
+      </form>
+
+      <div className="text-[11px] text-zinc-500 flex items-center justify-between">
+        <span>
+          {loading ? "Loading…" : `Showing ${users.length} of ${total} account${total === 1 ? "" : "s"}`}
+        </span>
+        <span className="flex items-center gap-2">
+          <button
+            data-testid="all-users-prev"
+            onClick={() => setSkip(Math.max(0, skip - limit))}
+            disabled={skip === 0}
+            className="px-2 py-1 border border-zinc-800 rounded disabled:opacity-30"
+          >Prev</button>
+          <button
+            data-testid="all-users-next"
+            onClick={() => setSkip(skip + limit)}
+            disabled={skip + limit >= total}
+            className="px-2 py-1 border border-zinc-800 rounded disabled:opacity-30"
+          >Next</button>
+        </span>
+      </div>
+
+      {users.length === 0 && !loading && (
+        <div className="text-zinc-600 text-sm text-center py-8">No accounts match.</div>
+      )}
+
+      {users.map((u) => (
+        <div
+          key={u.user_id}
+          className="border border-zinc-900 rounded-2xl p-3 flex flex-col gap-2"
+          data-testid={`all-users-row-${u.handle}`}
+        >
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="w-9 h-9 rounded-full bg-zinc-900 flex items-center justify-center shrink-0">
+              <span className="font-heading text-zinc-500">{u.handle?.[0]?.toUpperCase()}</span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium truncate">#{u.handle}</div>
+              <div className="text-[11px] text-zinc-500 truncate">{u.display_name} · {u.email}</div>
+            </div>
+            <div className="flex items-center gap-1 flex-wrap">
+              {u.role === "admin" && <span className="text-[10px] uppercase tracking-wider bg-sky-500/10 text-sky-300 border border-sky-500/30 px-1.5 py-0.5 rounded">Admin</span>}
+              {u.deleted && <span className="text-[10px] uppercase tracking-wider bg-red-500/10 text-red-300 border border-red-500/30 px-1.5 py-0.5 rounded">Deleted</span>}
+              {u.suspended && !u.deleted && <span className="text-[10px] uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded">Suspended</span>}
+              {u.is_minor && <span className="text-[10px] uppercase tracking-wider bg-amber-500/10 text-amber-200 border border-amber-500/20 px-1.5 py-0.5 rounded">Minor</span>}
+              {u.nsfw_account && <span className="text-[10px] uppercase tracking-wider bg-fuchsia-500/10 text-fuchsia-200 border border-fuchsia-500/20 px-1.5 py-0.5 rounded">18+</span>}
+              {u.strikes > 0 && <span className="text-[10px] uppercase tracking-wider bg-orange-500/10 text-orange-200 border border-orange-500/20 px-1.5 py-0.5 rounded">Strikes {u.strikes}</span>}
+            </div>
+          </div>
+
+          {u.suspended_until && (
+            <div className="text-[11px] text-amber-300">
+              Until {new Date(u.suspended_until).toLocaleString()}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button
+              data-testid={`row-warn-${u.handle}`}
+              onClick={() => warnUser(u.user_id, u.handle, reloadCurrent)}
+              className="text-[11px] py-1 px-2.5 rounded-full border border-zinc-800 hover:border-yellow-500/40 hover:text-yellow-200"
+            >Warn</button>
+            <button
+              data-testid={`row-strike-1-${u.handle}`}
+              onClick={() => strikeUser(u.user_id, u.handle, 1, reloadCurrent)}
+              className="text-[11px] py-1 px-2.5 rounded-full border border-amber-500/40 text-amber-200"
+            >S1 · 48h</button>
+            <button
+              data-testid={`row-strike-2-${u.handle}`}
+              onClick={() => strikeUser(u.user_id, u.handle, 2, reloadCurrent)}
+              className="text-[11px] py-1 px-2.5 rounded-full border border-orange-500/40 text-orange-200"
+            >S2 · 7d</button>
+            <button
+              data-testid={`row-strike-3-${u.handle}`}
+              onClick={() => strikeUser(u.user_id, u.handle, 3, reloadCurrent)}
+              className="text-[11px] py-1 px-2.5 rounded-full bg-red-500 text-white"
+            >S3 · Delete</button>
+            {(u.suspended || u.deleted) ? (
+              <button
+                data-testid={`row-unban-${u.handle}`}
+                onClick={() => unbanUser(u.user_id, u.handle, reloadCurrent)}
+                className="text-[11px] py-1 px-2.5 rounded-full border border-emerald-500/40 text-emerald-200"
+              >Unban</button>
+            ) : (
+              <button
+                data-testid={`row-ban-${u.handle}`}
+                onClick={() => banUser(u.user_id, u.handle, reloadCurrent)}
+                className="text-[11px] py-1 px-2.5 rounded-full border border-red-500/40 text-red-200"
+              >Ban…</button>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Blocked words moderation. Custom list overlays the hardcoded NSFW filter
+ * for trending. Admins add exact-match or substring entries; built-ins are
+ * read-only.
+ */
+function BlockedWordsPanel() {
+  const [custom, setCustom] = useState([]);
+  const [builtinExact, setBuiltinExact] = useState([]);
+  const [builtinSub, setBuiltinSub] = useState([]);
+  const [tag, setTag] = useState("");
+  const [match, setMatch] = useState("exact");
+  const [reason, setReason] = useState("");
+  const [showBuiltin, setShowBuiltin] = useState(false);
+
+  const load = async () => {
+    try {
+      const { data } = await api.get("/admin/moderation/blocked-tags");
+      setCustom(data.tags || []);
+      setBuiltinExact(data.builtin_exact || []);
+      setBuiltinSub(data.builtin_substring || []);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const add = async (e) => {
+    e.preventDefault();
+    const cleaned = tag.trim().toLowerCase().replace(/^#/, "");
+    if (!/^[a-z0-9]+$/.test(cleaned)) {
+      toast.error("Tag must be lowercase letters/digits only (no spaces or punctuation)"); return;
+    }
+    try {
+      await api.post("/admin/moderation/blocked-tags", { tag: cleaned, match, reason: reason.trim() });
+      toast.success(`#${cleaned} blocked from trending`);
+      setTag(""); setReason("");
+      load();
+    } catch (e2) { toast.error(formatApiError(e2.response?.data?.detail)); }
+  };
+
+  const remove = async (t) => {
+    if (!window.confirm(`Unblock #${t}? It will be eligible to appear in trending again.`)) return;
+    try {
+      await api.delete(`/admin/moderation/blocked-tags/${t}`);
+      toast.success(`#${t} removed from block list`);
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  return (
+    <div className="flex flex-col gap-3" data-testid="admin-blocked-words">
+      <div className="p-3 border border-zinc-900 bg-zinc-950 rounded-2xl">
+        <div className="text-[10px] uppercase tracking-[0.25em] text-zinc-500 mb-2">Block a word from trending</div>
+        <form onSubmit={add} className="flex flex-col gap-2">
+          <div className="flex gap-2 flex-wrap">
+            <input
+              data-testid="block-tag-input"
+              className="cc-input text-sm flex-1 min-w-[160px]"
+              placeholder="e.g. yiff, thicc, snuff"
+              value={tag}
+              onChange={(e) => setTag(e.target.value)}
+              maxLength={64}
+            />
+            <select
+              data-testid="block-tag-match"
+              className="cc-input text-sm py-2"
+              value={match}
+              onChange={(e) => setMatch(e.target.value)}
+            >
+              <option value="exact">Exact match</option>
+              <option value="substring">Substring (careful — collisions)</option>
+            </select>
+          </div>
+          <input
+            data-testid="block-tag-reason"
+            className="cc-input text-sm"
+            placeholder="Reason (optional — kept in audit log)"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            maxLength={500}
+          />
+          <button type="submit" data-testid="block-tag-submit" className="cc-btn-primary text-xs py-2 self-end">
+            Block from trending
+          </button>
+        </form>
+        <p className="text-[10px] text-zinc-600 leading-relaxed mt-2">
+          <strong>Exact</strong> blocks the tag only when typed exactly (safe). <strong>Substring</strong> blocks any tag containing the term (broader — but be careful, e.g. blocking &quot;ass&quot; as a substring would also hide #class, #grass).
+        </p>
+      </div>
+
+      <div className="text-[10px] uppercase tracking-[0.25em] text-zinc-500">Custom block list ({custom.length})</div>
+      {custom.length === 0 && (
+        <div className="text-zinc-600 text-sm text-center py-6 border border-zinc-900 rounded-2xl">
+          No custom blocks yet — the built-in NSFW list ({builtinExact.length + builtinSub.length} terms) is already active.
+        </div>
+      )}
+      {custom.map((c) => (
+        <div key={c.tag} className="border border-zinc-900 rounded-2xl p-3 flex items-center gap-3" data-testid={`blocked-tag-${c.tag}`}>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm">
+              <span className="text-[#FF5A00]">#</span>
+              <span className="font-mono">{c.tag}</span>
+              <span className="text-[10px] uppercase tracking-wider ml-2 text-zinc-500">{c.match}</span>
+            </div>
+            {c.reason && <div className="text-[11px] text-zinc-500 truncate">{c.reason}</div>}
+            <div className="text-[10px] text-zinc-700 mt-0.5">Added {new Date(c.added_at).toLocaleString()}</div>
+          </div>
+          <button
+            data-testid={`blocked-tag-remove-${c.tag}`}
+            onClick={() => remove(c.tag)}
+            className="text-[11px] py-1.5 px-3 rounded-full border border-emerald-500/40 text-emerald-200"
+          >Unblock</button>
+        </div>
+      ))}
+
+      <button
+        type="button"
+        data-testid="blocked-tag-toggle-builtin"
+        onClick={() => setShowBuiltin(!showBuiltin)}
+        className="text-[11px] text-zinc-500 hover:text-zinc-300 text-left mt-2"
+      >
+        {showBuiltin ? "Hide" : "Show"} built-in NSFW list ({builtinExact.length + builtinSub.length} terms — cannot be removed here)
+      </button>
+      {showBuiltin && (
+        <div className="border border-zinc-900 rounded-2xl p-3 text-[11px] text-zinc-400 space-y-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Exact ({builtinExact.length})</div>
+            <div className="flex flex-wrap gap-1">
+              {builtinExact.map((t) => (
+                <span key={`e-${t}`} className="bg-zinc-900 px-2 py-0.5 rounded text-zinc-400">{t}</span>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Substring ({builtinSub.length})</div>
+            <div className="flex flex-wrap gap-1">
+              {builtinSub.map((t) => (
+                <span key={`s-${t}`} className="bg-zinc-900 px-2 py-0.5 rounded text-zinc-400">{t}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+

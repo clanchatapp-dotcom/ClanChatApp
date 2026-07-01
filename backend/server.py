@@ -2914,6 +2914,271 @@ async def admin_purge_demo(payload: Optional[dict] = None, admin=Depends(require
 
 
 # ------------------------------------------------------------------
+# Admin: user directory + moderation actions
+#
+# Endpoints:
+#   GET  /admin/users             — paginated list of every account
+#                                    (optional `q` searches email / handle /
+#                                    display_name; `status` filters
+#                                    active/suspended/deleted)
+#   POST /admin/users/{uid}/warn  — soft warning (no suspension)
+#   POST /admin/users/{uid}/strike?level=1|2|3
+#                                 — direct strike (48h / 7d / delete)
+#   POST /admin/users/{uid}/ban   — custom-duration manual ban
+#   POST /admin/users/{uid}/unban — lift suspension + un-delete
+# ------------------------------------------------------------------
+def _user_row(u: dict) -> dict:
+    """Compact user dict for the admin directory."""
+    suspended = False
+    exp = u.get("suspended_until")
+    if exp:
+        try:
+            suspended = datetime.fromisoformat(exp) > datetime.now(timezone.utc)
+        except Exception:
+            suspended = False
+    return {
+        "user_id": u.get("user_id"),
+        "email": u.get("email"),
+        "handle": u.get("handle"),
+        "display_name": u.get("display_name"),
+        "role": u.get("role", "user"),
+        "strikes": u.get("strikes", 0),
+        "is_minor": u.get("is_minor", False),
+        "nsfw_account": u.get("nsfw_account", False),
+        "suspended": suspended,
+        "suspended_until": exp if suspended else None,
+        "deleted": bool(u.get("deleted")),
+        "deleted_at": u.get("deleted_at"),
+        "auth_provider": u.get("auth_provider", "password"),
+        "created_at": u.get("created_at"),
+    }
+
+
+@api.get("/admin/users")
+async def admin_users_list(
+    admin=Depends(require_admin),
+    q: str = "",
+    status: str = "all",  # all | active | suspended | deleted
+    limit: int = 50,
+    skip: int = 0,
+):
+    limit = max(1, min(int(limit or 50), 200))
+    skip = max(0, int(skip or 0))
+    query: dict = {}
+    q = (q or "").strip().lower().lstrip("#").lstrip("@")
+    if q:
+        # Substring match on handle / email / display_name (case-insensitive).
+        # Uses a regex — collection is small enough for the admin surface.
+        rx = {"$regex": re.escape(q), "$options": "i"}
+        query["$or"] = [{"handle": rx}, {"email": rx}, {"display_name": rx}]
+    if status == "active":
+        query["deleted"] = {"$ne": True}
+        query["$and"] = query.get("$and", []) + [{
+            "$or": [
+                {"suspended_until": None},
+                {"suspended_until": {"$lte": now_iso()}},
+            ]
+        }]
+    elif status == "suspended":
+        query["deleted"] = {"$ne": True}
+        query["suspended_until"] = {"$gt": now_iso()}
+    elif status == "deleted":
+        query["deleted"] = True
+    total = await db.users.count_documents(query)
+    cursor = db.users.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit)
+    users = []
+    async for u in cursor:
+        users.append(_user_row(u))
+    return {"users": users, "total": total, "limit": limit, "skip": skip}
+
+
+class AdminActionIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+@api.post("/admin/users/{user_id}/warn")
+async def admin_warn_user(user_id: str, payload: AdminActionIn, admin=Depends(require_admin)):
+    """Soft warning — user sees a dismissable banner via /me/warnings.
+    Does NOT touch strike count or suspension."""
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    wid = f"warn_{uuid.uuid4().hex[:10]}"
+    await db.soft_warnings.insert_one({
+        "warning_id": wid,
+        "user_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "issued_by": admin["user_id"],
+        "issued_at": now_iso(),
+        "dismissed": False,
+        "source": "admin_manual",
+    })
+    await db.audit_events.insert_one({
+        "event": "admin_warn",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "at": now_iso(),
+    })
+    return {"ok": True, "warning_id": wid}
+
+
+@api.post("/admin/users/{user_id}/strike")
+async def admin_direct_strike(
+    user_id: str,
+    payload: AdminActionIn,
+    level: int = 1,
+    admin=Depends(require_admin),
+):
+    """Apply a strike directly to a user without needing an open report.
+    level=1 → 48h, level=2 → 7d, level=3 → account deletion."""
+    if level not in (1, 2, 3):
+        raise HTTPException(400, "level must be 1, 2 or 3")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "admin" and level == 3:
+        raise HTTPException(403, "Cannot delete an admin account via strike — demote first")
+    await apply_strike(user_id, payload.reason.strip(), level=level)
+    await db.audit_events.insert_one({
+        "event": f"admin_strike_{level}",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "at": now_iso(),
+    })
+    return {"ok": True, "level": level}
+
+
+class AdminBanIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    hours: int = Field(default=24, ge=1, le=24 * 365)
+
+
+@api.post("/admin/users/{user_id}/ban")
+async def admin_ban_user(user_id: str, payload: AdminBanIn, admin=Depends(require_admin)):
+    """Manual custom-duration suspension. Does not increment the strike
+    counter — use /strike for that. Useful for holding an account while an
+    investigation runs."""
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(403, "Cannot ban an admin — demote first")
+    until = (datetime.now(timezone.utc) + timedelta(hours=payload.hours)).isoformat()
+    await db.users.update_one({"user_id": user_id}, {"$set": {"suspended_until": until}})
+    await db.audit_events.insert_one({
+        "event": "admin_ban",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "hours": payload.hours,
+        "until": until,
+        "at": now_iso(),
+    })
+    return {"ok": True, "suspended_until": until}
+
+
+@api.post("/admin/users/{user_id}/unban")
+async def admin_unban_user(user_id: str, payload: AdminActionIn, admin=Depends(require_admin)):
+    """Lift a suspension and (if the account was soft-deleted via a level-3
+    strike) restore it. Strike counter is NOT decremented — the history
+    survives even after unban."""
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    update = {"$set": {"suspended_until": None}}
+    if target.get("deleted"):
+        update["$set"]["deleted"] = False
+        update["$set"]["deleted_at"] = None
+        update["$set"]["deleted_reason"] = None
+    await db.users.update_one({"user_id": user_id}, update)
+    await db.audit_events.insert_one({
+        "event": "admin_unban",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Admin: blocked-tag moderation
+#
+# Overlays the hardcoded NSFW filter. Anything added here is filtered from
+# trending in addition to the built-in list. Two match modes:
+#   exact       → tag must equal the entered term (default; safe)
+#   substring   → any tag containing the term is blocked (use with care —
+#                 substrings that collide with real words break trending)
+# ------------------------------------------------------------------
+class BlockedTagIn(BaseModel):
+    tag: str = Field(min_length=1, max_length=64)
+    match: str = Field(default="exact", pattern="^(exact|substring)$")
+    reason: str = Field(default="", max_length=500)
+
+
+@api.get("/admin/moderation/blocked-tags")
+async def admin_blocked_tags_list(admin=Depends(require_admin)):
+    cursor = db.blocked_tags.find({}, {"_id": 0}).sort("added_at", -1)
+    out = []
+    async for row in cursor:
+        out.append(row)
+    return {"tags": out, "builtin_exact": sorted(NSFW_TAG_EXACT), "builtin_substring": sorted(NSFW_TAG_SUBSTRING)}
+
+
+@api.post("/admin/moderation/blocked-tags")
+async def admin_blocked_tag_add(payload: BlockedTagIn, admin=Depends(require_admin)):
+    tag = payload.tag.strip().lower().lstrip("#")
+    if not re.fullmatch(r"[a-z0-9]+", tag):
+        raise HTTPException(400, "Tag must be lowercase letters/digits only")
+    existing = await db.blocked_tags.find_one({"tag": tag})
+    if existing:
+        raise HTTPException(409, "Tag already blocked")
+    doc = {
+        "tag": tag,
+        "match": payload.match,
+        "reason": (payload.reason or "").strip()[:500],
+        "added_by": admin["user_id"],
+        "added_at": now_iso(),
+    }
+    await db.blocked_tags.insert_one(doc)
+    await db.audit_events.insert_one({
+        "event": "moderation_tag_blocked",
+        "admin_id": admin["user_id"],
+        "target_type": "tag",
+        "target_id": tag,
+        "match": payload.match,
+        "reason": doc["reason"],
+        "at": now_iso(),
+    })
+    doc.pop("_id", None)
+    return {"ok": True, "tag": doc}
+
+
+@api.delete("/admin/moderation/blocked-tags/{tag}")
+async def admin_blocked_tag_remove(tag: str, admin=Depends(require_admin)):
+    tag = tag.strip().lower().lstrip("#")
+    res = await db.blocked_tags.delete_one({"tag": tag})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Tag not in the custom block list (built-in terms cannot be removed here)")
+    await db.audit_events.insert_one({
+        "event": "moderation_tag_unblocked",
+        "admin_id": admin["user_id"],
+        "target_type": "tag",
+        "target_id": tag,
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+
+
+# ------------------------------------------------------------------
 # Trending tags (right-rail / discovery)
 # Public posts, last 24h, top 10, exclude banned & non-public
 # ------------------------------------------------------------------
@@ -2936,12 +3201,28 @@ async def trending_tags(viewer=Depends(get_current_user)):
         {"$group": {"_id": "$tags", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
         # Grab extras so we can drop NSFW-worded tags and still return 10.
-        {"$limit": 40},
+        {"$limit": 60},
     ]
+    # Overlay admin-managed blocked tags. Cheap: this collection is tiny.
+    custom_exact = set()
+    custom_substr = set()
+    async for row in db.blocked_tags.find({}, {"_id": 0, "tag": 1, "match": 1}):
+        t = (row.get("tag") or "").lower()
+        if not t:
+            continue
+        if row.get("match") == "substring":
+            custom_substr.add(t)
+        else:
+            custom_exact.add(t)
     out = []
     async for row in db.posts.aggregate(pipeline):
         tag = row["_id"]
         if is_nsfw_tag(tag):
+            continue
+        tl = tag.lower()
+        if tl in custom_exact:
+            continue
+        if any(term in tl for term in custom_substr):
             continue
         out.append({"tag": tag, "count": row["count"]})
         if len(out) >= 10:
