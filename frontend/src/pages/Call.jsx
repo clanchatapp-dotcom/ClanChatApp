@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   LiveKitRoom,
@@ -6,26 +6,47 @@ import {
   ParticipantTile,
   useTracks,
   useLocalParticipant,
+  useRoomContext,
 } from "@livekit/components-react";
 import { Track } from "livekit-client";
-import { Mic, MicOff, Video as VideoIcon, VideoOff, PhoneOff, SwitchCamera } from "lucide-react";
+import {
+  Mic, MicOff, Video as VideoIcon, VideoOff, PhoneOff,
+  SwitchCamera, Volume2, Volume1, MonitorUp, MonitorOff,
+} from "lucide-react";
 import "@livekit/components-styles";
 import api from "../lib/api";
-import { startCallAudio, stopCallAudio } from "../lib/callAudio";
+import { startCallAudio, stopCallAudio, setSpeakerphone } from "../lib/callAudio";
 
 /**
  * /call/:callId  — full-screen call UI.
  *
  * Layout:
- *   - Remote participant fills the screen (main view).
- *   - Local participant is a small picture-in-picture tile pinned
- *     to the top-right.
- *   - Controls sit at the bottom with safe-area inset.
+ *   - Mobile (<1024px): remote fills the screen; local camera is a small
+ *     PiP tile in the top-right.
+ *   - Desktop (≥1024px): 2-column grid — remote on the left, local on the
+ *     right, both large. Screen-share, if active, replaces the main tile.
  *
- * On Android (Capacitor) we route audio through the in-call earpiece via
- * the CallAudio native plugin so the volume rocker controls call volume
- * and the audio doesn't play as media.
+ * Keyboard shortcuts (desktop only): `M` = mute, `V` = camera,
+ * `S` = speaker, `End` or `Escape` = hang up.
+ *
+ * Android audio is routed through MODE_IN_COMMUNICATION via the CallAudio
+ * native plugin so the volume rocker controls call volume and audio plays
+ * through the earpiece by default.
  */
+function useIsDesktop() {
+  const [isDesktop, setIsDesktop] = useState(
+    typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = (e) => setIsDesktop(e.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
+  return isDesktop;
+}
+
 export default function Call() {
   const { callId } = useParams();
   const nav = useNavigate();
@@ -36,9 +57,6 @@ export default function Call() {
     if (!session?.token) nav("/messages", { replace: true });
   }, [session, nav]);
 
-  // Switch Android into in-communication audio mode for the lifetime of
-  // the call. No-op on web. Always restored on unmount even if the call
-  // ends abnormally.
   useEffect(() => {
     if (!session?.token) return;
     startCallAudio({ speaker: false }).catch((e) => console.warn("call audio start failed", e));
@@ -77,9 +95,8 @@ export default function Call() {
 }
 
 function CallStage({ kind }) {
-  // Pull every camera track in the room. We split into local vs remote so
-  // the remote participant gets the fullscreen and the local goes into a
-  // small PiP tile.
+  const isDesktop = useIsDesktop();
+
   const tracks = useTracks(
     [
       { source: Track.Source.Camera, withPlaceholder: true },
@@ -88,12 +105,19 @@ function CallStage({ kind }) {
     { onlySubscribed: false }
   );
 
-  const localTracks = tracks.filter((t) => t.participant?.isLocal);
-  const remoteTracks = tracks.filter((t) => !t.participant?.isLocal);
-  // Pick the first remote camera track if any, otherwise fall back to the
-  // local one so the user sees themselves while waiting.
-  const mainTrack = remoteTracks[0] || localTracks[0];
-  const pipTrack = remoteTracks.length > 0 ? localTracks[0] : null;
+  const localCam = tracks.find(
+    (t) => t.participant?.isLocal && t.source === Track.Source.Camera
+  );
+  const remoteCam = tracks.find(
+    (t) => !t.participant?.isLocal && t.source === Track.Source.Camera
+  );
+  const anyScreenShare = tracks.find((t) => t.source === Track.Source.ScreenShare);
+
+  // Screen share always takes centre stage when active.
+  const mainTrack = anyScreenShare || remoteCam || localCam;
+  const pipTrack = anyScreenShare
+    ? (remoteCam || localCam)
+    : (remoteCam ? localCam : null);
 
   if (kind === "audio") {
     return (
@@ -103,21 +127,42 @@ function CallStage({ kind }) {
         </div>
         <div className="text-zinc-400 text-sm uppercase tracking-[0.2em]">Voice call</div>
         <div className="text-zinc-600 text-xs mt-2">
-          {remoteTracks.length > 0 ? "Connected" : "Waiting for the other person…"}
+          {remoteCam ? "Connected" : "Waiting for the other person…"}
         </div>
       </div>
     );
   }
 
+  // ---- Desktop 2-column layout ----
+  if (isDesktop && remoteCam && localCam) {
+    return (
+      <div
+        className="absolute inset-0 grid grid-cols-2 gap-3 p-4 overflow-hidden"
+        style={{ paddingBottom: "8rem" }}
+        data-testid="call-desktop-grid"
+      >
+        <div className="rounded-2xl overflow-hidden bg-zinc-900 relative">
+          <ParticipantTile trackRef={mainTrack} className="!h-full !w-full" />
+          <div className="absolute bottom-2 left-2 text-[10px] uppercase tracking-wider bg-black/70 text-zinc-300 px-2 py-0.5 rounded">
+            {anyScreenShare ? "Screen share" : "Them"}
+          </div>
+        </div>
+        <div className="rounded-2xl overflow-hidden bg-zinc-900 relative">
+          <ParticipantTile trackRef={pipTrack} className="!h-full !w-full" />
+          <div className="absolute bottom-2 left-2 text-[10px] uppercase tracking-wider bg-black/70 text-zinc-300 px-2 py-0.5 rounded">
+            You
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Mobile / single-participant layout ----
   return (
     <div
       className="absolute inset-0 overflow-hidden"
-      style={{
-        paddingBottom: "calc(7rem + env(safe-area-inset-bottom, 0px))",
-      }}
+      style={{ paddingBottom: "calc(7rem + env(safe-area-inset-bottom, 0px))" }}
     >
-      {/* Main view — remote participant fullscreen. Falls back to a soft
-          placeholder while we're still waiting for them to join. */}
       <div className="absolute inset-0">
         {mainTrack ? (
           <ParticipantTile trackRef={mainTrack} className="!h-full !w-full" />
@@ -129,9 +174,6 @@ function CallStage({ kind }) {
         )}
       </div>
 
-      {/* Picture-in-picture — local camera in the top-right.
-          Only shown when there's an actual remote participant, otherwise
-          the local feed is already the main view. */}
       {pipTrack && (
         <div
           className="absolute right-3 z-20 rounded-xl overflow-hidden border border-zinc-700 shadow-xl"
@@ -152,21 +194,28 @@ function CallStage({ kind }) {
 
 function CallControls({ onHangup, kind }) {
   const { localParticipant } = useLocalParticipant();
+  const room = useRoomContext();
+  const isDesktop = useIsDesktop();
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(kind === "video");
   const [switching, setSwitching] = useState(false);
+  const [screenSharing, setScreenSharing] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(false);
 
-  const toggleMic = async () => {
+  const toggleMic = useCallback(async () => {
     const next = !micOn;
     try { await localParticipant.setMicrophoneEnabled(next); setMicOn(next); }
     catch (e) { console.warn("mic toggle failed", e); }
-  };
-  const toggleCam = async () => {
+  }, [micOn, localParticipant]);
+
+  const toggleCam = useCallback(async () => {
+    if (kind !== "video") return;
     const next = !camOn;
     try { await localParticipant.setCameraEnabled(next); setCamOn(next); }
     catch (e) { console.warn("cam toggle failed", e); }
-  };
-  const switchCam = async () => {
+  }, [camOn, localParticipant, kind]);
+
+  const switchCam = useCallback(async () => {
     if (switching) return;
     setSwitching(true);
     try {
@@ -175,12 +224,49 @@ function CallControls({ onHangup, kind }) {
       const currentFacing = mediaTrack?.getSettings?.().facingMode || "user";
       const nextFacing = currentFacing === "user" ? "environment" : "user";
       await localParticipant.setCameraEnabled(true, { facingMode: nextFacing });
+    } catch (e) { console.warn("camera switch failed", e); }
+    finally { setSwitching(false); }
+  }, [localParticipant, switching]);
+
+  const toggleSpeaker = useCallback(async () => {
+    const next = !speakerOn;
+    try { await setSpeakerphone(next); setSpeakerOn(next); }
+    catch (e) { console.warn("speaker toggle failed", e); }
+  }, [speakerOn]);
+
+  const toggleScreenShare = useCallback(async () => {
+    try {
+      const next = !screenSharing;
+      await localParticipant.setScreenShareEnabled(next);
+      setScreenSharing(next);
     } catch (e) {
-      console.warn("camera switch failed", e);
-    } finally {
-      setSwitching(false);
+      console.warn("screen share toggle failed", e);
+      // Browser may reject if the user cancels the picker — flip state back.
+      setScreenSharing(false);
     }
-  };
+  }, [screenSharing, localParticipant]);
+
+  // Keyboard shortcuts (desktop). Anchored to `room` so we don't hijack
+  // typing in unrelated apps if the tab is backgrounded.
+  useEffect(() => {
+    if (!isDesktop) return;
+    const onKey = (e) => {
+      // Ignore keys typed into inputs / textareas.
+      const t = e.target;
+      if (t?.tagName === "INPUT" || t?.tagName === "TEXTAREA" || t?.isContentEditable) return;
+      if (e.key === "m" || e.key === "M") { e.preventDefault(); toggleMic(); }
+      else if (e.key === "v" || e.key === "V") { e.preventDefault(); toggleCam(); }
+      else if (e.key === "s" || e.key === "S") { e.preventDefault(); toggleSpeaker(); }
+      else if (e.key === "Escape" || e.key === "End") { e.preventDefault(); onHangup(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isDesktop, toggleMic, toggleCam, toggleSpeaker, onHangup]);
+
+  const canScreenShare = useMemo(
+    () => typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia,
+    []
+  );
 
   return (
     <div
@@ -188,37 +274,54 @@ function CallControls({ onHangup, kind }) {
       style={{ paddingBottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))" }}
       data-testid="call-controls"
     >
-      <div className="flex items-center justify-center gap-5">
-        <button
-          data-testid="call-toggle-mic"
+      <div className="flex items-center justify-center gap-3 sm:gap-5 flex-wrap">
+        <ControlButton
+          testId="call-toggle-mic"
           onClick={toggleMic}
-          className={`w-12 h-12 rounded-full flex items-center justify-center border ${micOn ? "border-zinc-700 bg-zinc-900 text-white" : "border-red-500/40 bg-red-500/10 text-red-300"}`}
-          aria-label={micOn ? "Mute" : "Unmute"}
-        >
-          {micOn ? <Mic size={18} /> : <MicOff size={18} />}
-        </button>
+          label={micOn ? "Mute" : "Unmute"}
+          active={!micOn}
+        >{micOn ? <Mic size={18} /> : <MicOff size={18} />}</ControlButton>
+
         {kind === "video" && (
           <>
-            <button
-              data-testid="call-toggle-cam"
+            <ControlButton
+              testId="call-toggle-cam"
               onClick={toggleCam}
-              className={`w-12 h-12 rounded-full flex items-center justify-center border ${camOn ? "border-zinc-700 bg-zinc-900 text-white" : "border-red-500/40 bg-red-500/10 text-red-300"}`}
-              aria-label={camOn ? "Camera off" : "Camera on"}
-            >
-              {camOn ? <VideoIcon size={18} /> : <VideoOff size={18} />}
-            </button>
-            <button
-              data-testid="call-switch-cam"
+              label={camOn ? "Camera off" : "Camera on"}
+              active={!camOn}
+            >{camOn ? <VideoIcon size={18} /> : <VideoOff size={18} />}</ControlButton>
+
+            <ControlButton
+              testId="call-switch-cam"
               onClick={switchCam}
               disabled={switching || !camOn}
-              className="w-12 h-12 rounded-full flex items-center justify-center border border-zinc-700 bg-zinc-900 text-white disabled:opacity-40"
-              aria-label="Switch camera"
-              title="Switch camera"
+              label="Switch camera"
             >
               <SwitchCamera size={18} />
-            </button>
+            </ControlButton>
+
+            {canScreenShare && (
+              <ControlButton
+                testId="call-screen-share"
+                onClick={toggleScreenShare}
+                active={screenSharing}
+                label={screenSharing ? "Stop sharing" : "Share screen"}
+              >
+                {screenSharing ? <MonitorOff size={18} /> : <MonitorUp size={18} />}
+              </ControlButton>
+            )}
           </>
         )}
+
+        <ControlButton
+          testId="call-speaker"
+          onClick={toggleSpeaker}
+          active={speakerOn}
+          label={speakerOn ? "Earpiece" : "Speakerphone"}
+        >
+          {speakerOn ? <Volume2 size={18} /> : <Volume1 size={18} />}
+        </ControlButton>
+
         <button
           data-testid="call-hangup"
           onClick={onHangup}
@@ -228,6 +331,30 @@ function CallControls({ onHangup, kind }) {
           <PhoneOff size={20} />
         </button>
       </div>
+      {isDesktop && (
+        <div className="text-center text-[10px] text-zinc-600 mt-3 tracking-wider">
+          Shortcuts · M mute · V camera · S speaker · Esc hang up
+        </div>
+      )}
     </div>
+  );
+}
+
+function ControlButton({ testId, onClick, active, disabled, children, label }) {
+  return (
+    <button
+      data-testid={testId}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className={`w-12 h-12 rounded-full flex items-center justify-center border transition disabled:opacity-40 disabled:cursor-not-allowed ${
+        active
+          ? "border-[#FF5A00] text-[#FF5A00] bg-[#FF5A00]/10"
+          : "border-zinc-700 bg-zinc-900 text-white hover:border-zinc-500"
+      }`}
+    >
+      {children}
+    </button>
   );
 }

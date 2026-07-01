@@ -2299,6 +2299,98 @@ def _report_reporter_hash(reporter_id: str, target_id: str) -> str:
     return h[:16]
 
 
+# Anti-abuse thresholds for the reporter side. If a user weaponises the
+# report button, we auto-strike them. The bar is deliberately high so we
+# don't punish good-faith reporters who just happen to see a lot of bad
+# content, but low enough that an obvious brigader trips it.
+_REPORT_ABUSE_WINDOW_DAYS = 7
+_REPORT_ABUSE_MIN_TOTAL = 20        # need this many reports in the window
+_REPORT_ABUSE_MIN_DISMISS_RATE = 0.7  # 70%+ of resolved reports dismissed
+_REPORT_ABUSE_SAME_TARGET_LIMIT = 5    # more than N reports on ONE target
+
+
+async def _check_reporter_abuse(reporter_id: str):
+    """Detect report-button abuse and hit the reporter with an automatic
+    Strike 1 + 48h suspension. Two independent triggers:
+      1. Serial dismissed reporter — 20+ reports in 7d with ≥70% dismissed
+      2. Brigading a single target — 5+ reports on same target in 7d
+    Fires at most once per week per reporter (guarded by an audit event
+    marker) to avoid double-striking. Everything is human-reviewable via
+    the audit log."""
+    # Skip admins so a moderator triaging a swarm doesn't accidentally
+    # trigger the guard.
+    reporter = await db.users.find_one({"user_id": reporter_id}, {"_id": 0})
+    if not reporter or reporter.get("role") == "admin":
+        return
+
+    window_start = (datetime.now(timezone.utc) - timedelta(days=_REPORT_ABUSE_WINDOW_DAYS)).isoformat()
+
+    # Guard: don't strike the same reporter twice in the same window.
+    already = await db.audit_events.find_one({
+        "event": "auto_strike_report_abuse",
+        "target_id": reporter_id,
+        "at": {"$gte": window_start},
+    })
+    if already:
+        return
+
+    # Trigger 1 — brigading one target
+    same_target_agg = db.reports.aggregate([
+        {"$match": {"reporter_id": reporter_id, "created_at": {"$gte": window_start}}},
+        {"$group": {"_id": "$target_id", "n": {"$sum": 1}}},
+        {"$match": {"n": {"$gte": _REPORT_ABUSE_SAME_TARGET_LIMIT}}},
+        {"$limit": 1},
+    ])
+    async for row in same_target_agg:
+        await _auto_strike_report_abuser(
+            reporter_id,
+            f"Filed {row['n']} reports against a single target in {_REPORT_ABUSE_WINDOW_DAYS} days.",
+        )
+        return
+
+    # Trigger 2 — high overall volume + high dismissal rate
+    total = await db.reports.count_documents({
+        "reporter_id": reporter_id, "created_at": {"$gte": window_start},
+    })
+    if total < _REPORT_ABUSE_MIN_TOTAL:
+        return
+    dismissed = await db.reports.count_documents({
+        "reporter_id": reporter_id,
+        "created_at": {"$gte": window_start},
+        "status": "dismissed",
+    })
+    resolved = await db.reports.count_documents({
+        "reporter_id": reporter_id,
+        "created_at": {"$gte": window_start},
+        "status": {"$in": ["dismissed", "actioned"]},
+    })
+    if resolved == 0:
+        return  # nothing reviewed yet
+    dismiss_rate = dismissed / resolved
+    if dismiss_rate >= _REPORT_ABUSE_MIN_DISMISS_RATE:
+        await _auto_strike_report_abuser(
+            reporter_id,
+            f"Filed {total} reports in {_REPORT_ABUSE_WINDOW_DAYS} days with a {int(dismiss_rate * 100)}% dismissal rate.",
+        )
+
+
+async def _auto_strike_report_abuser(reporter_id: str, detail: str):
+    """Apply Strike 1 to a report-abuser and audit-log it."""
+    reason = (
+        f"Automatic Strike 1 for abusing the report system. "
+        f"{detail} If you believe this is wrong, use in-app support to appeal."
+    )
+    await apply_strike(reporter_id, reason, level=1)
+    await db.audit_events.insert_one({
+        "event": "auto_strike_report_abuse",
+        "admin_id": None,
+        "target_type": "user",
+        "target_id": reporter_id,
+        "reason": reason,
+        "at": now_iso(),
+    })
+
+
 @api.post("/reports")
 async def create_report(payload: ReportIn, user=Depends(get_current_user)):
     rid = f"rep_{uuid.uuid4().hex[:10]}"
@@ -2319,6 +2411,11 @@ async def create_report(payload: ReportIn, user=Depends(get_current_user)):
         "created_at": now_iso(),
     }
     await db.reports.insert_one(doc)
+
+    # Anti-abuse: check if the reporter is filing too many reports with a
+    # high dismissal rate. Runs BEFORE the CSAM lane so a serial false-
+    # reporter can't spam the CSAM queue with impunity.
+    await _check_reporter_abuse(user["user_id"])
 
     # CSAM = immediate quarantine + audit log (CEOP pipeline scaffolded
     # behind env flag — see handle_csam_report).

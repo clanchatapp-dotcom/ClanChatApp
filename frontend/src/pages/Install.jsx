@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { Smartphone, ExternalLink, Copy, Check } from "lucide-react";
+import { Smartphone, ExternalLink, Copy, Check, Download, MonitorSmartphone } from "lucide-react";
 import { toast } from "sonner";
 
 // The APK URL is read from REACT_APP_APK_URL (set in frontend/.env). It can
@@ -20,10 +20,46 @@ const APK_URL = process.env.REACT_APP_APK_URL || FALLBACK_URL;
 export default function Install() {
   const [copied, setCopied] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  // PWA install prompt: browsers fire `beforeinstallprompt` when the site
+  // meets the install-eligibility bar (HTTPS + manifest + registered SW).
+  // We stash the event so a user click can call prompt() — spec forbids
+  // calling it without a user gesture.
+  const [pwaPrompt, setPwaPrompt] = useState(null);
+  const [pwaInstalled, setPwaInstalled] = useState(false);
 
   useEffect(() => {
     setIsMobile(/android|iphone|ipad|ipod/i.test(navigator.userAgent));
+    // If the app is already running as an installed PWA there's nothing
+    // to install — reflect that in the UI.
+    const isStandalone =
+      window.matchMedia?.("(display-mode: standalone)").matches ||
+      window.navigator.standalone === true;
+    setPwaInstalled(isStandalone);
+
+    const onBeforeInstall = (e) => {
+      e.preventDefault();
+      setPwaPrompt(e);
+    };
+    const onInstalled = () => { setPwaInstalled(true); setPwaPrompt(null); };
+    window.addEventListener("beforeinstallprompt", onBeforeInstall);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstall);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
   }, []);
+
+  const installPwa = async () => {
+    if (!pwaPrompt) return;
+    try {
+      pwaPrompt.prompt();
+      const choice = await pwaPrompt.userChoice;
+      if (choice?.outcome === "accepted") {
+        toast.success("Installing ClanChat…");
+      }
+    } catch (e) { toast.error("Install prompt failed — try from the browser menu."); }
+    setPwaPrompt(null);
+  };
 
   const copy = async () => {
     try {
@@ -93,6 +129,41 @@ export default function Install() {
           <li>Tap the downloaded file. Android will ask &quot;Allow from this source?&quot; → enable it.</li>
           <li>Tap <strong>Install</strong>. ClanChat lands on the home screen with the shield icon.</li>
         </ol>
+      </section>
+
+      {/* PWA install — surfaced separately from the APK path. Works on
+          desktop Chrome/Edge, Android Chrome, and iOS Safari (via Add to
+          Home Screen from the share sheet — no native prompt on iOS). */}
+      <section className="mt-8 border-t border-zinc-900 pt-6">
+        <div className="text-[10px] uppercase tracking-[0.35em] text-zinc-500 mb-2">Or install the web app</div>
+        <h2 className="font-heading text-lg mb-2">Add ClanChat to your home screen</h2>
+        <p className="text-sm text-zinc-500 leading-relaxed">
+          Works on desktop, iPhone, and any Android browser. No app store required, no permissions to approve — just a shortcut that opens like a real app.
+        </p>
+        {pwaInstalled ? (
+          <div className="mt-3 border border-emerald-500/30 bg-emerald-500/5 text-emerald-200 rounded-xl p-3 text-sm inline-flex items-center gap-2" data-testid="pwa-installed">
+            <Check size={14} /> Already installed on this device.
+          </div>
+        ) : pwaPrompt ? (
+          <button
+            data-testid="pwa-install-btn"
+            onClick={installPwa}
+            className="cc-btn-primary mt-3 text-sm py-3 px-5 inline-flex items-center gap-2"
+          >
+            <Download size={14} /> Install ClanChat web app
+          </button>
+        ) : (
+          <div className="mt-3 border border-zinc-900 rounded-xl p-3 text-xs text-zinc-500 leading-relaxed" data-testid="pwa-instructions">
+            <div className="flex items-center gap-2 mb-2 text-zinc-300">
+              <MonitorSmartphone size={13} /> How to install manually:
+            </div>
+            <div className="space-y-1.5">
+              <div><strong className="text-zinc-400">Chrome / Edge (desktop):</strong> click the install icon in the address bar, or menu → &ldquo;Install ClanChat&rdquo;.</div>
+              <div><strong className="text-zinc-400">Safari (iPhone/iPad):</strong> Share button → &ldquo;Add to Home Screen&rdquo;.</div>
+              <div><strong className="text-zinc-400">Android Chrome:</strong> menu → &ldquo;Install app&rdquo;. Prompt should appear automatically after a few visits.</div>
+            </div>
+          </div>
+        )}
       </section>
 
       <p className="text-[10px] text-zinc-700 mt-8 leading-relaxed text-center">

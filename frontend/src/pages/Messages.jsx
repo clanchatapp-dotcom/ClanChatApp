@@ -4,6 +4,7 @@ import api, { fileUrl, formatApiError } from "../lib/api";
 import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smile } from "lucide-react";
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
+import GiphyPicker from "../components/GiphyPicker";
 
 // Native screenshot-block bridge. On the Android Capacitor APK we set
 // FLAG_SECURE on the window while a "no screenshots" thread is open. On
@@ -88,6 +89,7 @@ export function MessageThread() {
   const [busy, setBusy] = useState(false);
   const [pendingMedia, setPendingMedia] = useState([]); // [{path, kind, name}]
   const [query, setQuery] = useState("");
+  const [giphyOpen, setGiphyOpen] = useState(false);
   const fileRef = useRef(null);
   const { ensureMediaPermission, MediaPermissionDialog } = useMediaPermission();
 
@@ -305,6 +307,33 @@ export function MessageThread() {
         className="fixed left-1/2 -translate-x-1/2 w-full max-w-lg px-5 z-[55]"
         style={{ bottom: "calc(4rem + env(safe-area-inset-bottom, 0px))" }}
       >
+        {/* Giphy picker floats above the composer; positioned absolute so
+            it doesn't push the input off-screen. */}
+        {giphyOpen && (
+          <div className="relative">
+            <GiphyPicker
+              onClose={() => setGiphyOpen(false)}
+              onSelect={async (payload) => {
+                setGiphyOpen(false);
+                if (!payload.sendUrl || busy) return;
+                setBusy(true);
+                try {
+                  // Giphy CDN URLs go straight into media_paths — the DM
+                  // media renderer already treats http(s) URLs as external
+                  // (see DMMedia below), so no upload proxy is needed.
+                  await api.post("/dms", {
+                    recipient_id: userId,
+                    content: "",
+                    media_paths: [payload.sendUrl],
+                  });
+                  load();
+                } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+                finally { setBusy(false); }
+              }}
+            />
+          </div>
+        )}
+
         {!data.can_send && (
           <div className="text-xs text-zinc-500 mb-2 text-center">{data.reason || "Cannot message this user"}</div>
         )}
@@ -360,11 +389,11 @@ export function MessageThread() {
           <button
             type="button"
             data-testid="dm-stickers"
-            onClick={() => toast.info("Stickers & GIFs — coming soon")}
+            onClick={() => setGiphyOpen(!giphyOpen)}
             disabled={!data.can_send || busy}
-            className="p-2 text-zinc-500 hover:text-[#FF5A00] disabled:opacity-40"
-            aria-label="Stickers (coming soon)"
-            title="Stickers & GIFs — coming soon"
+            className={`p-2 disabled:opacity-40 ${giphyOpen ? "text-[#FF5A00]" : "text-zinc-500 hover:text-[#FF5A00]"}`}
+            aria-label="Stickers & GIFs"
+            title="Stickers & GIFs"
           >
             <Smile size={16} />
           </button>

@@ -21,3 +21,15 @@ root.render(
     </QueryClientProvider>
   </React.StrictMode>,
 );
+
+// Register the PWA service worker. Only in production builds (webpack sets
+// NODE_ENV) and only when the browser supports it — Capacitor's WebView
+// serves the app from `file://` on Android where SW registration silently
+// no-ops.
+if (process.env.NODE_ENV === "production" && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register("/sw.js")
+      .catch((err) => console.warn("SW register failed", err));
+  });
+}
