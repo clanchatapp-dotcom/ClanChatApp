@@ -6,11 +6,12 @@ load_dotenv(ROOT_DIR / ".env")
 
 import os
 import uuid
+import hashlib
 import logging
 import re
 import secrets
 from datetime import datetime, timezone, timedelta, date
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import bcrypt
 import jwt
@@ -704,9 +705,24 @@ class FollowActionIn(BaseModel):
 
 
 class ReportIn(BaseModel):
-    target_type: str  # user|post|board|message
+    target_type: Literal["user", "post", "board", "message"]
     target_id: str
-    category: str
+    # Structured categories per the ClanChat spec. `csam` is the critical
+    # lane — it triggers immediate quarantine + CEOP scaffolding. `underage`
+    # is separate from CSAM: a user acting like a minor without proof, versus
+    # confirmed child sexual abuse material.
+    category: Literal[
+        "csam",
+        "underage",
+        "harassment",
+        "hate",
+        "self_harm",
+        "inappropriate",
+        "unlabelled_ai",
+        "impersonation",
+        "spam",
+        "other",
+    ]
     notes: str = ""
 
 
@@ -2254,20 +2270,63 @@ async def unmute(user_id: str, user=Depends(get_current_user)):
     return {"ok": True}
 
 
+# Per-category soft-warning thresholds. Once a target accumulates the given
+# number of DISTINCT reporters flagging it under the same category within the
+# lookback window, an automatic soft-warning is queued (still human-reviewed
+# — this is a *suggestion* to admins, not an automated action). Categories
+# that would already trigger a CSAM lane or hard-block flow use very low
+# thresholds; low-severity issues need more corroboration.
+_REPORT_SOFT_WARNING_THRESHOLDS = {
+    "csam": 1,          # CSAM: single report already triggers hard lane
+    "underage": 2,
+    "harassment": 2,
+    "hate": 2,
+    "self_harm": 2,
+    "inappropriate": 3,
+    "unlabelled_ai": 3,
+    "impersonation": 2,
+    "spam": 5,          # spam gets more benefit of the doubt
+    "other": 5,
+}
+
+
+def _report_reporter_hash(reporter_id: str, target_id: str) -> str:
+    """Deterministic short hash so admins can spot mass-reporting abuse
+    (same reporter blasting one target) without unmasking the reporter to
+    the reviewer. Uses JWT_SECRET as the salt so hashes aren't linkable
+    across environments."""
+    h = hashlib.sha256(f"{reporter_id}|{target_id}|{JWT_SECRET}".encode()).hexdigest()
+    return h[:16]
+
+
 @api.post("/reports")
 async def create_report(payload: ReportIn, user=Depends(get_current_user)):
     rid = f"rep_{uuid.uuid4().hex[:10]}"
+    reporter_hash = _report_reporter_hash(user["user_id"], payload.target_id)
     doc = {
-        "report_id": rid, "reporter_id": user["user_id"],
-        "target_type": payload.target_type, "target_id": payload.target_id,
-        "category": payload.category[:80], "notes": payload.notes[:1000],
-        "status": "pending", "created_at": now_iso(),
+        "report_id": rid,
+        # NOTE: reporter_id is stored for the audit trail and for
+        # blocking mass-report abuse, but the admin UI reads
+        # reporter_hash instead so reviewers can't unmask individual
+        # reporters.
+        "reporter_id": user["user_id"],
+        "reporter_hash": reporter_hash,
+        "target_type": payload.target_type,
+        "target_id": payload.target_id,
+        "category": payload.category,
+        "notes": payload.notes[:1000],
+        "status": "pending",
+        "created_at": now_iso(),
     }
     await db.reports.insert_one(doc)
-    # CSAM = immediate quarantine + audit log (CEOP pipeline scaffolded behind env flag)
+
+    # CSAM = immediate quarantine + audit log (CEOP pipeline scaffolded
+    # behind env flag — see handle_csam_report).
     if payload.category == "csam":
         await handle_csam_report(payload.target_type, payload.target_id, user["user_id"])
-    # Soft pre-strike warning: if 3+ pending reports against same target user → warn
+
+    # Resolve the target user for aggregation. For a post-report, the
+    # target user is the post's author.
     target_user_id = None
     if payload.target_type == "user":
         target_user_id = payload.target_id
@@ -2275,21 +2334,89 @@ async def create_report(payload: ReportIn, user=Depends(get_current_user)):
         p = await db.posts.find_one({"post_id": payload.target_id}, {"author_id": 1, "_id": 0})
         if p:
             target_user_id = p["author_id"]
-    if target_user_id:
-        recent_count = await db.reports.count_documents({
-            "target_id": payload.target_id, "status": "pending",
-        })
+
+    # Auto soft-warning suggestion: fire when the same target hits the
+    # per-category threshold from DISTINCT reporters (dedup by reporter_id)
+    # in the last 30 days. This is a SUGGESTION for admins — the warning is
+    # still human-reviewed via the admin UI.
+    if target_user_id and payload.category != "csam":
+        threshold = _REPORT_SOFT_WARNING_THRESHOLDS.get(payload.category, 3)
+        window_start = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        distinct = await db.reports.distinct(
+            "reporter_id",
+            {
+                "target_id": payload.target_id,
+                "category": payload.category,
+                "created_at": {"$gte": window_start},
+            },
+        )
         existing_warn = await db.soft_warnings.find_one({
-            "user_id": target_user_id, "target_id": payload.target_id,
+            "user_id": target_user_id,
+            "target_id": payload.target_id,
+            "source": "auto_report_threshold",
         })
-        if recent_count >= 3 and not existing_warn:
+        if len(distinct) >= threshold and not existing_warn:
             await db.soft_warnings.insert_one({
                 "warning_id": f"warn_{uuid.uuid4().hex[:10]}",
-                "user_id": target_user_id, "target_id": payload.target_id,
-                "message": "Your content has been reported several times. Please review our community guidelines before this becomes a strike.",
-                "created_at": now_iso(), "dismissed": False,
+                "user_id": target_user_id,
+                "target_id": payload.target_id,
+                "reason": f"Content reported {len(distinct)} times for {payload.category}. Please review our community guidelines before this becomes a strike.",
+                "issued_by": None,
+                "issued_at": now_iso(),
+                "dismissed": False,
+                "source": "auto_report_threshold",
+                "category": payload.category,
             })
+
     return {"report_id": rid}
+
+
+@api.get("/me/reports")
+async def my_reports(user=Depends(get_current_user)):
+    """A reporter's history — shows the reports they've filed with a
+    yes-actioned / not-actioned outcome. Per spec, the actual moderation
+    reason is NEVER surfaced to the reporter; they only see whether their
+    report was reviewed and whether the platform acted on it."""
+    cursor = db.reports.find(
+        {"reporter_id": user["user_id"]},
+        {
+            "_id": 0,
+            "report_id": 1,
+            "target_type": 1,
+            "target_id": 1,
+            "category": 1,
+            "status": 1,
+            "created_at": 1,
+            "actioned_at": 1,
+            "action": 1,
+        },
+    ).sort("created_at", -1).limit(100)
+    out = []
+    async for r in cursor:
+        # Simplify status into three buckets the reporter cares about.
+        status = r.get("status", "pending")
+        actioned = None
+        if status == "pending":
+            outcome = "under_review"
+        elif status == "actioned":
+            outcome = "actioned"
+            actioned = True
+        elif status == "dismissed":
+            outcome = "not_actioned"
+            actioned = False
+        else:
+            outcome = status
+        out.append({
+            "report_id": r["report_id"],
+            "target_type": r["target_type"],
+            "target_id": r["target_id"],
+            "category": r["category"],
+            "created_at": r["created_at"],
+            "outcome": outcome,
+            "actioned": actioned,
+            "reviewed_at": r.get("actioned_at"),
+        })
+    return {"reports": out}
 
 
 async def handle_csam_report(target_type: str, target_id: str, reporter_id: str):
@@ -2356,16 +2483,80 @@ def require_admin(user: dict = Depends(get_current_user)):
 
 
 @api.get("/admin/reports")
-async def admin_list_reports(admin=Depends(require_admin), status: str = "pending"):
-    cursor = db.reports.find({"status": status}, {"_id": 0}).sort("created_at", -1).limit(200)
+async def admin_list_reports(
+    admin=Depends(require_admin),
+    status: str = "pending",
+    category: Optional[str] = None,
+    grouped: bool = False,
+):
+    """List reports. Two modes:
+      - flat (default): every report as a row, newest first.
+      - grouped: reports collapsed by target_id + category with an
+                 aggregate count so admins see "12 people reported this"
+                 rather than 12 identical rows.
+    Reporter identity is intentionally NOT surfaced — reviewers see a
+    reporter_hash instead so mass-report abuse is detectable without
+    unmasking individual reporters."""
+    q = {"status": status}
+    if category:
+        q["category"] = category
+
+    if grouped:
+        pipeline = [
+            {"$match": q},
+            {"$group": {
+                "_id": {"target_type": "$target_type", "target_id": "$target_id", "category": "$category"},
+                "count": {"$sum": 1},
+                "distinct_reporters": {"$addToSet": "$reporter_id"},
+                "distinct_hashes": {"$addToSet": "$reporter_hash"},
+                "latest": {"$max": "$created_at"},
+                "earliest": {"$min": "$created_at"},
+                "sample_notes": {"$push": "$notes"},
+                "sample_report_ids": {"$push": "$report_id"},
+            }},
+            {"$sort": {"count": -1, "latest": -1}},
+            {"$limit": 200},
+        ]
+        rows = []
+        async for row in db.reports.aggregate(pipeline):
+            key = row["_id"]
+            # Keep the first three note snippets for a quick scan; drop the
+            # rest to keep the response tight.
+            sample_notes = [n for n in row.get("sample_notes", []) if n][:3]
+            rows.append({
+                "target_type": key["target_type"],
+                "target_id": key["target_id"],
+                "category": key["category"],
+                "count": row["count"],
+                "distinct_reporters": len(row.get("distinct_reporters", [])),
+                "reporter_hashes": row.get("distinct_hashes", []),
+                "latest": row["latest"],
+                "earliest": row["earliest"],
+                "sample_notes": sample_notes,
+                "sample_report_ids": row.get("sample_report_ids", [])[:5],
+            })
+        return {"grouped": rows}
+
+    cursor = db.reports.find(q, {"_id": 0, "reporter_id": 0}).sort("created_at", -1).limit(200)
     out = []
     async for r in cursor:
-        reporter = await db.users.find_one({"user_id": r["reporter_id"]}, {"_id": 0})
-        out.append({
-            **r,
-            "reporter": public_user(reporter) if reporter else None,
-        })
+        out.append(r)
     return {"reports": out}
+
+
+@api.get("/admin/reports/categories")
+async def admin_report_category_counts(admin=Depends(require_admin), status: str = "pending"):
+    """Pending report counts per category so the admin UI can show a tab
+    bar with per-category badges."""
+    pipeline = [
+        {"$match": {"status": status}},
+        {"$group": {"_id": "$category", "count": {"$sum": 1}}},
+    ]
+    counts = {}
+    async for row in db.reports.aggregate(pipeline):
+        counts[row["_id"]] = row["count"]
+    total = sum(counts.values())
+    return {"counts": counts, "total": total}
 
 
 @api.post("/admin/reports/{report_id}/strike")

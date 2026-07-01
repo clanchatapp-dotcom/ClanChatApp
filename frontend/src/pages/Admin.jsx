@@ -19,6 +19,10 @@ export default function Admin() {
   const [tab, setTab] = useState("reports");
   const [stats, setStats] = useState(null);
   const [reports, setReports] = useState([]);
+  const [reportsGrouped, setReportsGrouped] = useState([]);
+  const [reportsMode, setReportsMode] = useState("grouped"); // grouped | flat
+  const [reportsCategory, setReportsCategory] = useState(""); // "" = all
+  const [reportsCategoryCounts, setReportsCategoryCounts] = useState({ counts: {}, total: 0 });
   const [csam, setCsam] = useState([]);
   const [audit, setAudit] = useState([]);
   const [watched, setWatched] = useState([]);
@@ -30,7 +34,20 @@ export default function Admin() {
   const [resetRequests, setResetRequests] = useState([]);
 
   const loadStats = () => api.get("/admin/stats").then((r) => setStats(r.data)).catch(() => {});
-  const loadReports = () => api.get("/admin/reports?status=pending").then((r) => setReports(r.data.reports)).catch(() => {});
+  const loadReports = () => {
+    const params = new URLSearchParams({ status: "pending" });
+    if (reportsCategory) params.set("category", reportsCategory);
+    if (reportsMode === "grouped") params.set("grouped", "true");
+    api.get(`/admin/reports?${params.toString()}`)
+      .then((r) => {
+        if (reportsMode === "grouped") { setReportsGrouped(r.data.grouped || []); }
+        else { setReports(r.data.reports || []); }
+      })
+      .catch(() => {});
+    api.get("/admin/reports/categories?status=pending")
+      .then((r) => setReportsCategoryCounts(r.data))
+      .catch(() => {});
+  };
   const loadCsam = () => api.get("/admin/csam/queue?status=queued").then((r) => setCsam(r.data.queue)).catch(() => {});
   const loadAudit = () => api.get("/admin/audit?limit=100").then((r) => setAudit(r.data.events)).catch(() => {});
   const loadWatched = () => api.get("/admin/watch").then((r) => setWatched(r.data.watched)).catch(() => {});
@@ -43,7 +60,7 @@ export default function Admin() {
     if (tab === "audit") loadAudit();
     if (tab === "watchlist") loadWatched();
     if (tab === "resets") loadResetRequests();
-  }, [tab]);
+  }, [tab, reportsMode, reportsCategory]);
 
   const strike = async (id, level) => {
     const reason = window.prompt(`Reason for Strike ${level}?`, "Community guidelines violation");
@@ -297,25 +314,140 @@ export default function Admin() {
       </div>
 
       {tab === "reports" && (
-        <div className="flex flex-col gap-2">
-          {reports.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">All caught up.</div>}
-          {reports.map((r) => (
-            <div key={r.report_id} className="border border-zinc-900 rounded-2xl p-3 text-sm" data-testid={`report-${r.report_id}`}>
-              <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
-                <span className="bg-zinc-900 px-2 py-0.5 rounded uppercase tracking-wider">{r.target_type}</span>
-                <span className="bg-red-500/10 text-red-300 px-2 py-0.5 rounded uppercase tracking-wider">{r.category}</span>
-                <span>by #{r.reporter?.handle}</span>
-              </div>
-              {r.notes && <p className="text-sm text-zinc-300">{r.notes}</p>}
-              <div className="text-xs text-zinc-500 mt-1">Target: <code className="text-zinc-400">{r.target_id}</code></div>
-              <div className="flex gap-2 mt-3 flex-wrap">
-                <button data-testid={`strike-1-${r.report_id}`} onClick={() => strike(r.report_id, 1)} className="cc-btn-secondary text-xs py-1 px-2">Strike 1 · 48h</button>
-                <button data-testid={`strike-2-${r.report_id}`} onClick={() => strike(r.report_id, 2)} className="cc-btn-secondary text-xs py-1 px-2">Strike 2 · 7d</button>
-                <button data-testid={`strike-3-${r.report_id}`} onClick={() => strike(r.report_id, 3)} className="bg-red-500 text-white text-xs py-1 px-2 rounded-full">Strike 3 · Delete</button>
-                <button data-testid={`dismiss-${r.report_id}`} onClick={() => dismiss(r.report_id)} className="text-zinc-500 text-xs py-1 px-2 ml-auto">Dismiss</button>
-              </div>
+        <div className="flex flex-col gap-3" data-testid="admin-reports-panel">
+          {/* Filter bar — mode toggle, category filter, per-category counts */}
+          <div className="border border-zinc-900 rounded-2xl p-3 flex flex-col gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="text-[10px] uppercase tracking-[0.25em] text-zinc-500 mr-1">View</div>
+              <button
+                data-testid="reports-mode-grouped"
+                onClick={() => setReportsMode("grouped")}
+                className={`text-xs py-1 px-2.5 rounded-full border ${reportsMode === "grouped" ? "border-[#FF5A00] text-[#FF5A00]" : "border-zinc-800 text-zinc-400"}`}
+              >Grouped</button>
+              <button
+                data-testid="reports-mode-flat"
+                onClick={() => setReportsMode("flat")}
+                className={`text-xs py-1 px-2.5 rounded-full border ${reportsMode === "flat" ? "border-[#FF5A00] text-[#FF5A00]" : "border-zinc-800 text-zinc-400"}`}
+              >Flat</button>
+              <select
+                data-testid="reports-category-filter"
+                value={reportsCategory}
+                onChange={(e) => setReportsCategory(e.target.value)}
+                className="cc-input text-xs py-1.5 ml-auto"
+              >
+                <option value="">All categories ({reportsCategoryCounts.total})</option>
+                {[
+                  ["csam", "CSAM"],
+                  ["underage", "Underage"],
+                  ["harassment", "Harassment"],
+                  ["hate", "Hate"],
+                  ["self_harm", "Self-harm"],
+                  ["inappropriate", "Inappropriate"],
+                  ["unlabelled_ai", "Unlabelled AI"],
+                  ["impersonation", "Impersonation"],
+                  ["spam", "Spam"],
+                  ["other", "Other"],
+                ].map(([id, label]) => (
+                  <option key={id} value={id}>
+                    {label} ({reportsCategoryCounts.counts?.[id] || 0})
+                  </option>
+                ))}
+              </select>
             </div>
-          ))}
+          </div>
+
+          {/* Grouped view — each row aggregates reports on the same target
+              with the same category, so admins see "12 people reported this"
+              rather than 12 rows. Reporter identities are hashed, not shown. */}
+          {reportsMode === "grouped" && (
+            <>
+              {reportsGrouped.length === 0 && (
+                <div className="text-zinc-600 text-sm text-center py-8">All caught up.</div>
+              )}
+              {reportsGrouped.map((g) => (
+                <div
+                  key={`${g.target_type}-${g.target_id}-${g.category}`}
+                  className="border border-zinc-900 rounded-2xl p-3 text-sm"
+                  data-testid={`report-group-${g.target_id}-${g.category}`}
+                >
+                  <div className="flex items-center gap-2 text-xs text-zinc-500 mb-2 flex-wrap">
+                    <span className="bg-zinc-900 px-2 py-0.5 rounded uppercase tracking-wider">{g.target_type}</span>
+                    <span className={`px-2 py-0.5 rounded uppercase tracking-wider ${g.category === "csam" ? "bg-red-500/20 text-red-200" : "bg-red-500/10 text-red-300"}`}>{g.category}</span>
+                    <span className="bg-orange-500/10 text-orange-200 px-2 py-0.5 rounded font-semibold">
+                      {g.distinct_reporters} reporter{g.distinct_reporters === 1 ? "" : "s"} · {g.count} report{g.count === 1 ? "" : "s"}
+                    </span>
+                    <span className="ml-auto text-zinc-600">latest {new Date(g.latest).toLocaleString()}</span>
+                  </div>
+                  <div className="text-xs text-zinc-500 mb-2">
+                    Target: <code className="text-zinc-400">{g.target_id}</code>
+                  </div>
+                  {g.sample_notes.length > 0 && (
+                    <div className="border border-zinc-900 rounded-xl p-2 mb-2 text-[11px] text-zinc-400 space-y-1">
+                      {g.sample_notes.map((n, i) => (
+                        <div key={i} className="truncate">&ldquo;{n}&rdquo;</div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex gap-2 flex-wrap">
+                    {/* Actions apply to the first report_id in the group;
+                        strike endpoints treat this as the source-of-truth. */}
+                    <button
+                      data-testid={`group-strike-1-${g.target_id}`}
+                      onClick={() => strike(g.sample_report_ids[0], 1)}
+                      className="cc-btn-secondary text-xs py-1 px-2"
+                    >Strike 1 · 48h</button>
+                    <button
+                      data-testid={`group-strike-2-${g.target_id}`}
+                      onClick={() => strike(g.sample_report_ids[0], 2)}
+                      className="cc-btn-secondary text-xs py-1 px-2"
+                    >Strike 2 · 7d</button>
+                    <button
+                      data-testid={`group-strike-3-${g.target_id}`}
+                      onClick={() => strike(g.sample_report_ids[0], 3)}
+                      className="bg-red-500 text-white text-xs py-1 px-2 rounded-full"
+                    >Strike 3 · Delete</button>
+                    <button
+                      data-testid={`group-dismiss-${g.target_id}`}
+                      onClick={async () => {
+                        for (const rid of g.sample_report_ids) { await dismiss(rid); }
+                        loadReports();
+                      }}
+                      className="text-zinc-500 text-xs py-1 px-2 ml-auto"
+                    >Dismiss all</button>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {/* Flat view — one row per report, reporter identity replaced with
+              a hash so mass-reporters can be spotted without unmasking. */}
+          {reportsMode === "flat" && (
+            <>
+              {reports.length === 0 && (
+                <div className="text-zinc-600 text-sm text-center py-8">All caught up.</div>
+              )}
+              {reports.map((r) => (
+                <div key={r.report_id} className="border border-zinc-900 rounded-2xl p-3 text-sm" data-testid={`report-${r.report_id}`}>
+                  <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1 flex-wrap">
+                    <span className="bg-zinc-900 px-2 py-0.5 rounded uppercase tracking-wider">{r.target_type}</span>
+                    <span className={`px-2 py-0.5 rounded uppercase tracking-wider ${r.category === "csam" ? "bg-red-500/20 text-red-200" : "bg-red-500/10 text-red-300"}`}>{r.category}</span>
+                    <span title="Hashed reporter — same hash across reports = same reporter, but identity is not revealed here">
+                      reporter <code className="text-zinc-600">{r.reporter_hash?.slice(0, 8) || "—"}</code>
+                    </span>
+                  </div>
+                  {r.notes && <p className="text-sm text-zinc-300">{r.notes}</p>}
+                  <div className="text-xs text-zinc-500 mt-1">Target: <code className="text-zinc-400">{r.target_id}</code></div>
+                  <div className="flex gap-2 mt-3 flex-wrap">
+                    <button data-testid={`strike-1-${r.report_id}`} onClick={() => strike(r.report_id, 1)} className="cc-btn-secondary text-xs py-1 px-2">Strike 1 · 48h</button>
+                    <button data-testid={`strike-2-${r.report_id}`} onClick={() => strike(r.report_id, 2)} className="cc-btn-secondary text-xs py-1 px-2">Strike 2 · 7d</button>
+                    <button data-testid={`strike-3-${r.report_id}`} onClick={() => strike(r.report_id, 3)} className="bg-red-500 text-white text-xs py-1 px-2 rounded-full">Strike 3 · Delete</button>
+                    <button data-testid={`dismiss-${r.report_id}`} onClick={() => dismiss(r.report_id)} className="text-zinc-500 text-xs py-1 px-2 ml-auto">Dismiss</button>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       )}
 

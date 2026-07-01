@@ -227,12 +227,18 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
           </AlertDialogHeader>
           <div className="flex flex-col gap-2 mt-2">
             {[
+              // Ordered high → low severity so the destructive options are
+              // visible up top. `csam` sits alone at the very top because it
+              // triggers the immediate CEOP lane.
               { id: "csam", label: "Child sexual abuse material (CSAM)", danger: true },
+              { id: "underage", label: "This account looks underage" },
               { id: "harassment", label: "Harassment or threats" },
-              { id: "spam", label: "Spam or scam" },
               { id: "hate", label: "Hate speech" },
               { id: "self_harm", label: "Self-harm content" },
+              { id: "inappropriate", label: "Inappropriate content (wrong tier / NSFW)" },
+              { id: "unlabelled_ai", label: "Unlabelled AI content" },
               { id: "impersonation", label: "Impersonation" },
+              { id: "spam", label: "Spam or scam" },
               { id: "other", label: "Other" },
             ].map((opt) => (
               <label

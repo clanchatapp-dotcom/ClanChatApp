@@ -3,7 +3,7 @@ import { useAuth } from "../context/AuthContext";
 import api, { formatApiError } from "../lib/api";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Sun, Moon, LogOut, ShieldCheck, AlertTriangle, KeyRound } from "lucide-react";
+import { Sun, Moon, LogOut, ShieldCheck, AlertTriangle, KeyRound, Flag } from "lucide-react";
 
 export default function Settings() {
   const { user, refresh, theme, setTheme, logout } = useAuth();
@@ -179,6 +179,16 @@ export default function Settings() {
 
       <Section title="Inner Circle">
         <Link to="/inner" data-testid="inner-manage-link" className="cc-btn-secondary w-full text-sm text-center block">Manage Inner Circle</Link>
+      </Section>
+
+      <Section title="Safety">
+        <Link
+          to="/me/reports"
+          data-testid="my-reports-link"
+          className="cc-btn-secondary w-full text-sm text-center block inline-flex items-center justify-center gap-2"
+        >
+          <Flag size={14} /> My reports
+        </Link>
       </Section>
 
       {user.role === "admin" && (
