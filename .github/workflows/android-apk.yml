@@ -65,6 +65,12 @@ jobs:
           # Override this to point at staging/preview if you fork the
           # workflow for testing branches.
           REACT_APP_BACKEND_URL: https://clanchat.app
+          # Giphy key baked into the bundle. Set as a repo Actions secret:
+          # Settings → Secrets and variables → Actions → New secret →
+          # GIPHY_API_KEY. Value comes from https://developers.giphy.com.
+          # If unset the sticker picker still renders but shows a
+          # "configure Giphy" message instead of results.
+          REACT_APP_GIPHY_API_KEY: ${{ secrets.GIPHY_API_KEY }}
           CI: "false"  # CRA treats warnings as errors when CI=true; we don't want that to fail the APK
         run: yarn build
 
