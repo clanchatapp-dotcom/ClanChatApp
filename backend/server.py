@@ -46,29 +46,109 @@ BANNED_WORDS = {
     "kike", "spic", "chink", "gook", "wetback", "dyke",
 }
 
-# Substrings that mark a tag as NSFW for the purposes of trending/discovery.
-# Any tag containing one of these fragments is hidden from the trending list
-# and from search-suggestion surfaces regardless of viewer age. Posts flagged
-# nsfw=True are also excluded from trending outright — this list is a
-# defence-in-depth so a naked SFW post tagged "#porn" still doesn't surface.
-NSFW_TAG_TERMS = {
-    "nsfw", "porn", "porno", "xxx", "nude", "nudes", "naked", "sex",
-    "sexy", "sexual", "hentai", "boobs", "boob", "tits", "titty", "titties",
-    "ass", "butt", "cum", "cock", "dick", "pussy", "vagina", "penis",
-    "orgy", "orgasm", "kink", "kinky", "fetish", "bdsm", "milf", "dilf",
-    "onlyfans", "of", "camgirl", "camboy", "escort", "hooker", "slut",
-    "thicc", "thick", "lewd", "erotica", "erotic", "18plus", "adult",
-    "nsfl", "gore",
+# Tags flagged NSFW for the purposes of trending/discovery. Split into two
+# groups so we don't accidentally block innocent tags:
+#   NSFW_TAG_EXACT      — must equal the tag exactly. Used for short slang
+#                         words that would false-positive as substrings
+#                         (e.g. "ass" is in the exact set so we don't kill
+#                         #class, #grass, #compass, #passion).
+#   NSFW_TAG_SUBSTRING  — matched as a substring inside the tag. Reserved
+#                         for distinctive fragments where any occurrence is
+#                         almost certainly NSFW (e.g. "porn" matches porno,
+#                         pornstar, hardporn, etc.).
+# Both sets are lowercase — tag sanitisation already forces lowercase +
+# alphanumeric-only, so we never need to worry about punctuation/spacing.
+NSFW_TAG_EXACT = {
+    # Anatomy / short slang — exact match to avoid killing legit words
+    "ass", "asses", "arse", "arses", "azz",
+    "butt", "butts",
+    "boob", "boobs", "booba", "booby",
+    "tit", "tits",
+    "cock", "cocks", "cocky",
+    "dick", "dicks", "dik",
+    "balls", "ballsack",
+    "cum", "cums", "cumming", "cummy",
+    "jizz",
+    "sex", "sexed", "sexo", "seks", "s3x",
+    "kink", "kinks", "k1nk",
+    "cp",  # child porn — critical exact match, too short for substring
+    "bj",  # blowjob abbreviation
+    "hj",  # handjob abbreviation
+    "dp",  # double-penetration
+    "gay",  # NOT NSFW — identity, kept OUT of this list intentionally
+}
+# Safety net: never let "gay" sneak in even if someone edits the set above.
+NSFW_TAG_EXACT.discard("gay")
+
+NSFW_TAG_SUBSTRING = {
+    # Umbrella labels
+    "nsfw", "nsfl", "18plus", "adult", "adultonly", "onlyfans", "onlyfan",
+    # Explicit categories
+    "porn", "pr0n", "porno", "pornstar", "pornhub", "xvideos", "redtube",
+    "youporn", "xxx",
+    "hentai", "h3ntai", "doujin", "ecchi",
+    "erotic", "erotica", "erotics",
+    "lewd", "smut", "smutty",
+    # Nudity
+    "nude", "nud3", "nudes", "naked", "nak3d", "topless", "bottomless",
+    # Sexual acts / descriptors
+    "sexy", "sexual", "sexting", "sexbot", "sextape",
+    "orgy", "orgasm", "orgasms",
+    "fuck", "fucking", "fucked", "fuk", "fck", "phuck",
+    "blowjob", "handjob", "footjob", "titjob", "rimjob",
+    "gangbang", "threesome", "foursome",
+    "creampie", "bukkake", "facial", "cumshot",
+    "deepthroat", "throatfuck",
+    "anal", "ana1", "anus", "buttfuck", "buttplug",
+    "vaginal", "vaginas",
+    "cameltoe", "upskirt", "downblouse", "sideboob", "underboob",
+    # Anatomy — longer forms (short ones live in the exact set)
+    "titties", "titty", "tittie", "boobs", "boobies", "boobjob",
+    "nipple", "nipples",
+    "vagina", "vulva", "clitoris", "pussy", "puss1", "pussi",
+    "penis", "peni5", "penises", "phallus", "phalluses",
+    "scrotum", "testicle", "testicles",
+    "buttcrack", "buttcheek", "assjob", "asscheek",
+    # Kink / fetish
+    "bdsm", "bondage", "fetish", "kinky",
+    "milf", "dilf", "gilf", "cougar",
+    "cuckold", "cuckqueen",
+    "tentacle", "tentacles",
+    "yiff",  # NSFW furry — safe substring
+    # Sex work
+    "camgirl", "camboy", "camwhore", "webcamgirl", "webcamboy",
+    "escort", "escorts", "hooker", "hookers", "prostitute", "prostitution",
+    "slut", "sluts", "slutty",
+    "whore", "whores", "whor3", "whor3s",
+    "thot", "thots",
+    "stripper", "strippers", "stripclub",
+    # Body-shape terms with almost-exclusively-NSFW usage
+    "thicc",
+    # Illegal / hard-block categories
+    "loli", "lolicon", "shota", "shotacon", "childporn", "kiddieporn",
+    "pedo", "pedophile", "pedophilia", "pedophiles",
+    "incest", "incestuous",
+    "beastiality", "bestiality", "zoophilia",
+    "rape", "raping", "raped", "rapist",
+    "snuff",
+    # Toys / paraphernalia
+    "dildo", "dildos", "vibrator", "fleshlight",
+    # Gore / NSFL adjacent (user asked to exclude NSFW references broadly)
+    "gore", "nsfl",
 }
 
 
 def is_nsfw_tag(tag: str) -> bool:
-    """Return True if a tag string references NSFW content (substring match).
-    Cheap check used by trending/search to keep discovery surfaces clean."""
+    """True if a tag is a sexual/NSFW reference. Uses an exact match for
+    short slang (avoid false positives on class/grass/cocktail) and a
+    substring match for distinctive fragments (porn, hentai, milf, etc.).
+    Cheap enough to run in a Python loop over trending candidates."""
     if not tag:
         return False
     t = tag.lower()
-    return any(term in t for term in NSFW_TAG_TERMS)
+    if t in NSFW_TAG_EXACT:
+        return True
+    return any(term in t for term in NSFW_TAG_SUBSTRING)
 TIERS = {"public", "followers", "inner"}
 
 storage_key_cache: Optional[str] = None
