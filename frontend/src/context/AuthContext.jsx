@@ -15,8 +15,20 @@ export function AuthProvider({ children }) {
     try {
       const { data } = await api.get("/auth/me");
       setUser(data);
-    } catch {
-      setUser(null);
+    } catch (err) {
+      // Only clear the session on an explicit 401/403 from the backend.
+      // Anything else (network failure, timeout, 500, CORS blip while the
+      // backend is redeploying, brief offline moment when Android returns
+      // from background) is treated as "unknown" — keep whatever user state
+      // we already have. This stops the app from randomly logging users
+      // out whenever a request fails for reasons unrelated to auth.
+      const status = err?.response?.status;
+      if (status === 401 || status === 403) {
+        await forgetToken();
+        setUser(null);
+      } else {
+        setUser((prev) => (prev === undefined ? null : prev));
+      }
     }
   }, []);
 
