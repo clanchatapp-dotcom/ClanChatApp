@@ -30,10 +30,6 @@ export default function NewPost() {
   const [hasConsent, setHasConsent] = useState(false);
   const [nsfw, setNsfw] = useState(false);
   const [busy, setBusy] = useState(false);
-  // Bugs 2+3: tracks whether the user has positively confirmed media is NOT AI.
-  // Reset whenever the user changes the AI label so the prompt re-fires
-  // if they switch away from a chosen label back to empty.
-  const [notAiConfirmed, setNotAiConfirmed] = useState(false);
   // Tag people
   const [people, setPeople] = useState([]); // [{user_id, handle}]
   const [peopleSearch, setPeopleSearch] = useState("");
@@ -110,20 +106,16 @@ export default function NewPost() {
     if (tier === "public" && nsfw) {
       toast.error("Public posts cannot contain 18+ content"); return;
     }
-    // Bug 2 + 3 fix: when media is attached and the user hasn't explicitly
-    // declared the AI label state (left it on the default empty value with
-    // no positive "Not AI" confirmation), hold the post and prompt them.
-    // For V1 this is a manual confirmation gate — once we wire in Hive or
-    // similar AI-image detection the same prompt fires automatically when
-    // the model returns high confidence and the label is empty.
-    if (media.length > 0 && !aiLabel && !notAiConfirmed) {
-      const ok = window.confirm(
-        "Looks like this might be AI generated. Label it and you're good to go.\n\nClick OK if it's NOT AI (we'll mark this post as human-made). Click Cancel to pick an AI label first."
-      );
-      if (!ok) { return; }
-      setNotAiConfirmed(true);
-      // continue submitting as non-AI on the next tick — fall through
-    }
+    // Bug fix: previously the app popped a "Looks like this might be AI
+    // generated" confirm on every post that included media, regardless of
+    // whether any actual AI detection had happened. That flagged every
+    // legit photo/video as suspicious and broke posting UX.
+    //
+    // Until real AI-image detection is wired in (Phase 2 / Hive), the AI
+    // label is voluntary: users who want to be transparent tick it in the
+    // form; everyone else posts normally. Backend enforcement still catches
+    // abuse — labelled AI + real person + NSFW = strike, unlabelled AI can
+    // be reported.
     if (aiLabel && depictsReal && nsfw) {
       toast.error("AI sexual content depicting real people is permanently banned. Do not post this."); return;
     }

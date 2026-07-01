@@ -45,6 +45,30 @@ BANNED_WORDS = {
     "nigger", "nigga", "faggot", "fag", "tranny", "retard", "retarded",
     "kike", "spic", "chink", "gook", "wetback", "dyke",
 }
+
+# Substrings that mark a tag as NSFW for the purposes of trending/discovery.
+# Any tag containing one of these fragments is hidden from the trending list
+# and from search-suggestion surfaces regardless of viewer age. Posts flagged
+# nsfw=True are also excluded from trending outright — this list is a
+# defence-in-depth so a naked SFW post tagged "#porn" still doesn't surface.
+NSFW_TAG_TERMS = {
+    "nsfw", "porn", "porno", "xxx", "nude", "nudes", "naked", "sex",
+    "sexy", "sexual", "hentai", "boobs", "boob", "tits", "titty", "titties",
+    "ass", "butt", "cum", "cock", "dick", "pussy", "vagina", "penis",
+    "orgy", "orgasm", "kink", "kinky", "fetish", "bdsm", "milf", "dilf",
+    "onlyfans", "of", "camgirl", "camboy", "escort", "hooker", "slut",
+    "thicc", "thick", "lewd", "erotica", "erotic", "18plus", "adult",
+    "nsfl", "gore",
+}
+
+
+def is_nsfw_tag(tag: str) -> bool:
+    """Return True if a tag string references NSFW content (substring match).
+    Cheap check used by trending/search to keep discovery surfaces clean."""
+    if not tag:
+        return False
+    t = tag.lower()
+    return any(term in t for term in NSFW_TAG_TERMS)
 TIERS = {"public", "followers", "inner"}
 
 storage_key_cache: Optional[str] = None
@@ -2816,25 +2840,32 @@ async def admin_purge_demo(payload: Optional[dict] = None, admin=Depends(require
 @api.get("/tags/trending")
 async def trending_tags(viewer=Depends(get_current_user)):
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-    # Aggregate over public, non-NSFW (for minors), non-quarantined posts
+    # Trending surfaces are always SFW: NSFW-flagged posts are excluded for
+    # every viewer (not just minors), and any tag whose text references NSFW
+    # keywords is filtered out below regardless of the source post's flag.
     match = {
         "tier": "public",
         "quarantined": {"$ne": True},
+        "nsfw": {"$ne": True},
         "created_at": {"$gte": cutoff},
         "tags": {"$exists": True, "$ne": []},
     }
-    if is_minor(viewer):
-        match["nsfw"] = {"$ne": True}
     pipeline = [
         {"$match": match},
         {"$unwind": "$tags"},
         {"$group": {"_id": "$tags", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
-        {"$limit": 10},
+        # Grab extras so we can drop NSFW-worded tags and still return 10.
+        {"$limit": 40},
     ]
     out = []
     async for row in db.posts.aggregate(pipeline):
-        out.append({"tag": row["_id"], "count": row["count"]})
+        tag = row["_id"]
+        if is_nsfw_tag(tag):
+            continue
+        out.append({"tag": tag, "count": row["count"]})
+        if len(out) >= 10:
+            break
     return {"trending": out}
 
 
