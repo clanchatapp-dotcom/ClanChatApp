@@ -52,6 +52,11 @@ export default function Call() {
   const nav = useNavigate();
   const session = window.history.state?.usr?.session;
   const [hungUp, setHungUp] = useState(false);
+  // Gate LiveKitRoom mount until MODE_IN_COMMUNICATION is set. If LiveKit's
+  // WebRTC grabs the mic before we flip the audio system into call mode,
+  // Android puts the whole session on STREAM_MUSIC and no amount of
+  // re-applying fixes it. Wait for the plugin call to resolve, then mount.
+  const [audioReady, setAudioReady] = useState(false);
 
   useEffect(() => {
     if (!session?.token) nav("/messages", { replace: true });
@@ -59,14 +64,19 @@ export default function Call() {
 
   useEffect(() => {
     if (!session?.token) return;
-    startCallAudio({ speaker: false }).catch((e) => console.warn("call audio start failed", e));
-    // WebRTC in Capacitor's WebView will sometimes re-init its own audio
-    // session ~1s after connect and put us back on the media stream.
-    // Re-apply after a short delay to catch that race, then again a few
-    // seconds later for good measure.
+    let cancelled = false;
+    (async () => {
+      try {
+        await startCallAudio({ speaker: false });
+      } catch (e) { console.warn("call audio start failed", e); }
+      if (!cancelled) setAudioReady(true);
+    })();
+    // Belt-and-braces: LiveKit or the WebView can occasionally re-init
+    // the audio session ~1-4s after connect. Reapply earpiece then.
     const t1 = setTimeout(() => { startCallAudio({ speaker: false }).catch(() => {}); }, 1500);
     const t2 = setTimeout(() => { startCallAudio({ speaker: false }).catch(() => {}); }, 4000);
     return () => {
+      cancelled = true;
       clearTimeout(t1); clearTimeout(t2);
       stopCallAudio().catch((e) => console.warn("call audio stop failed", e));
     };
@@ -83,21 +93,29 @@ export default function Call() {
 
   return (
     <div className="fixed inset-0 z-[100] bg-black" data-testid="call-screen">
-      <LiveKitRoom
-        token={session.token}
-        serverUrl={session.livekit_url}
-        connect
-        audio
-        video={session.kind === "video"}
-        onDisconnected={onDisconnect}
-        className="absolute inset-0 flex flex-col"
-        data-lk-theme="default"
-      >
-        <RoomAudioRenderer />
-        <CallStage kind={session.kind} />
-        <CallTimer />
-        <CallControls onHangup={onDisconnect} kind={session.kind} />
-      </LiveKitRoom>
+      {!audioReady && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-500 text-sm gap-3" data-testid="call-audio-priming">
+          <div className="w-14 h-14 rounded-full border-2 border-zinc-700 border-t-[#FF5A00] animate-spin" />
+          <div className="text-xs uppercase tracking-[0.3em]">Connecting…</div>
+        </div>
+      )}
+      {audioReady && (
+        <LiveKitRoom
+          token={session.token}
+          serverUrl={session.livekit_url}
+          connect
+          audio
+          video={session.kind === "video"}
+          onDisconnected={onDisconnect}
+          className="absolute inset-0 flex flex-col"
+          data-lk-theme="default"
+        >
+          <RoomAudioRenderer />
+          <CallStage kind={session.kind} />
+          <CallTimer />
+          <CallControls onHangup={onDisconnect} kind={session.kind} />
+        </LiveKitRoom>
+      )}
     </div>
   );
 }

@@ -178,7 +178,12 @@ export default function Settings() {
       )}
 
       <Section title="Inner Circle">
-        <Link to="/inner" data-testid="inner-manage-link" className="cc-btn-secondary w-full text-sm text-center block">Manage Inner Circle</Link>
+        <Link to="/connections" data-testid="connections-link" className="cc-btn-secondary w-full text-sm text-center block">
+          Manage connections (tiers, followers, invites)
+        </Link>
+        <Link to="/inner" data-testid="inner-manage-link" className="cc-btn-secondary w-full text-sm text-center block mt-2">
+          Inner Circle permissions
+        </Link>
       </Section>
 
       <Section title="Safety">

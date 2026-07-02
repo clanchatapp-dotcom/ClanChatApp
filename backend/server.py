@@ -3640,6 +3640,79 @@ async def my_following(user=Depends(get_current_user)):
     return {"following": out, "count": len(out)}
 
 
+@api.get("/connections")
+async def my_connections(user=Depends(get_current_user)):
+    """One-stop shop for the Manage Connections screen.
+    Returns everyone in the user's world grouped by tier:
+      tier_3 → Inner Circle members (invite-accepted)
+      tier_2 → active followers who are NOT in the IC
+      pending_invites_out → IC invites I sent that are still pending
+      pending_follow_requests_in → follow requests waiting on my approval
+      following → people I follow (their tiers depend on THEIR view of me)
+    Tier 1 is "everyone else" and doesn't need enumeration.
+    """
+    uid = user["user_id"]
+
+    # IC members (active only — pending invites listed separately below).
+    ic_members = []
+    ic_member_ids = set()
+    async for m in db.inner_circle.find({"owner_id": uid, "status": "active"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": m["member_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1})
+        if u:
+            ic_member_ids.add(m["member_id"])
+            ic_members.append({**u, "permissions": m.get("permissions", {}), "since": m.get("created_at")})
+
+    # Followers who are NOT in the IC — those are Tier 2.
+    followers = []
+    async for f in db.follows.find({"followee_id": uid, "status": "active"}, {"_id": 0}).sort("created_at", -1):
+        if f["follower_id"] in ic_member_ids:
+            continue
+        u = await db.users.find_one({"user_id": f["follower_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1})
+        if u:
+            followers.append({**u, "since": f.get("created_at")})
+
+    # IC invites I've sent that haven't been accepted yet.
+    pending_out = []
+    async for inv in db.inner_circle.find({"owner_id": uid, "status": "pending"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": inv["member_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1})
+        if u:
+            pending_out.append({**u, "invite_id": inv["invite_id"], "sent_at": inv.get("created_at")})
+
+    # Follow requests waiting on my approval (approval-required follow mode).
+    follow_reqs = []
+    async for req in db.follows.find({"followee_id": uid, "status": "pending"}, {"_id": 0}).sort("created_at", -1):
+        u = await db.users.find_one({"user_id": req["follower_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1})
+        if u:
+            follow_reqs.append({**u, "follow_id": req.get("follow_id"), "requested_at": req.get("created_at")})
+
+    # Who I follow (my Tier 2/3 relationship to other people).
+    following = []
+    async for f in db.follows.find({"follower_id": uid, "status": "active"}, {"_id": 0}).sort("created_at", -1):
+        u = await db.users.find_one({"user_id": f["followee_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1})
+        if u:
+            # Am I in THEIR IC? Then I'm Tier 3 to them.
+            in_their_ic = await db.inner_circle.find_one(
+                {"owner_id": f["followee_id"], "member_id": uid, "status": "active"},
+                {"_id": 1},
+            )
+            following.append({**u, "since": f.get("created_at"), "my_tier_with_them": 3 if in_their_ic else 2})
+
+    return {
+        "tier_3": ic_members,
+        "tier_2": followers,
+        "pending_invites_out": pending_out,
+        "pending_follow_requests_in": follow_reqs,
+        "following": following,
+        "counts": {
+            "tier_3": len(ic_members),
+            "tier_2": len(followers),
+            "pending_out": len(pending_out),
+            "pending_in": len(follow_reqs),
+            "following": len(following),
+        },
+    }
+
+
 # ------------------------------------------------------------------
 # Startup
 # ------------------------------------------------------------------

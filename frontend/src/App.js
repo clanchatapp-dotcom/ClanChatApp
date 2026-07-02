@@ -25,6 +25,7 @@ import Call from "./pages/Call";
 import ForgotPassword from "./pages/ForgotPassword";
 import TagApprovals from "./pages/TagApprovals";
 import MyConnections from "./pages/MyConnections";
+import Connections from "./pages/Connections";
 import MyReports from "./pages/MyReports";
 import Install from "./pages/Install";
 import { Toaster } from "sonner";
@@ -68,6 +69,7 @@ function AppRouter() {
         <Route path="/admin/watch/:userId" element={<Protected><AdminWatch /></Protected>} />
         <Route path="/tags" element={<Protected><TagApprovals /></Protected>} />
         <Route path="/me/reports" element={<Protected><MyReports /></Protected>} />
+        <Route path="/connections" element={<Protected><Connections /></Protected>} />
         <Route path="/me/:kind" element={<Protected><MyConnections /></Protected>} />
         <Route path="/install" element={<Install />} />
         <Route path="/b/:boardId" element={<Protected><BoardView /></Protected>} />
