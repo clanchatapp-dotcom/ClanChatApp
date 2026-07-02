@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { fileUrl, formatApiError } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import PostCard from "../components/PostCard";
-import { LinkIcon, ShoppingBag, MoreHorizontal, Settings as Cog, Camera, Pin, Layers } from "lucide-react";
+import { LinkIcon, ShoppingBag, MoreHorizontal, Settings as Cog, Camera, Pin, Layers, Flag, UserMinus, VolumeX, Copy, Ban, UserRoundX } from "lucide-react";
 import { toast } from "sonner";
 
 const TABS = ["media", "wall", "audio"];
@@ -26,6 +26,85 @@ export default function Profile() {
   const avatarRef = useRef(null);
 
   const target = isMyProfile ? me : data?.user;
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  // Close the more-menu when clicking outside it. Simple document listener
+  // is enough — the menu is tiny.
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDown = (e) => {
+      if (!e.target.closest?.("[data-profile-more]")) setMoreOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [moreOpen]);
+
+  const copyHandle = async () => {
+    try {
+      await navigator.clipboard.writeText(`#${target.handle}`);
+      toast.success(`Copied #${target.handle}`);
+    } catch { toast.error("Couldn't copy handle"); }
+    setMoreOpen(false);
+  };
+
+  const doReport = () => {
+    // Reuse the existing report modal by simulating a post-like report via
+    // navigating to the reports page pre-filled. Simplest path here: prompt
+    // the user for a category via a lightweight window.confirm and POST
+    // straight to /reports. The full modal lives on posts.
+    setMoreOpen(false);
+    const category = window.prompt(
+      "Report reason — type one:\ncsam, underage, harassment, hate, self_harm, inappropriate, unlabelled_ai, impersonation, spam, other",
+      "harassment"
+    );
+    if (!category) return;
+    const notes = window.prompt("Any extra context? (optional)", "") || "";
+    api.post("/reports", { target_type: "user", target_id: target.user_id, category, notes })
+      .then(() => toast.success("Report sent. Our team will review."))
+      .catch((e) => toast.error(formatApiError(e.response?.data?.detail)));
+  };
+
+  const doMute = async () => {
+    setMoreOpen(false);
+    try {
+      await api.post(`/mute/${target.user_id}`);
+      toast.success(`Muted #${target.handle}. You won't see their posts.`);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const doBlock = async () => {
+    setMoreOpen(false);
+    if (!window.confirm(`Block #${target.handle}? They won't be able to see your profile, posts, or DM you. You can unblock later from Settings.`)) return;
+    try {
+      await api.post(`/block/${target.user_id}`);
+      toast.success(`Blocked #${target.handle}`);
+      nav("/feed");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const doRemoveFromIC = async () => {
+    setMoreOpen(false);
+    if (!window.confirm(`Remove #${target.handle} from your Inner Circle? They'll drop to Follower tier (Tier 2).`)) return;
+    try {
+      await api.delete(`/inner/members/${target.user_id}`);
+      toast.success(`Removed #${target.handle} from your Inner Circle`);
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const doUnfollow = async () => {
+    setMoreOpen(false);
+    if (!window.confirm(`Unfollow #${target.handle}? They'll drop to Tier 1 (Public only) in your view.`)) return;
+    try {
+      await api.delete(`/follow/${target.user_id}`);
+      toast.success(`Unfollowed #${target.handle}`);
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
 
   const load = async () => {
     if (isMyProfile) {
@@ -80,12 +159,6 @@ export default function Profile() {
     finally { setBusy(false); }
   };
 
-  const doUnfollow = async () => {
-    await api.delete(`/follow/${target.user_id}`);
-    toast.success("Unfollowed");
-    load();
-  };
-
   const onAvatar = async (e) => {
     const f = e.target.files?.[0]; if (!f) return;
     const form = new FormData();
@@ -105,7 +178,39 @@ export default function Profile() {
         {isMyProfile ? (
           <Link to="/settings" className="text-zinc-400 p-2" data-testid="profile-settings"><Cog size={18} /></Link>
         ) : (
-          <button className="text-zinc-400 p-2"><MoreHorizontal size={18} /></button>
+          <div className="relative" data-profile-more>
+            <button
+              data-testid="profile-more-btn"
+              onClick={() => setMoreOpen(!moreOpen)}
+              className="text-zinc-400 p-2"
+              aria-label="More"
+            >
+              <MoreHorizontal size={18} />
+            </button>
+            {moreOpen && (
+              <div
+                className="absolute right-0 top-full mt-1 min-w-[220px] bg-black border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden z-50"
+                data-testid="profile-more-menu"
+              >
+                <MenuItem testId="menu-copy-handle" onClick={copyHandle} icon={<Copy size={13} />}>Copy #{target.handle}</MenuItem>
+                {data?.relation?.inner && (
+                  <MenuItem testId="menu-remove-ic" onClick={doRemoveFromIC} icon={<UserRoundX size={13} />}>
+                    Remove from Inner Circle
+                  </MenuItem>
+                )}
+                {data?.relation?.follows && (
+                  <MenuItem testId="menu-unfollow" onClick={doUnfollow} icon={<UserMinus size={13} />}>
+                    Unfollow
+                  </MenuItem>
+                )}
+                <MenuItem testId="menu-mute" onClick={doMute} icon={<VolumeX size={13} />}>Mute posts</MenuItem>
+                <MenuItem testId="menu-report" onClick={doReport} icon={<Flag size={13} />}>Report</MenuItem>
+                <MenuItem testId="menu-block" onClick={doBlock} icon={<Ban size={13} />} danger>
+                  Block
+                </MenuItem>
+              </div>
+            )}
+          </div>
         )}
       </header>
 
@@ -366,3 +471,20 @@ function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoard
     </div>
   );
 }
+
+function MenuItem({ children, onClick, icon, danger, testId }) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={onClick}
+      className={`w-full text-left flex items-center gap-2.5 px-3 py-2.5 text-xs transition ${
+        danger ? "text-red-300 hover:bg-red-500/10" : "text-zinc-200 hover:bg-zinc-900"
+      }`}
+    >
+      <span className={danger ? "text-red-400" : "text-zinc-500"}>{icon}</span>
+      <span>{children}</span>
+    </button>
+  );
+}
+

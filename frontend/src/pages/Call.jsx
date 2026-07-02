@@ -60,7 +60,14 @@ export default function Call() {
   useEffect(() => {
     if (!session?.token) return;
     startCallAudio({ speaker: false }).catch((e) => console.warn("call audio start failed", e));
+    // WebRTC in Capacitor's WebView will sometimes re-init its own audio
+    // session ~1s after connect and put us back on the media stream.
+    // Re-apply after a short delay to catch that race, then again a few
+    // seconds later for good measure.
+    const t1 = setTimeout(() => { startCallAudio({ speaker: false }).catch(() => {}); }, 1500);
+    const t2 = setTimeout(() => { startCallAudio({ speaker: false }).catch(() => {}); }, 4000);
     return () => {
+      clearTimeout(t1); clearTimeout(t2);
       stopCallAudio().catch((e) => console.warn("call audio stop failed", e));
     };
   }, [session]);
@@ -88,6 +95,7 @@ export default function Call() {
       >
         <RoomAudioRenderer />
         <CallStage kind={session.kind} />
+        <CallTimer />
         <CallControls onHangup={onDisconnect} kind={session.kind} />
       </LiveKitRoom>
     </div>
@@ -188,6 +196,40 @@ function CallStage({ kind }) {
           <ParticipantTile trackRef={pipTrack} className="!h-full !w-full" />
         </div>
       )}
+    </div>
+  );
+}
+
+function CallTimer() {
+  // Elapsed-time display anchored to the moment LiveKit tells us the room
+  // is connected. Falls back to component mount time if the room isn't
+  // available yet. Ticks every second in a tight interval.
+  const room = useRoomContext();
+  const [elapsed, setElapsed] = useState(0);
+  const [startedAt, setStartedAt] = useState(null);
+
+  useEffect(() => {
+    // Try to read the real "room connected at" moment from LiveKit; if it's
+    // not exposed, fall back to the mount time.
+    const started = room?.state === "connected" ? Date.now() : null;
+    setStartedAt(started || Date.now());
+  }, [room?.state]);
+
+  useEffect(() => {
+    if (!startedAt) return;
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
+  return (
+    <div
+      className="absolute left-1/2 -translate-x-1/2 z-30 bg-black/60 backdrop-blur border border-zinc-800 rounded-full px-3 py-1 text-xs font-mono text-zinc-200 pointer-events-none"
+      style={{ top: "calc(env(safe-area-inset-top, 0px) + 0.75rem)" }}
+      data-testid="call-timer"
+    >
+      {mm}:{ss}
     </div>
   );
 }

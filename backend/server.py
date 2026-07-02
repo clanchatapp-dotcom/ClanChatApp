@@ -1149,12 +1149,24 @@ async def follow_user(target_id: str, user=Depends(get_current_user)):
 @api.delete("/follow/{target_id}")
 async def unfollow(target_id: str, user=Depends(get_current_user)):
     await db.follows.delete_one({"follower_id": user["user_id"], "followee_id": target_id})
-    # Bug 5 fix: removing the follow relationship must also evict the user
-    # from the target's Inner Circle if they were a member. Inner Circle
-    # presupposes the follow relationship — keeping IC membership without
-    # the follow creates a stale orphan state that bypasses tier gating on
-    # IC-only DMs and posts.
+    # Cascade Inner Circle eviction in BOTH directions:
+    #   1) The target's IC — if the target had me in their IC, remove me,
+    #      because IC presupposes the follow relationship.
+    #   2) My IC — if I had the target in my IC, remove them too. Once I
+    #      stop following someone I clearly don't want them in my inner
+    #      circle either, and leaving them there creates a stale roster
+    #      that bypasses tier gating.
     await db.inner_circle.delete_one({"owner_id": target_id, "member_id": user["user_id"]})
+    await db.inner_circle.delete_one({"owner_id": user["user_id"], "member_id": target_id})
+    return {"ok": True}
+
+
+@api.post("/follow/remove/{user_id}")
+async def remove_follower(user_id: str, user=Depends(get_current_user)):
+    """Kick someone off my followers list. Also removes them from my IC —
+    non-followers can never be IC members."""
+    await db.follows.delete_one({"follower_id": user_id, "followee_id": user["user_id"]})
+    await db.inner_circle.delete_one({"owner_id": user["user_id"], "member_id": user_id})
     return {"ok": True}
 
 
@@ -1181,12 +1193,6 @@ async def approve_follow(follow_id: str, user=Depends(get_current_user)):
 @api.post("/follow/requests/{follow_id}/decline")
 async def decline_follow(follow_id: str, user=Depends(get_current_user)):
     await db.follows.delete_one({"follow_id": follow_id, "followee_id": user["user_id"]})
-    return {"ok": True}
-
-
-@api.post("/follow/remove/{user_id}")
-async def remove_follower(user_id: str, user=Depends(get_current_user)):
-    await db.follows.delete_one({"follower_id": user_id, "followee_id": user["user_id"]})
     return {"ok": True}
 
 
@@ -1272,6 +1278,21 @@ async def inner_members(user=Depends(get_current_user)):
         if u:
             out.append({"member": public_user(u), "permissions": m["permissions"]})
     return {"members": out}
+
+
+@api.delete("/inner/members/{member_id}")
+async def inner_remove(member_id: str, user=Depends(get_current_user)):
+    """Demote a member out of my Inner Circle. Their follower relationship
+    stays intact (they drop from Tier 3 → Tier 2 in my hierarchy). If I
+    want to remove them entirely I still need to /follow/remove them or
+    they need to /follow/{me} (delete)."""
+    res = await db.inner_circle.delete_one({
+        "owner_id": user["user_id"],
+        "member_id": member_id,
+    })
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Not in your Inner Circle")
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------
