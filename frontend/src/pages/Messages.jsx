@@ -5,6 +5,7 @@ import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smi
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
 import GiphyPicker from "../components/GiphyPicker";
+import VoiceRecorder from "../components/VoiceRecorder";
 
 // Native screenshot-block bridge. On the Android Capacitor APK we set
 // FLAG_SECURE on the window while a "no screenshots" thread is open. On
@@ -397,6 +398,23 @@ export function MessageThread() {
           >
             <Smile size={16} />
           </button>
+          {data.can_send && (
+            <VoiceRecorder
+              onSend={async (mediaPath) => {
+                // Voice messages send as a single-attachment DM with no
+                // text. Reload the thread after send.
+                try {
+                  await api.post("/dms", {
+                    recipient_id: userId,
+                    content: "",
+                    media_paths: [mediaPath],
+                  });
+                  load();
+                } catch (e) { toast.error(formatApiError(e.response?.data?.detail) || "Send failed"); }
+              }}
+              onCancel={() => {}}
+            />
+          )}
           <input
             data-testid="dm-input"
             className="flex-1 bg-transparent px-1 py-1 outline-none text-sm"

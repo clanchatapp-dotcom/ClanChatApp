@@ -4,8 +4,25 @@ import api, { rememberToken, forgetToken } from "../lib/api";
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(undefined); // undefined=loading, null=not auth, obj=auth
+  // Hydrate from localStorage on first render so cold starts don't flash
+  // the login page while /auth/me is in-flight. Any transient network hiccup
+  // that would otherwise blank the app now sees the last-known user and
+  // /auth/me confirms or clears it. Only cleared on a real 401/403 or logout.
+  const [user, setUser] = useState(() => {
+    try {
+      const raw = localStorage.getItem("cc_last_user");
+      return raw ? JSON.parse(raw) : undefined;
+    } catch { return undefined; }
+  });
   const [theme, setTheme] = useState(() => localStorage.getItem("cc_theme") || "dark");
+
+  // Persist the user snapshot so the next cold start hydrates instantly.
+  useEffect(() => {
+    try {
+      if (user) localStorage.setItem("cc_last_user", JSON.stringify(user));
+      else if (user === null) localStorage.removeItem("cc_last_user");
+    } catch { /* private mode / storage disabled */ }
+  }, [user]);
 
   const checkAuth = useCallback(async () => {
     if (window.location.hash?.includes("session_id=")) {
@@ -56,6 +73,7 @@ export function AuthProvider({ children }) {
   const logout = async () => {
     try { await api.post("/auth/logout"); } catch (e) { console.warn("logout failed", e); }
     await forgetToken();
+    try { localStorage.removeItem("cc_last_user"); } catch { /* ignore */ }
     setUser(null);
   };
   const refresh = async () => {
