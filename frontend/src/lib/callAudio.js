@@ -13,42 +13,55 @@
 //
 // On web (preview) the plugin isn't registered — these helpers become
 // no-ops so the same code path works in both environments.
+//
+// Every helper below returns a `{ ok, reason, error? }` shape so the caller
+// (Call.jsx) can surface diagnostic UI when the native side isn't wired up
+// on the APK build — much easier than reading logcat.
 
 import { Capacitor, registerPlugin } from "@capacitor/core";
 
-// `registerPlugin` returns a proxy. If the native side isn't there, calls
-// reject with an UNIMPLEMENTED error — we swallow that below so the web
-// build never throws.
 const CallAudio = registerPlugin("CallAudio");
 
 const isNativeAndroid = () => Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";
 
+/** Compact error stringifier so callers can display something meaningful. */
+function stringifyErr(e) {
+  if (!e) return "unknown";
+  if (typeof e === "string") return e;
+  return e.message || e.code || JSON.stringify(e).slice(0, 200);
+}
+
 export async function startCallAudio({ speaker = false } = {}) {
-  if (!isNativeAndroid()) return { ok: false, reason: "not-native" };
+  if (!isNativeAndroid()) return { ok: false, reason: "not-native", platform: Capacitor.getPlatform() };
   try {
-    return await CallAudio.start({ speaker });
+    const result = await CallAudio.start({ speaker });
+    return { ok: true, ...result };
   } catch (e) {
-    console.warn("CallAudio.start unavailable", e?.message || e);
-    return { ok: false, reason: "unimplemented" };
+    const err = stringifyErr(e);
+    console.warn("CallAudio.start unavailable", err);
+    return { ok: false, reason: "plugin-error", error: err };
   }
 }
 
 export async function stopCallAudio() {
   if (!isNativeAndroid()) return { ok: false, reason: "not-native" };
   try {
-    return await CallAudio.stop();
+    const result = await CallAudio.stop();
+    return { ok: true, ...result };
   } catch (e) {
-    console.warn("CallAudio.stop unavailable", e?.message || e);
-    return { ok: false, reason: "unimplemented" };
+    return { ok: false, reason: "plugin-error", error: stringifyErr(e) };
   }
 }
 
 export async function setSpeakerphone(on) {
   if (!isNativeAndroid()) return { ok: false, reason: "not-native" };
   try {
-    return await CallAudio.setSpeakerphone({ on: !!on });
+    const result = await CallAudio.setSpeakerphone({ on: !!on });
+    return { ok: true, ...result };
   } catch (e) {
-    console.warn("CallAudio.setSpeakerphone unavailable", e?.message || e);
-    return { ok: false, reason: "unimplemented" };
+    return { ok: false, reason: "plugin-error", error: stringifyErr(e) };
   }
 }
+
+/** True when the app is running inside the Android APK (not the browser). */
+export function isCallAudioSupported() { return isNativeAndroid(); }

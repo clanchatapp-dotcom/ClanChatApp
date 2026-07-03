@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import "@livekit/components-styles";
 import api from "../lib/api";
-import { startCallAudio, stopCallAudio, setSpeakerphone } from "../lib/callAudio";
+import { startCallAudio, stopCallAudio, setSpeakerphone, isCallAudioSupported } from "../lib/callAudio";
 
 /**
  * /call/:callId  — full-screen call UI.
@@ -57,6 +57,7 @@ export default function Call() {
   // Android puts the whole session on STREAM_MUSIC and no amount of
   // re-applying fixes it. Wait for the plugin call to resolve, then mount.
   const [audioReady, setAudioReady] = useState(false);
+  const [audioDiag, setAudioDiag] = useState(null); // { ok, reason, error? }
 
   useEffect(() => {
     if (!session?.token) nav("/messages", { replace: true });
@@ -66,13 +67,12 @@ export default function Call() {
     if (!session?.token) return;
     let cancelled = false;
     (async () => {
+      let res;
       try {
-        await startCallAudio({ speaker: false });
-      } catch (e) { console.warn("call audio start failed", e); }
-      if (!cancelled) setAudioReady(true);
+        res = await startCallAudio({ speaker: false });
+      } catch (e) { res = { ok: false, reason: "throw", error: String(e) }; }
+      if (!cancelled) { setAudioDiag(res); setAudioReady(true); }
     })();
-    // Belt-and-braces: LiveKit or the WebView can occasionally re-init
-    // the audio session ~1-4s after connect. Reapply earpiece then.
     const t1 = setTimeout(() => { startCallAudio({ speaker: false }).catch(() => {}); }, 1500);
     const t2 = setTimeout(() => { startCallAudio({ speaker: false }).catch(() => {}); }, 4000);
     return () => {
@@ -113,6 +113,20 @@ export default function Call() {
           <RoomAudioRenderer />
           <CallStage kind={session.kind} />
           <CallTimer />
+          {/* Audio diagnostic — only shows on the Android APK if the native
+              plugin failed to load. On web we skip this because earpiece
+              routing isn't a browser concern. If you see this banner, the
+              CallAudioPlugin wasn't registered by the APK build — check the
+              GitHub Actions log for "MainActivity patched to registerPlugin"
+              in the "Install custom CallAudio Capacitor plugin" step. */}
+          {isCallAudioSupported() && audioDiag && !audioDiag.ok && (
+            <div
+              className="absolute top-14 left-3 right-3 z-40 bg-amber-500/15 border border-amber-500/40 text-amber-100 text-[11px] rounded-xl p-2 leading-relaxed"
+              data-testid="call-audio-diag"
+            >
+              <strong>Audio routing plugin not loaded</strong> — that's why speaker toggle isn't working. Reason: <code>{audioDiag.reason}</code>{audioDiag.error ? ` (${audioDiag.error})` : ""}. Rebuild the APK and check the workflow log for the "Install custom CallAudio Capacitor plugin" step.
+            </div>
+          )}
           <CallControls onHangup={onDisconnect} kind={session.kind} />
         </LiveKitRoom>
       )}

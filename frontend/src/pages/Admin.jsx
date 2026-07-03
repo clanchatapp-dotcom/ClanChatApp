@@ -264,6 +264,33 @@ export default function Admin() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
+  // Admin content wipe. Nukes a user's posts en-masse without deleting the
+  // account itself. Three scopes:
+  //   all     — every post they've ever made
+  //   wall    — only wall posts
+  //   gallery — only posts with media attached
+  // Confirmation is deliberately awkward (type the handle) so this can
+  // never be a slip-of-the-thumb operation.
+  const wipeUserContent = async (uid, handle, scope, onDone) => {
+    const scopeLabel = { all: "ALL POSTS", wall: "WALL", gallery: "GALLERY (media)" }[scope];
+    const typed = window.prompt(
+      `⚠️  Delete ${scopeLabel} for #${handle}?\n\nThis cannot be undone. Type the handle below to confirm.`,
+      ""
+    );
+    if (typed === null) return;
+    if (typed.trim().replace(/^#/, "").toLowerCase() !== handle.toLowerCase()) {
+      toast.error("Handle didn't match — nothing deleted"); return;
+    }
+    const reason = window.prompt(`Reason for this wipe? (goes to audit log)`, "");
+    if (reason === null) return;
+    if (!reason.trim()) { toast.error("Reason required"); return; }
+    try {
+      const { data } = await api.post(`/admin/users/${uid}/wipe`, { scope, reason: reason.trim() });
+      toast.success(`Deleted ${data.posts_deleted} post${data.posts_deleted === 1 ? "" : "s"} · ${data.likes_deleted} likes · ${data.comments_deleted} comments`);
+      onDone?.();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
 
   if (!stats) return <div className="p-10 text-zinc-500 text-sm">Loading admin…</div>;
 
@@ -693,6 +720,39 @@ export default function Admin() {
                     Account is deleted (strike 3 or manual delete). Unban restores it.
                   </div>
                 )}
+              </div>
+
+              {/* Content wipe — delete posts en-masse without touching the
+                  account itself. Requires typing the handle to confirm so
+                  it can't be triggered by accident. */}
+              <div className="border-t border-zinc-900 pt-3 mt-1">
+                <div className="text-[10px] uppercase tracking-[0.25em] text-zinc-500 mb-2">Content wipe</div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    data-testid="user-wipe-all"
+                    onClick={() => wipeUserContent(lookupUser.user_id, lookupUser.handle, "all", reloadLookup)}
+                    className="text-xs py-1.5 px-3 rounded-full transition border border-red-500/40 text-red-200 hover:bg-red-500/10"
+                  >
+                    Delete all posts
+                  </button>
+                  <button
+                    data-testid="user-wipe-wall"
+                    onClick={() => wipeUserContent(lookupUser.user_id, lookupUser.handle, "wall", reloadLookup)}
+                    className="text-xs py-1.5 px-3 rounded-full transition border border-red-500/40 text-red-200 hover:bg-red-500/10"
+                  >
+                    Wipe wall
+                  </button>
+                  <button
+                    data-testid="user-wipe-gallery"
+                    onClick={() => wipeUserContent(lookupUser.user_id, lookupUser.handle, "gallery", reloadLookup)}
+                    className="text-xs py-1.5 px-3 rounded-full transition border border-red-500/40 text-red-200 hover:bg-red-500/10"
+                  >
+                    Wipe gallery (media)
+                  </button>
+                </div>
+                <p className="text-[10px] text-zinc-600 leading-relaxed mt-2">
+                  Wipes delete posts + their likes + their comments. Account itself stays. You'll be asked to type <code className="text-zinc-400">{lookupUser.handle}</code> to confirm.
+                </p>
               </div>
 
               <p className="text-[10px] text-zinc-600 leading-relaxed">

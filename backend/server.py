@@ -3416,6 +3416,76 @@ async def admin_unban_user(user_id: str, payload: AdminActionIn, admin=Depends(r
     return {"ok": True}
 
 
+class AdminWipeIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    scope: str = Field(pattern="^(all|wall|gallery)$")
+
+
+@api.post("/admin/users/{user_id}/wipe")
+async def admin_wipe_user_content(user_id: str, payload: AdminWipeIn, admin=Depends(require_admin)):
+    """Destroy a user's content en-masse. Three scopes:
+      all      — every post they've ever made (feed, wall, gallery)
+      wall     — only wall posts (posts pinned to their own profile wall)
+      gallery  — only posts with media (photos/videos/audio)
+    Admin accounts cannot be wiped this way — demote first.
+    Full audit event is logged. The user's account itself is NOT deleted —
+    if you want that, use strike-level=3 or delete via the users panel.
+    """
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(403, "Cannot wipe an admin's content — demote first")
+
+    query = {"author_id": user_id}
+    if payload.scope == "wall":
+        query["is_wall"] = True
+    elif payload.scope == "gallery":
+        query["media_paths"] = {"$exists": True, "$ne": []}
+    # "all" leaves query as {author_id}
+
+    to_delete = []
+    async for p in db.posts.find(query, {"post_id": 1, "_id": 0}):
+        to_delete.append(p["post_id"])
+    posts_deleted = 0
+    likes_deleted = 0
+    comments_deleted = 0
+    if to_delete:
+        res = await db.posts.delete_many({"post_id": {"$in": to_delete}})
+        posts_deleted = res.deleted_count
+        # Cascade — likes and comments referring to the wiped posts.
+        try:
+            r2 = await db.likes.delete_many({"post_id": {"$in": to_delete}})
+            likes_deleted = r2.deleted_count
+        except Exception:
+            pass
+        try:
+            r3 = await db.comments.delete_many({"post_id": {"$in": to_delete}})
+            comments_deleted = r3.deleted_count
+        except Exception:
+            pass
+
+    await db.audit_events.insert_one({
+        "event": f"admin_wipe_{payload.scope}",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "scope": payload.scope,
+        "posts_deleted": posts_deleted,
+        "likes_deleted": likes_deleted,
+        "comments_deleted": comments_deleted,
+        "at": now_iso(),
+    })
+    return {
+        "ok": True,
+        "scope": payload.scope,
+        "posts_deleted": posts_deleted,
+        "likes_deleted": likes_deleted,
+        "comments_deleted": comments_deleted,
+    }
+
+
 # ------------------------------------------------------------------
 # Admin: blocked-tag moderation
 #

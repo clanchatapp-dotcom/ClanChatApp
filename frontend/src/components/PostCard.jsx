@@ -216,20 +216,21 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
         </AlertDialogContent>
       </AlertDialog>
       <AlertDialog open={reportOpen} onOpenChange={setReportOpen}>
-        <AlertDialogContent className="bg-zinc-950 border border-zinc-800 text-zinc-100">
-          <AlertDialogHeader>
+        <AlertDialogContent className="bg-zinc-950 border border-zinc-800 text-zinc-100 max-h-[85vh] flex flex-col p-0 overflow-hidden">
+          <AlertDialogHeader className="p-4 pb-2 shrink-0">
             <AlertDialogTitle className="font-heading flex items-center gap-2">
               <Flag size={16} className="text-red-400" /> Report this post
             </AlertDialogTitle>
-            <AlertDialogDescription className="text-zinc-500">
-              Your report is confidential. CSAM reports auto-quarantine the content immediately and route to our compliance queue.
+            <AlertDialogDescription className="text-zinc-500 text-xs">
+              Confidential. CSAM auto-quarantines immediately.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="flex flex-col gap-2 mt-2">
+          {/* Scroll body — categories + textarea live here so the footer
+              stays anchored to the bottom and is always tappable, even on
+              small phones where the full list would otherwise push Submit
+              off-screen. */}
+          <div className="flex flex-col gap-1.5 px-4 py-2 overflow-y-auto flex-1 min-h-0">
             {[
-              // Ordered high → low severity so the destructive options are
-              // visible up top. `csam` sits alone at the very top because it
-              // triggers the immediate CEOP lane.
               { id: "csam", label: "Child sexual abuse material (CSAM)", danger: true },
               { id: "underage", label: "This account looks underage" },
               { id: "harassment", label: "Harassment or threats" },
@@ -243,7 +244,7 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
             ].map((opt) => (
               <label
                 key={opt.id}
-                className={`flex items-center justify-between p-3 border rounded-xl cursor-pointer ${
+                className={`flex items-center justify-between p-2.5 border rounded-xl cursor-pointer text-sm ${
                   reportCat === opt.id
                     ? opt.danger ? "border-red-500/60 bg-red-500/10" : "border-[#FF5A00] bg-[#FF5A00]/5"
                     : "border-zinc-900"
@@ -272,7 +273,7 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
               maxLength={1000}
             />
           </div>
-          <AlertDialogFooter>
+          <AlertDialogFooter className="p-3 border-t border-zinc-900 shrink-0 bg-zinc-950">
             <AlertDialogCancel data-testid="report-cancel" className="bg-transparent border-zinc-800 text-zinc-300 hover:bg-zinc-900">Cancel</AlertDialogCancel>
             <AlertDialogAction
               data-testid={`report-submit-${post.post_id}`}
