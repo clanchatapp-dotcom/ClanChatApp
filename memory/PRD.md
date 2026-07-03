@@ -39,7 +39,8 @@ Privacy-first social with three tiers (Public / Followers / Inner Circle), no al
 - Tagging others (max 10) with approval queue; hardcoded approval for media + 18+ tags
 - Group chats (Inner Circle only, ≤15, accept-required)
 - Restrict feature (silent hide)
-- Audio tab posts (`is_audio_track`)
+- Audio tab posts (`is_audio_track`) — supports **voice notes (record inline)** AND music/audio file uploads via NewPost composer
+- Voice notes wired via reusable `<VoiceRecorder />` (also used in DMs)
 - Admin moderation panel (stats, reports queue, strike 1/2/3, dismiss)
 - Real name with visibility tiers
 - Profile tab restructure: Feed (media) · Wall (text + notes) · Audio · Boards · Pinned

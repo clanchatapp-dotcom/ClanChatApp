@@ -134,15 +134,26 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
 
       {post.media?.length > 0 && (
         <div className={`grid gap-2 ${post.media.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
-          {post.media.map((m) => (
-            <div key={m} className="overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950">
-              {/\.(mp4|webm|mov)$/i.test(m) ? (
-                <video src={fileUrl(m)} controls className="w-full h-full object-cover" />
-              ) : (
-                <img src={fileUrl(m)} alt="" className="w-full h-full object-cover" />
-              )}
-            </div>
-          ))}
+          {post.media.map((m) => {
+            const isVideo = /\.(mp4|mov)$/i.test(m) || (/\.webm$/i.test(m) && !post.is_audio_track);
+            const isAudio = /\.(mp3|m4a|aac|wav|ogg|flac|oga|opus)$/i.test(m) || (post.is_audio_track && /\.webm$/i.test(m));
+            return (
+              <div key={m} className={`overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950 ${isAudio ? "p-3" : ""}`}>
+                {isVideo ? (
+                  <video src={fileUrl(m)} controls className="w-full h-full object-cover" />
+                ) : isAudio ? (
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/30 to-[#FF5A00]/30 flex items-center justify-center shrink-0">
+                      <span className="text-purple-200 text-lg">♪</span>
+                    </div>
+                    <audio src={fileUrl(m)} controls className="w-full" />
+                  </div>
+                ) : (
+                  <img src={fileUrl(m)} alt="" className="w-full h-full object-cover" />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 

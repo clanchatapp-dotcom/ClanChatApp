@@ -1,9 +1,10 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import api, { formatApiError, fileUrl } from "../lib/api";
-import { Sparkles, X, ImagePlus, AlertTriangle, ShieldAlert, AtSign, Music2 } from "lucide-react";
+import { Sparkles, X, ImagePlus, AlertTriangle, ShieldAlert, AtSign, Music2, Mic } from "lucide-react";
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
+import VoiceRecorder from "../components/VoiceRecorder";
 
 const TIERS = [
   { id: "public", label: "Public", desc: "Everyone can see" },
@@ -36,7 +37,9 @@ export default function NewPost() {
   const [peopleResults, setPeopleResults] = useState([]);
   // Audio track
   const [isAudio, setIsAudio] = useState(false);
+  const [showRecorder, setShowRecorder] = useState(false);
   const fileRef = useRef(null);
+  const audioFileRef = useRef(null);
   const { ensureMediaPermission, MediaPermissionDialog } = useMediaPermission();
 
   const runPeopleSearch = async (v) => {
@@ -95,6 +98,34 @@ export default function NewPost() {
       }
     }
     if (fileRef.current) fileRef.current.value = "";
+  };
+
+  // Music/audio file upload (from Wall Audio section) — auto marks post as audio track
+  const onAudioFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    for (const f of files.slice(0, 2)) {
+      const form = new FormData();
+      form.append("file", f);
+      try {
+        const { data } = await api.post("/upload", form, { headers: { "Content-Type": "multipart/form-data" } });
+        // Server may return image/* MIME for some containers; force audio so preview renders correctly.
+        const ct = (data.content_type || "").startsWith("audio") ? data.content_type : (f.type || "audio/mpeg");
+        setMedia(m => [...m, { ...data, content_type: ct }]);
+        setIsAudio(true);
+      } catch (e2) {
+        toast.error(formatApiError(e2.response?.data?.detail));
+      }
+    }
+    if (audioFileRef.current) audioFileRef.current.value = "";
+  };
+
+  // Voice recorder finished → attach as audio media and mark post as audio track
+  const onVoiceNoteReady = async (path) => {
+    setMedia(m => [...m, { path, content_type: "audio/webm" }]);
+    setIsAudio(true);
+    setShowRecorder(false);
+    toast.success("Voice note attached");
   };
 
   const removeMedia = (i) => setMedia(m => m.filter((_, idx) => idx !== i));
@@ -176,6 +207,11 @@ export default function NewPost() {
             <div key={m.path} className="relative aspect-square rounded-2xl overflow-hidden border border-zinc-900">
               {m.content_type?.startsWith("video") ? (
                 <video src={fileUrl(m.path)} className="w-full h-full object-cover" />
+              ) : m.content_type?.startsWith("audio") ? (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-purple-900/30 to-zinc-950 p-3">
+                  <Music2 size={28} className="text-purple-300" />
+                  <audio src={fileUrl(m.path)} controls className="w-full max-w-[92%]" />
+                </div>
               ) : (
                 <img src={fileUrl(m.path)} alt="" className="w-full h-full object-cover" />
               )}
@@ -203,6 +239,74 @@ export default function NewPost() {
           <ImagePlus size={16} /> Add media
         </button>
         <input ref={fileRef} type="file" accept="image/*,video/*" multiple onChange={onFiles} className="hidden" data-testid="upload-input" />
+      </div>
+
+      {/* Audio section — record a voice note OR upload a music/audio file */}
+      <div className="mt-3 p-3 border border-zinc-900 rounded-2xl">
+        <div className="flex items-center gap-2 mb-2">
+          <Music2 size={14} className="text-purple-300" />
+          <span className="text-xs uppercase tracking-[0.2em] text-zinc-500">Audio</span>
+        </div>
+        <p className="text-[11px] text-zinc-600 mb-3 leading-snug">
+          Record a voice note or upload a music/audio file. Anything added here posts to your Wall&apos;s Audio tab.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {!showRecorder ? (
+            <button
+              type="button"
+              data-testid="record-voice-btn"
+              onClick={async () => {
+                if (!(await ensureMediaPermission())) return;
+                setShowRecorder(true);
+              }}
+              className="cc-btn-secondary py-2 px-4 text-sm inline-flex items-center gap-2"
+            >
+              <Mic size={16} /> Record voice
+            </button>
+          ) : (
+            <div className="inline-flex items-center gap-2 p-1 border border-zinc-800 rounded-full" data-testid="voice-recorder-wrap">
+              <VoiceRecorder
+                onSend={onVoiceNoteReady}
+                onCancel={() => setShowRecorder(false)}
+                maxSeconds={3600}
+              />
+              <button
+                type="button"
+                data-testid="voice-recorder-close"
+                onClick={() => setShowRecorder(false)}
+                className="pr-2 text-[11px] text-zinc-500 hover:text-red-400"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          <button
+            type="button"
+            data-testid="upload-music-btn"
+            onClick={async () => {
+              if (!(await ensureMediaPermission())) return;
+              try {
+                const Cap = window.Capacitor;
+                if (Cap?.isNativePlatform?.() && Cap?.Plugins?.PrivacyScreen?.disable) {
+                  await Cap.Plugins.PrivacyScreen.disable();
+                }
+              } catch { /* no-op */ }
+              audioFileRef.current?.click();
+            }}
+            className="cc-btn-secondary py-2 px-4 text-sm inline-flex items-center gap-2"
+          >
+            <Music2 size={16} /> Upload music
+          </button>
+          <input
+            ref={audioFileRef}
+            type="file"
+            accept="audio/*"
+            multiple
+            onChange={onAudioFiles}
+            className="hidden"
+            data-testid="upload-music-input"
+          />
+        </div>
       </div>
 
       {/* Tags */}
