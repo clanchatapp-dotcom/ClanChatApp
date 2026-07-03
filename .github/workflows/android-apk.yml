@@ -167,60 +167,38 @@ jobs:
       - name: Install custom CallAudio Capacitor plugin
         working-directory: frontend
         run: |
-          # Drop our custom Java plugin into the Android project tree and
-          # register it with the Capacitor bridge so the JS side can call
-          # CallAudio.start/stop. The plugin flips the device into
-          # MODE_IN_COMMUNICATION for voice/video calls so audio routes
-          # through the earpiece and the volume rocker controls call volume.
+          # Drop our custom Java plugin into the Android project tree.
           PLUGIN_DIR=android/app/src/main/java/app/clanchat/mobile
           mkdir -p "$PLUGIN_DIR"
           cp android-resources/call-audio/CallAudioPlugin.java "$PLUGIN_DIR/CallAudioPlugin.java"
           echo "Copied CallAudioPlugin.java to $PLUGIN_DIR"
 
-          # Register the plugin in MainActivity. Capacitor's generated
-          # MainActivity extends BridgeActivity and is empty by default —
-          # we add an onCreate that calls registerPlugin() before super.
-          python3 - <<'PY'
-          import pathlib, re
-          ma = pathlib.Path("android/app/src/main/java/app/clanchat/mobile/MainActivity.java")
-          if not ma.exists():
-              raise SystemExit(f"MainActivity not found at {ma}")
-          src = ma.read_text()
+          # Overwrite MainActivity with a known-good version that registers
+          # our plugin. This replaces the previous regex-patching approach
+          # which was silently failing on some Capacitor template layouts.
+          # If Capacitor's default MainActivity ever grows real logic we
+          # care about, splice it in here — for now the default is empty.
+          cat > "$PLUGIN_DIR/MainActivity.java" <<'JAVA'
+          package app.clanchat.mobile;
 
-          # Make sure both imports we need are present.
-          if "import android.os.Bundle;" not in src:
-              src = src.replace(
-                  "import com.getcapacitor.BridgeActivity;",
-                  "import android.os.Bundle;\nimport com.getcapacitor.BridgeActivity;",
-              )
-          if "import app.clanchat.mobile.CallAudioPlugin;" not in src:
-              # Plugin is in the same package, so no import needed, but add
-              # it explicitly anyway to be unambiguous if the package ever
-              # changes.
-              pass
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
 
-          if "registerPlugin(CallAudioPlugin.class)" not in src:
-              if "public void onCreate" in src:
-                  # An onCreate already exists — inject the registration as
-                  # the first statement.
-                  src = re.sub(
-                      r"(public void onCreate\([^)]*\)\s*\{)",
-                      r"\1\n        registerPlugin(CallAudioPlugin.class);",
-                      src, count=1,
-                  )
-              else:
-                  # No onCreate yet — add one right after the class opening.
-                  src = re.sub(
-                      r"(public class MainActivity extends BridgeActivity\s*\{)",
-                      r"\1\n    @Override\n    public void onCreate(Bundle savedInstanceState) {\n        registerPlugin(CallAudioPlugin.class);\n        super.onCreate(savedInstanceState);\n    }\n",
-                      src, count=1,
-                  )
-              ma.write_text(src)
-              print("MainActivity patched to registerPlugin(CallAudioPlugin)")
-          else:
-              print("MainActivity already registers CallAudioPlugin — skipping")
-          print(ma.read_text())
-          PY
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  // Register the custom CallAudio plugin BEFORE super.onCreate
+                  // so the JS bridge sees it as soon as the WebView boots.
+                  registerPlugin(CallAudioPlugin.class);
+                  super.onCreate(savedInstanceState);
+              }
+          }
+          JAVA
+          # `cat <<HEREDOC` preserves indentation which Java compilers hate,
+          # so strip the leading 10 spaces we added for YAML readability.
+          sed -i 's/^          //' "$PLUGIN_DIR/MainActivity.java"
+          echo "== MainActivity.java =="
+          cat "$PLUGIN_DIR/MainActivity.java"
 
       - name: Copy launcher icons
         working-directory: frontend
