@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import api, { fileUrl, formatApiError } from "../lib/api";
-import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smile } from "lucide-react";
+import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smile, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
 import GiphyPicker from "../components/GiphyPicker";
@@ -93,6 +93,21 @@ export function MessageThread() {
   const [giphyOpen, setGiphyOpen] = useState(false);
   const fileRef = useRef(null);
   const { ensureMediaPermission, MediaPermissionDialog } = useMediaPermission();
+  // Toggle showing the inline delete confirm chip on my own messages.
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
+  const deleteMessage = async (mid) => {
+    // Optimistic remove; if the server rejects we reload.
+    setData((d) => d ? { ...d, messages: d.messages.filter((m) => m.message_id !== mid) } : d);
+    setConfirmDeleteId(null);
+    try {
+      await api.delete(`/dms/${mid}`);
+      toast.success("Message deleted");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Could not delete");
+      load();
+    }
+  };
 
   const load = async () => {
     try {
@@ -280,9 +295,18 @@ export function MessageThread() {
       <div className="flex-1 flex flex-col gap-3">
         {visibleMessages.map((m) => {
           const outgoing = m.from_id !== userId;
+          const showConfirm = confirmDeleteId === m.message_id;
           return (
-            <div key={m.message_id} data-testid={`msg-${m.message_id}`}
-              className={`max-w-[80%] rounded-2xl px-3 py-2 ${outgoing ? "bg-[#FF5A00] text-black self-end" : "bg-zinc-900 self-start"}`}>
+            <div
+              key={m.message_id}
+              data-testid={`msg-${m.message_id}`}
+              className={`group relative max-w-[80%] rounded-2xl px-3 py-2 ${outgoing ? "bg-[#FF5A00] text-black self-end" : "bg-zinc-900 self-start"}`}
+              onClick={() => {
+                // Only my own messages can be deleted. Tapping toggles the
+                // inline confirm chip so mobile users don't need long-press.
+                if (outgoing) setConfirmDeleteId((cur) => cur === m.message_id ? null : m.message_id);
+              }}
+            >
               {m.media_paths?.length > 0 && (
                 <div className={`grid gap-1 mb-1 ${m.media_paths.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
                   {m.media_paths.map((p) => (
@@ -292,6 +316,29 @@ export function MessageThread() {
               )}
               {m.content && (
                 <div className="text-sm whitespace-pre-wrap break-words">{m.content}</div>
+              )}
+              {outgoing && showConfirm && (
+                <div
+                  className="absolute -top-8 right-0 flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-full px-1 py-0.5 shadow-lg z-10"
+                  onClick={(e) => e.stopPropagation()}
+                  data-testid={`msg-confirm-${m.message_id}`}
+                >
+                  <button
+                    type="button"
+                    data-testid={`msg-delete-${m.message_id}`}
+                    onClick={() => deleteMessage(m.message_id)}
+                    className="inline-flex items-center gap-1 text-[11px] text-red-300 hover:text-red-200 px-2 py-1 rounded-full"
+                  >
+                    <Trash2 size={11} /> Delete
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteId(null)}
+                    className="text-[11px] text-zinc-500 hover:text-zinc-300 px-2 py-1 rounded-full"
+                  >
+                    Cancel
+                  </button>
+                </div>
               )}
             </div>
           );

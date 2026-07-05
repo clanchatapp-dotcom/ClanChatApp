@@ -5,6 +5,7 @@ import { Sparkles, X, ImagePlus, AlertTriangle, ShieldAlert, AtSign, Music2, Mic
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
 import VoiceRecorder from "../components/VoiceRecorder";
+import { useAuth } from "../context/AuthContext";
 
 const TIERS = [
   { id: "public", label: "Public", desc: "Everyone can see" },
@@ -21,6 +22,8 @@ const AI_LABELS = [
 
 export default function NewPost() {
   const nav = useNavigate();
+  const { user: me } = useAuth();
+  const isMinor = !!me?.is_minor;
   const [content, setContent] = useState("");
   const [tier, setTier] = useState("public");
   const [tags, setTags] = useState([]);
@@ -136,6 +139,9 @@ export default function NewPost() {
     }
     if (tier === "public" && nsfw) {
       toast.error("Public posts cannot contain 18+ content"); return;
+    }
+    if (nsfw && isMinor) {
+      toast.error("You must be 18 or older to mark posts as 18+"); return;
     }
     // Bug fix: previously the app popped a "Looks like this might be AI
     // generated" confirm on every post that included media, regardless of
@@ -434,7 +440,7 @@ export default function NewPost() {
 
       {/* Toggles */}
       <div className="mt-3 flex flex-col gap-2">
-        {tier !== "public" && (
+        {tier !== "public" && !isMinor && (
           <label className="flex items-center justify-between p-3 border border-zinc-900 rounded-2xl cursor-pointer">
             <div className="flex items-center gap-3">
               <AlertTriangle size={16} className="text-red-400" />
@@ -445,6 +451,17 @@ export default function NewPost() {
             </div>
             <input data-testid="nsfw-toggle" type="checkbox" checked={nsfw} onChange={e => setNsfw(e.target.checked)} className="accent-[#FF5A00]" />
           </label>
+        )}
+        {tier !== "public" && isMinor && (
+          <div className="p-3 border border-zinc-900 rounded-2xl bg-zinc-950/60" data-testid="nsfw-minor-locked">
+            <div className="flex items-center gap-3">
+              <ShieldAlert size={16} className="text-emerald-400" />
+              <div>
+                <div className="text-sm">18+ tagging is disabled</div>
+                <div className="text-[11px] text-zinc-500">You must be 18 or older to mark posts as 18+.</div>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 

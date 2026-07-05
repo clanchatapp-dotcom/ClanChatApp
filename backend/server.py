@@ -1386,6 +1386,9 @@ async def create_post(payload: PostIn, user=Depends(get_current_user)):
         raise HTTPException(400, "Invalid tier")
     if payload.tier == "public" and payload.nsfw:
         raise HTTPException(400, "Tier 1 (Public) posts cannot contain 18+ content")
+    # Hardcoded: minors can never mark their own posts as 18+.
+    if payload.nsfw and is_minor(user):
+        raise HTTPException(403, "Minors cannot mark posts as 18+")
     # AI policy enforcement
     ai_label = payload.ai_label
     if ai_label and ai_label not in {"generated", "assisted", "altered"}:
@@ -2070,6 +2073,28 @@ async def dm_history(other_id: str, user=Depends(get_current_user)):
         "reason": reason,
         "screenshots_allowed": screenshots_allowed,
     }
+
+
+@api.delete("/dms/{message_id}")
+async def delete_dm(message_id: str, user=Depends(get_current_user)):
+    """Delete a DM message. Only the sender can delete their own message
+    (or an admin). Deletion is destructive — the row is removed from the
+    database so the recipient's copy also disappears from their thread on
+    their next fetch."""
+    msg = await db.dms.find_one({"message_id": message_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(404, "Message not found")
+    is_admin = user.get("role") == "admin"
+    if msg["from_id"] != user["user_id"] and not is_admin:
+        raise HTTPException(403, "You can only delete messages you sent")
+    await db.dms.delete_one({"message_id": message_id})
+    if is_admin and msg["from_id"] != user["user_id"]:
+        await db.audit_events.insert_one({
+            "event": "dm.delete_admin", "admin_id": user["user_id"],
+            "target_user_id": msg["from_id"], "message_id": message_id,
+            "at": now_iso(),
+        })
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------

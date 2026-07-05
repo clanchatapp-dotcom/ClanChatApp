@@ -31,6 +31,10 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
   const [reportOpen, setReportOpen] = useState(false);
   const [reportCat, setReportCat] = useState("");
   const [reportNotes, setReportNotes] = useState("");
+  // 18+ media stays blurred behind a "Tap to reveal" overlay until the
+  // viewer explicitly opts in for this post. Adults still need to confirm;
+  // minors never receive this post to begin with (server filter).
+  const [nsfwRevealed, setNsfwRevealed] = useState(false);
 
   const submitReport = async () => {
     if (!reportCat) { toast.error("Pick a reason"); return; }
@@ -137,19 +141,34 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
           {post.media.map((m) => {
             const isVideo = /\.(mp4|mov)$/i.test(m) || (/\.webm$/i.test(m) && !post.is_audio_track);
             const isAudio = /\.(mp3|m4a|aac|wav|ogg|flac|oga|opus)$/i.test(m) || (post.is_audio_track && /\.webm$/i.test(m));
+            const shouldBlur = post.nsfw && !nsfwRevealed && !isAudio;
             return (
-              <div key={m} className={`overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950 ${isAudio ? "p-3" : ""}`}>
-                {isVideo ? (
-                  <video src={fileUrl(m)} controls className="w-full h-full object-cover" />
-                ) : isAudio ? (
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/30 to-[#FF5A00]/30 flex items-center justify-center shrink-0">
-                      <span className="text-purple-200 text-lg">♪</span>
+              <div key={m} className={`relative overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950 ${isAudio ? "p-3" : ""}`}>
+                <div className={shouldBlur ? "blur-2xl scale-105 pointer-events-none select-none" : ""}>
+                  {isVideo ? (
+                    <video src={fileUrl(m)} controls={!shouldBlur} className="w-full h-full object-cover" />
+                  ) : isAudio ? (
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/30 to-[#FF5A00]/30 flex items-center justify-center shrink-0">
+                        <span className="text-purple-200 text-lg">♪</span>
+                      </div>
+                      <audio src={fileUrl(m)} controls className="w-full" />
                     </div>
-                    <audio src={fileUrl(m)} controls className="w-full" />
-                  </div>
-                ) : (
-                  <img src={fileUrl(m)} alt="" className="w-full h-full object-cover" />
+                  ) : (
+                    <img src={fileUrl(m)} alt="" className="w-full h-full object-cover" />
+                  )}
+                </div>
+                {shouldBlur && (
+                  <button
+                    type="button"
+                    data-testid={`nsfw-reveal-${post.post_id}`}
+                    onClick={() => setNsfwRevealed(true)}
+                    className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/60 backdrop-blur-sm text-white"
+                  >
+                    <ShieldAlert size={22} className="text-red-400" />
+                    <div className="text-xs uppercase tracking-[0.2em] text-red-300">18+ content</div>
+                    <div className="text-[11px] text-zinc-300">Tap to reveal</div>
+                  </button>
                 )}
               </div>
             );
