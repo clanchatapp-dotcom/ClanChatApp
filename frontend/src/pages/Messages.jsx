@@ -210,13 +210,6 @@ export function MessageThread() {
         ) : (
           <>
             <Link to={`/u/${data.with?.handle}`} className="font-heading text-lg truncate flex-1 min-w-0" data-testid="dm-handle">#{data.with?.handle}</Link>
-            <span
-              data-testid="dm-encrypted-badge"
-              className="inline-flex items-center gap-1 text-[9px] uppercase tracking-[0.18em] text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded shrink-0"
-              title="AES-256 server-side encryption at rest. Not end-to-end."
-            >
-              <ShieldCheck size={9} /> Enc
-            </span>
             <button
               type="button"
               data-testid="dm-header-call-audio"
