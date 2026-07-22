@@ -65,14 +65,10 @@ jobs:
           # Override this to point at staging/preview if you fork the
           # workflow for testing branches.
           REACT_APP_BACKEND_URL: https://clanchat.app
-          # Giphy key. This is a beta/public key by Giphy's design — it's
-          # already embedded in the JS bundle on clanchat.app (view-source
-          # of any Giphy-powered site shows the same pattern). Hard-coding
-          # it here means we don't have to juggle GitHub Actions secrets
-          # for every fork/PR build. If you rotate the key, update it in
-          # this file, in Emergent's frontend env var for the web deploy,
-          # and in frontend/.env for local dev.
-          REACT_APP_GIPHY_API_KEY: qfT9ZsLkfWtUw9O8bCcJ4aLAtFAPQD1h
+          # NOTE: Giphy API key used to be injected here as
+          # REACT_APP_GIPHY_API_KEY. It's now proxied through the backend
+          # (/api/giphy/search) so nothing sensitive ships in the APK.
+          # Keep the backend GIPHY_API_KEY env var in sync on the server.
           CI: "false"  # CRA treats warnings as errors when CI=true; we don't want that to fail the APK
         run: yarn build
 

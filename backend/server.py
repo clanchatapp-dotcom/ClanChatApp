@@ -923,6 +923,67 @@ async def stickers_tenor_search(q: str, user=Depends(get_current_user)):
     return {"results": results}
 
 
+# ------------------------------------------------------------------
+# Giphy proxy — server-side so the API key is never shipped to
+# the browser or the Android APK. Frontend calls /api/giphy/search
+# instead of api.giphy.com directly.
+# ------------------------------------------------------------------
+_GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY", "").strip()
+
+
+@api.get("/giphy/search")
+async def giphy_search(
+    mode: str = "gif",
+    q: str = "",
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    """Server-side proxy for Giphy. `mode` = 'gif' or 'sticker'. Empty `q`
+    returns trending results. Rating is hardcoded to 'g' — no override
+    accepted from the client so nobody can bypass SFW."""
+    if not _GIPHY_API_KEY:
+        raise HTTPException(503, "Giphy not configured")
+    kind = "stickers" if mode == "sticker" else "gifs"
+    query = (q or "").strip()[:80]
+    endpoint = f"{kind}/search" if query else f"{kind}/trending"
+    params = {
+        "api_key": _GIPHY_API_KEY,
+        "rating": "g",  # SFW hardcoded — do NOT accept override from client
+        "limit": 24,
+        "offset": max(0, min(int(offset or 0), 500)),
+        "fields": "id,url,title,username,alt_text,images.fixed_height_small,images.fixed_height,images.original",
+    }
+    if query:
+        params["q"] = query
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(f"https://api.giphy.com/v1/{endpoint}", params=params)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logging.warning("giphy search failed: %s", e)
+        raise HTTPException(502, "Giphy search failed")
+    # Return only the fields the picker actually renders. Prevents anything
+    # unexpected from the upstream API leaking into the client bundle.
+    items = []
+    for item in data.get("data") or []:
+        images = item.get("images") or {}
+        items.append({
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "alt_text": item.get("alt_text"),
+            "username": item.get("username"),
+            "url": item.get("url"),
+            "images": {
+                "fixed_height_small": images.get("fixed_height_small"),
+                "fixed_height": images.get("fixed_height"),
+                "original": images.get("original"),
+            },
+        })
+    return {"items": items}
+
+
 
 @api.get("/auth/me")
 async def me(user=Depends(get_current_user)):
@@ -1104,6 +1165,35 @@ def adult_minor_block(actor: dict, target: dict, actor_initiated: bool) -> Optio
     if actor_initiated and not is_minor(actor) and is_minor(target):
         return "Adults cannot initiate follow/DM/invite with minors"
     return None
+
+
+def hide_minor_from(viewer: Optional[dict], author: Optional[dict]) -> bool:
+    """Discovery/gallery hard-block: minor accounts and any content by
+    a minor MUST be invisible to adult, non-admin viewers. Anonymous
+    (unauthenticated) viewers are treated as adults for the purposes of
+    this rule — they must never see minor content either.
+
+    Returns True if the viewer should be shown NOTHING from this author.
+    """
+    if not author:
+        return False
+    if not author.get("is_minor"):
+        return False
+    # Admins can see everything for moderation.
+    if viewer and viewer.get("role") == "admin":
+        return False
+    # Other minors can see minor content (peer-to-peer).
+    if viewer and is_minor(viewer):
+        return False
+    return True
+
+
+async def minor_author_ids() -> list:
+    """All user_ids belonging to minor accounts. Cached would be better
+    but the collection is tiny and the query cost is <1ms in Mongo."""
+    return [u["user_id"] async for u in db.users.find(
+        {"is_minor": True}, {"_id": 0, "user_id": 1}
+    )]
 
 
 @api.post("/follow/{target_id}")
@@ -1622,6 +1712,12 @@ async def get_feed(user=Depends(get_current_user), limit: int = 50, before: Opti
 async def posts_by_user(user_id: str, viewer=Depends(get_current_user)):
     if await db.blocks.find_one({"blocker_id": user_id, "blocked_id": viewer["user_id"]}):
         return {"posts": []}
+    # Minor protection: adult (non-admin) viewers see NOTHING from a minor's
+    # profile — same rule as search + follow. Prevents adults from scraping
+    # minor accounts via handle URLs.
+    author = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if hide_minor_from(viewer, author):
+        return {"posts": []}
     # Minors never see NSFW posts on any profile. Hardcoded.
     query = {"author_id": user_id}
     if is_minor(viewer):
@@ -1636,6 +1732,10 @@ async def posts_by_user(user_id: str, viewer=Depends(get_current_user)):
 
 @api.get("/posts/pinned/{user_id}")
 async def pinned(user_id: str, viewer=Depends(get_optional_user)):
+    # Minor protection: pinned posts must not leak to adult viewers either.
+    author = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if hide_minor_from(viewer, author):
+        return {"posts": []}
     cursor = db.posts.find({"author_id": user_id, "pinned": True}, {"_id": 0}).sort("created_at", -1).limit(3)
     out = []
     async for p in cursor:
@@ -1684,7 +1784,16 @@ async def delete_post(post_id: str, user=Depends(get_current_user)):
 @api.get("/posts/by-tag/{tag}")
 async def posts_by_tag(tag: str, viewer=Depends(get_current_user)):
     t = tag.lower().strip().lstrip("#")
-    cursor = db.posts.find({"tags": t, "tier": "public"}, {"_id": 0}).sort("created_at", -1).limit(50)
+    query = {"tags": t, "tier": "public"}
+    # Minor protection: strip minor authors from public tag pages so adults
+    # cannot browse a minor's content through a hashtag.
+    if not is_minor(viewer) and viewer.get("role") != "admin":
+        mins = await minor_author_ids()
+        if mins:
+            query["author_id"] = {"$nin": mins}
+    if is_minor(viewer):
+        query["nsfw"] = {"$ne": True}
+    cursor = db.posts.find(query, {"_id": 0}).sort("created_at", -1).limit(50)
     out = []
     async for p in cursor:
         if await can_view_post(p, viewer):
@@ -1695,6 +1804,10 @@ async def posts_by_tag(tag: str, viewer=Depends(get_current_user)):
 @api.get("/posts/audio/{user_id}")
 async def audio_posts_by_user(user_id: str, viewer=Depends(get_current_user)):
     if await db.blocks.find_one({"blocker_id": user_id, "blocked_id": viewer["user_id"]}):
+        return {"posts": []}
+    # Minor protection: adults cannot browse a minor's Audio tab either.
+    author = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if hide_minor_from(viewer, author):
         return {"posts": []}
     query = {"author_id": user_id, "is_audio_track": True}
     if is_minor(viewer):
@@ -3599,6 +3712,13 @@ async def trending_tags(viewer=Depends(get_current_user)):
         "created_at": {"$gte": cutoff},
         "tags": {"$exists": True, "$ne": []},
     }
+    # Minor protection: exclude posts authored by minors from the trending
+    # calculation entirely when the viewer is an adult, so a minor's tag
+    # can never surface into an adult's discovery feed.
+    if not is_minor(viewer) and viewer.get("role") != "admin":
+        mins = await minor_author_ids()
+        if mins:
+            match["author_id"] = {"$nin": mins}
     pipeline = [
         {"$match": match},
         {"$unwind": "$tags"},

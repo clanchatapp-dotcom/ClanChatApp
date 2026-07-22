@@ -127,13 +127,11 @@ export default function Call() {
               <strong>Audio routing plugin not loaded</strong> — that&apos;s why speaker toggle isn&apos;t working. Reason: <code>{audioDiag.reason}</code>{audioDiag.error ? ` (${audioDiag.error})` : ""}. Rebuild the APK and check the workflow log for the &quot;Install custom CallAudio Capacitor plugin&quot; step.
             </div>
           )}
-          {/* Route indicator — shows on Android APK once the plugin has
-              answered. Confirms whether setCommunicationDevice (API 31+)
-              or the legacy setSpeakerphoneOn path was used. If the route
-              text is "route_failed" or shows the wrong device, screenshot
-              this and share it — that tells us exactly why the phone
-              refused to switch to the earpiece. */}
-          {isCallAudioSupported() && audioDiag?.ok && audioDiag.route && (
+          {/* Route indicator — hidden by default. Enable during debugging
+              by setting localStorage.CC_DEBUG_CALL_AUDIO = "1" in devtools.
+              Left in the code so we can flip it back on if audio routing
+              regresses on future Android releases. */}
+          {isCallAudioSupported() && audioDiag?.ok && audioDiag.route && (typeof window !== "undefined" && window.localStorage?.getItem("CC_DEBUG_CALL_AUDIO") === "1") && (
             <div
               className="absolute top-3 right-3 z-40 bg-black/70 border border-zinc-700 text-zinc-300 text-[10px] font-mono rounded-full px-2 py-0.5"
               data-testid="call-audio-route"

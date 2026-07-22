@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { X, Search, Loader2 } from "lucide-react";
+import api from "../lib/api";
 
 /**
  * GiphyPicker — inline sticker + GIF picker.
  *
- * Frontend-only per Giphy's TOS (they explicitly do not want the key
- * proxied through a backend). Reads the key from the standard React
- * env var so the same code works in web + Capacitor builds.
+ * Routes through the ClanChat backend proxy (/api/giphy/search) so the
+ * Giphy API key stays on the server. Nothing sensitive ships in the
+ * client bundle or APK.
  *
  * Props:
  *   onSelect(payload)   — called with { id, mode, sourceUrl, previewUrl,
@@ -14,30 +15,13 @@ import { X, Search, Loader2 } from "lucide-react";
  *                                       user taps a tile.
  *   onClose()            — call when the user cancels the picker.
  *
- * SFW-only: `rating=g` is hardcoded and cannot be overridden.
+ * SFW-only: `rating=g` is hardcoded server-side and cannot be overridden.
  */
-const GIPHY_KEY = process.env.REACT_APP_GIPHY_API_KEY || "";
-const BASE = "https://api.giphy.com/v1";
-const RATING = "g"; // SFW hardcoded — do NOT change without spec update
-
 async function fetchGiphy(mode, query, offset = 0) {
-  if (!GIPHY_KEY) throw new Error("giphy-key-missing");
-  const kind = mode === "gif" ? "gifs" : "stickers";
-  const endpoint = query.trim() ? `${kind}/search` : `${kind}/trending`;
-  const url = new URL(`${BASE}/${endpoint}`);
-  url.searchParams.set("api_key", GIPHY_KEY);
-  url.searchParams.set("rating", RATING);
-  url.searchParams.set("limit", "24");
-  url.searchParams.set("offset", String(offset));
-  url.searchParams.set(
-    "fields",
-    "id,url,title,username,alt_text,images.fixed_height_small,images.fixed_height,images.original"
-  );
-  if (query.trim()) url.searchParams.set("q", query.trim());
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`giphy-${res.status}`);
-  const json = await res.json();
-  return json.data || [];
+  const { data } = await api.get("/giphy/search", {
+    params: { mode, q: query.trim(), offset },
+  });
+  return data.items || [];
 }
 
 function pickThumb(item) {
@@ -72,7 +56,6 @@ export default function GiphyPicker({ onSelect, onClose }) {
   }, [mode]);
 
   useEffect(() => {
-    if (!GIPHY_KEY) { setErr("giphy-key-missing"); return; }
     let alive = true;
     // Debounce so we don't burn quota while the user is still typing.
     const t = setTimeout(async () => {
@@ -81,7 +64,12 @@ export default function GiphyPicker({ onSelect, onClose }) {
         const data = await fetchGiphy(mode, query);
         if (alive) setItems(data);
       } catch (e) {
-        if (alive) { setItems([]); setErr(e.message || "network"); }
+        if (alive) {
+          setItems([]);
+          const status = e.response?.status;
+          if (status === 503) setErr("giphy-not-configured");
+          else setErr(e.message || "network");
+        }
       } finally { if (alive) setLoading(false); }
     }, 300);
     return () => { alive = false; clearTimeout(t); };
@@ -130,14 +118,14 @@ export default function GiphyPicker({ onSelect, onClose }) {
 
       {/* Grid */}
       <div className="max-h-[280px] overflow-y-auto p-2" data-testid="giphy-grid">
-        {err === "giphy-key-missing" && (
+        {err === "giphy-not-configured" && (
           <div className="text-[11px] text-amber-300 p-3 text-center">
-            Giphy isn't configured yet — ask an admin to add <code>REACT_APP_GIPHY_API_KEY</code> to the frontend env, then rebuild.
+            Giphy isn&apos;t configured — ask an admin to add <code>GIPHY_API_KEY</code> to the backend env.
           </div>
         )}
-        {err && err !== "giphy-key-missing" && (
+        {err && err !== "giphy-not-configured" && (
           <div className="text-[11px] text-red-300 p-3 text-center">
-            Couldn't reach Giphy ({err}). Try again in a moment.
+            Couldn&apos;t reach Giphy ({err}). Try again in a moment.
           </div>
         )}
         {loading && (
