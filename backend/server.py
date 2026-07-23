@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 from pathlib import Path
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -1353,8 +1354,9 @@ async def follow_user(target_id: str, user=Depends(get_current_user)):
     if existing:
         return {"status": existing["status"]}
     status = "active" if target.get("follow_mode", "open") == "open" else "pending"
+    follow_id = f"fol_{uuid.uuid4().hex[:10]}"
     await db.follows.insert_one({
-        "follow_id": f"fol_{uuid.uuid4().hex[:10]}",
+        "follow_id": follow_id,
         "follower_id": user["user_id"], "followee_id": target_id,
         "status": status, "created_at": now_iso(),
     })
@@ -1371,6 +1373,13 @@ async def follow_user(target_id: str, user=Depends(get_current_user)):
                            notif_type="follows")
     except Exception as _e:
         logging.warning("follow push failed: %s", _e)
+    # Also write to the unified activity feed.
+    await emit_activity_event(
+        recipient_id=target_id,
+        kind="follow_request" if status == "pending" else "follow_accepted",
+        actor_id=user["user_id"],
+        ref={"follow_id": follow_id},
+    )
     return {"status": status}
 
 
@@ -1908,6 +1917,14 @@ async def toggle_like(post_id: str, user=Depends(get_current_user)):
         return {"liked": False}
     await db.likes.insert_one({"post_id": post_id, "user_id": user["user_id"], "created_at": now_iso()})
     await db.posts.update_one({"post_id": post_id}, {"$inc": {"like_count": 1}})
+    # Notify the post author (never yourself; blocked pairs are dropped).
+    await emit_activity_event(
+        recipient_id=post["author_id"], kind="post_liked",
+        actor_id=user["user_id"], ref={"post_id": post_id},
+        push_title=f"#{user.get('handle') or 'someone'} liked your post",
+        push_body=(post.get("content") or "")[:120],
+        push_data={"kind": "post_liked", "post_id": post_id},
+    )
     return {"liked": True}
 
 
@@ -1916,6 +1933,39 @@ async def delete_post(post_id: str, user=Depends(get_current_user)):
     res = await db.posts.delete_one({"post_id": post_id, "author_id": user["user_id"]})
     if res.deleted_count == 0:
         raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+class PostEditIn(BaseModel):
+    content: str
+
+
+@api.patch("/posts/{post_id}")
+async def edit_post(post_id: str, payload: PostEditIn, user=Depends(get_current_user)):
+    """Edit a post's text. Keeps a full edit history so viewers can see
+    the original if they tap the 'Edited' badge. Media/tier/tags are
+    intentionally immutable — only the text is editable."""
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(404, "Not found")
+    if post["author_id"] != user["user_id"]:
+        raise HTTPException(403, "Not the author")
+    new_text = (payload.content or "").strip()[:2000]
+    if new_text == (post.get("content") or ""):
+        return {"ok": True, "unchanged": True}
+    history = post.get("edit_history") or []
+    history.append({
+        "content": post.get("content") or "",
+        "at": post.get("edited_at") or post.get("created_at"),
+    })
+    await db.posts.update_one(
+        {"post_id": post_id},
+        {"$set": {
+            "content": new_text,
+            "edited_at": now_iso(),
+            "edit_history": history[-10:],  # cap
+        }}
+    )
     return {"ok": True}
 
 
@@ -2004,6 +2054,15 @@ async def create_comment(post_id: str, payload: CommentIn, viewer=Depends(get_cu
         "created_at": now_iso(),
     }
     await db.comments.insert_one(doc)
+    # Notify the post author of the new comment.
+    if post.get("author_id") != viewer["user_id"]:
+        await emit_activity_event(
+            recipient_id=post["author_id"], kind="post_commented",
+            actor_id=viewer["user_id"], ref={"post_id": post_id, "comment_id": cid},
+            push_title=f"#{viewer.get('handle') or 'someone'} commented on your post",
+            push_body=doc["content"][:120],
+            push_data={"kind": "post_commented", "post_id": post_id},
+        )
     return await serialize_comment(doc)
 
 
@@ -2075,6 +2134,38 @@ async def delete_wall_post(wall_post_id: str, user=Depends(get_current_user)):
             "target_user_id": w["owner_id"], "wall_post_id": wall_post_id,
             "author_id": w["author_id"], "at": now_iso(),
         })
+    return {"ok": True}
+
+
+class WallEditIn(BaseModel):
+    content: str
+
+
+@api.patch("/wall/{wall_post_id}")
+async def edit_wall_post(wall_post_id: str, payload: WallEditIn, user=Depends(get_current_user)):
+    """Edit a wall note. Only the note's author can edit — the wall
+    owner can only delete. Keeps history so viewers see 'Edited' badge."""
+    w = await db.wall_posts.find_one({"wall_post_id": wall_post_id}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Not found")
+    if w["author_id"] != user["user_id"]:
+        raise HTTPException(403, "Not the author")
+    new_text = (payload.content or "").strip()[:2000]
+    if new_text == (w.get("content") or ""):
+        return {"ok": True, "unchanged": True}
+    history = w.get("edit_history") or []
+    history.append({
+        "content": w.get("content") or "",
+        "at": w.get("edited_at") or w.get("created_at"),
+    })
+    await db.wall_posts.update_one(
+        {"wall_post_id": wall_post_id},
+        {"$set": {
+            "content": new_text,
+            "edited_at": now_iso(),
+            "edit_history": history[-10:],
+        }}
+    )
     return {"ok": True}
 
 
@@ -2348,6 +2439,38 @@ async def delete_dm(message_id: str, user=Depends(get_current_user)):
     return {"ok": True}
 
 
+class DMEditIn(BaseModel):
+    content: str
+
+
+@api.patch("/dms/{message_id}")
+async def edit_dm(message_id: str, payload: DMEditIn, user=Depends(get_current_user)):
+    """Edit a DM message. Only the sender can edit. Media attachments
+    are immutable — text only. Keeps history so the recipient can see
+    the message was edited."""
+    msg = await db.dms.find_one({"message_id": message_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(404, "Not found")
+    if msg["from_id"] != user["user_id"]:
+        raise HTTPException(403, "You can only edit messages you sent")
+    new_text = (payload.content or "").strip()[:2000]
+    if not new_text:
+        return {"ok": True, "unchanged": True}
+    prior = msg.get("edit_history") or []
+    prior.append({"at": msg.get("edited_at") or msg.get("created_at")})
+    # Re-encrypt with the same helper the send-path uses so keys stay
+    # in sync with the rest of the DM store.
+    await db.dms.update_one(
+        {"message_id": message_id},
+        {"$set": {
+            "content_enc": encrypt_dm(new_text),
+            "edited_at": now_iso(),
+            "edit_history": prior[-5:],
+        }}
+    )
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------
 # Block / Mute / Report
 # ------------------------------------------------------------------
@@ -2512,18 +2635,32 @@ async def group_send(group_id: str, payload: GroupMessageIn, user=Depends(get_cu
         "created_at": now_iso(),
     }
     await db.group_messages.insert_one(doc)
+    # Notify every accepted member other than the sender.
+    for m in g.get("members", []):
+        if m.get("status") == "accepted" and m.get("user_id") != user["user_id"]:
+            await emit_activity_event(
+                recipient_id=m["user_id"], kind="group_invite",
+                actor_id=user["user_id"],
+                ref={"group_id": group_id, "message_id": mid},
+                push_title=g.get("name") or "New group message",
+                push_body=f"#{user.get('handle') or 'someone'}: {doc['content'][:120]}",
+                push_data={"kind": "group_message", "group_id": group_id},
+            )
     doc.pop("_id", None)
     return doc
 
 
 @api.get("/groups/{group_id}/messages")
-async def group_messages(group_id: str, user=Depends(get_current_user)):
+async def group_messages(group_id: str, since: Optional[str] = None, user=Depends(get_current_user)):
     g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
     if not g:
         raise HTTPException(404, "Not found")
     if not any(m["user_id"] == user["user_id"] and m["status"] == "accepted" for m in g.get("members", [])):
         raise HTTPException(403, "Not a group member")
-    cursor = db.group_messages.find({"group_id": group_id}, {"_id": 0}).sort("created_at", 1).limit(500)
+    query = {"group_id": group_id}
+    if since:
+        query["created_at"] = {"$gt": since}
+    cursor = db.group_messages.find(query, {"_id": 0}).sort("created_at", 1).limit(500)
     msgs = []
     async for m in cursor:
         msgs.append(m)
@@ -3992,6 +4129,158 @@ async def notif_new_followers(user=Depends(get_current_user)):
         if u:
             out.append({**u, "followed_at": f.get("created_at")})
     return {"followers": out}
+
+
+# ------------------------------------------------------------------
+# Activity Events — chronological feed
+#
+# Every "someone did something FOR YOU" moment writes a row in
+# `activity_events` so the Activity page can render a single unified
+# timeline (likes, comments, follows, invites, tag approvals, group
+# invites, DMs).
+#
+# Schema:
+#   event_id       str
+#   recipient_id   str          — who the event is FOR
+#   actor_id       str | None   — who performed the action (None for system)
+#   kind           str          — see EVENT_KINDS below
+#   ref            dict         — { post_id, comment_id, group_id, follow_id, ... }
+#   read           bool         — dot goes green when tapped
+#   created_at     ISO string
+# ------------------------------------------------------------------
+EVENT_KINDS = {
+    "follow_request", "follow_accepted", "inner_invite",
+    "post_liked", "post_commented", "post_tagged",
+    "tag_pending", "group_invite", "dm_received", "warning",
+}
+
+
+async def emit_activity_event(recipient_id: str, kind: str, actor_id: Optional[str] = None,
+                              ref: Optional[dict] = None, push_title: Optional[str] = None,
+                              push_body: Optional[str] = None,
+                              push_data: Optional[dict] = None) -> None:
+    """Write an activity event row and fan out a push notification.
+
+    Failures are swallowed — an activity event MUST never break the
+    business-logic call that emitted it. If the recipient blocks the
+    actor, the event is silently dropped.
+    """
+    if kind not in EVENT_KINDS:
+        logging.warning("emit_activity_event: unknown kind %s", kind)
+        return
+    if actor_id and actor_id == recipient_id:
+        return  # never notify yourself
+    try:
+        # Skip if the actor is blocked by the recipient (or vice versa).
+        if actor_id:
+            blocked = await db.blocks.find_one({
+                "$or": [
+                    {"blocker_id": recipient_id, "blocked_id": actor_id},
+                    {"blocker_id": actor_id, "blocked_id": recipient_id},
+                ]
+            })
+            if blocked:
+                return
+        doc = {
+            "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+            "recipient_id": recipient_id,
+            "actor_id": actor_id,
+            "kind": kind,
+            "ref": ref or {},
+            "read": False,
+            "created_at": now_iso(),
+        }
+        await db.activity_events.insert_one(doc)
+    except Exception as e:
+        logging.warning("emit_activity_event insert failed: %s", e)
+        return
+    # Fan out an FCM push in the background — best-effort, never blocks.
+    try:
+        if push_title:
+            body = (push_body or "")[:180]
+            asyncio.create_task(_maybe_push(recipient_id, push_title, body, push_data or {}))
+    except Exception as e:
+        logging.warning("emit_activity_event push failed: %s", e)
+
+
+async def _maybe_push(user_id: str, title: str, body: str, data: dict) -> None:
+    """Wrapper so we can fire push in the background without importing
+    the fcm module at the top of server.py (keeps circular imports out)."""
+    try:
+        await fcm_push(user_id, title, body, data=data)
+    except Exception as e:
+        logging.warning("push send failed: %s", e)
+
+
+@api.get("/activity/feed")
+async def activity_feed(limit: int = 50, user=Depends(get_current_user)):
+    """Chronological activity feed. Hydrates the actor's public profile
+    on each event and includes a small preview of any post referenced."""
+    uid = user["user_id"]
+    cursor = db.activity_events.find(
+        {"recipient_id": uid}, {"_id": 0}
+    ).sort("created_at", -1).limit(min(max(int(limit or 50), 1), 200))
+    events = []
+    actor_cache = {}
+    async for e in cursor:
+        actor = None
+        aid = e.get("actor_id")
+        if aid:
+            if aid in actor_cache:
+                actor = actor_cache[aid]
+            else:
+                actor = await db.users.find_one(
+                    {"user_id": aid},
+                    {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1}
+                )
+                actor_cache[aid] = actor
+        # Attach a tiny post preview if applicable.
+        post_preview = None
+        pid = (e.get("ref") or {}).get("post_id")
+        if pid:
+            post = await db.posts.find_one(
+                {"post_id": pid},
+                {"_id": 0, "post_id": 1, "content": 1, "media": 1, "tier": 1}
+            )
+            if post:
+                post_preview = {
+                    "post_id": post.get("post_id"),
+                    "content": (post.get("content") or "")[:120],
+                    "media": (post.get("media") or [])[:1],
+                    "tier": post.get("tier"),
+                }
+        events.append({**e, "actor": actor, "post_preview": post_preview})
+    return {"events": events}
+
+
+@api.post("/activity/{event_id}/read")
+async def activity_mark_read(event_id: str, user=Depends(get_current_user)):
+    """Mark one event as read. Called on tap in the Activity feed."""
+    res = await db.activity_events.update_one(
+        {"event_id": event_id, "recipient_id": user["user_id"]},
+        {"$set": {"read": True, "read_at": now_iso()}}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+@api.post("/activity/read-all")
+async def activity_mark_all_read(user=Depends(get_current_user)):
+    """Mark every unread activity event as read."""
+    await db.activity_events.update_many(
+        {"recipient_id": user["user_id"], "read": False},
+        {"$set": {"read": True, "read_at": now_iso()}}
+    )
+    return {"ok": True}
+
+
+@api.get("/activity/unread-count")
+async def activity_unread_count(user=Depends(get_current_user)):
+    n = await db.activity_events.count_documents(
+        {"recipient_id": user["user_id"], "read": False}
+    )
+    return {"unread": n}
 
 
 @api.get("/users/me/followers")

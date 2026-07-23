@@ -1,4 +1,4 @@
-import { Heart, MoreHorizontal, Sparkles, Pin, MessageCircle, Flag, ShieldAlert } from "lucide-react";
+import { Heart, MoreHorizontal, Sparkles, Pin, MessageCircle, Flag, ShieldAlert, Pencil } from "lucide-react";
 import { useState } from "react";
 import TierBadge from "./TierBadge";
 import Comments from "./Comments";
@@ -35,6 +35,26 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
   // viewer explicitly opts in for this post. Adults still need to confirm;
   // minors never receive this post to begin with (server filter).
   const [nsfwRevealed, setNsfwRevealed] = useState(false);
+  // Edit state
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(post.content || "");
+  const [postContent, setPostContent] = useState(post.content || "");
+  const [editedAt, setEditedAt] = useState(post.edited_at || null);
+
+  const saveEdit = async () => {
+    const next = (draft || "").trim();
+    if (!next) { toast.error("Post cannot be empty"); return; }
+    if (next === postContent) { setEditing(false); return; }
+    try {
+      await api.patch(`/posts/${post.post_id}`, { content: next });
+      setPostContent(next);
+      setEditedAt(new Date().toISOString());
+      setEditing(false);
+      toast.success("Edited");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    }
+  };
 
   const submitReport = async () => {
     if (!reportCat) { toast.error("Pick a reason"); return; }
@@ -132,8 +152,35 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
         </div>
       </header>
 
-      {post.content && (
-        <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{post.content}</p>
+      {editing ? (
+        <div className="flex flex-col gap-2">
+          <textarea
+            data-testid={`edit-post-textarea-${post.post_id}`}
+            className="cc-input min-h-24 resize-none"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            maxLength={2000}
+          />
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => { setEditing(false); setDraft(postContent); }} className="cc-btn-secondary text-xs py-1.5 px-3">Cancel</button>
+            <button data-testid={`edit-post-save-${post.post_id}`} onClick={saveEdit} className="cc-btn-primary text-xs py-1.5 px-3">Save</button>
+          </div>
+        </div>
+      ) : (
+        postContent && (
+          <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">
+            {postContent}
+            {editedAt && (
+              <span
+                className="text-[10px] uppercase tracking-wider text-zinc-500 ml-2 align-middle"
+                title={`Last edited ${new Date(editedAt).toLocaleString()}`}
+                data-testid={`edited-badge-${post.post_id}`}
+              >
+                · edited
+              </span>
+            )}
+          </p>
+        )
       )}
 
       {post.media?.length > 0 && (
@@ -204,6 +251,15 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
           </button>
         </div>
         <div className="flex items-center gap-3 text-zinc-500">
+          {showPin && (
+            <button
+              onClick={() => { setDraft(postContent); setEditing(true); }}
+              data-testid={`edit-btn-${post.post_id}`}
+              className="text-xs uppercase tracking-wider hover:text-[#FF5A00] inline-flex items-center gap-1"
+            >
+              <Pencil size={12} /> Edit
+            </button>
+          )}
           {showPin && (
             <button onClick={pin} data-testid={`pin-btn-${post.post_id}`} className="text-xs uppercase tracking-wider hover:text-zinc-200">
               {post.pinned ? "Unpin" : "Pin"}

@@ -22,7 +22,7 @@ export default function BottomNav() {
     { to: "/search", icon: Search, label: "Search", testId: "nav-search", dot: false },
     { to: "/messages", icon: MessageCircle, label: "Messages", testId: "nav-messages", dot: counts.unread_dms > 0 },
     { to: "/notifications", icon: Bell, label: "Activity", testId: "nav-notifications",
-      dot: (counts.follow_requests + counts.inner_invites + counts.new_followers + counts.tag_pending + counts.group_invites + counts.warnings) > 0 },
+      dot: (counts.follow_requests + counts.inner_invites + counts.new_followers + counts.tag_pending + counts.group_invites + counts.warnings + counts.activity_unread) > 0 },
     { to: "/me", icon: User, label: "Profile", testId: "nav-profile", dot: false },
   ];
 

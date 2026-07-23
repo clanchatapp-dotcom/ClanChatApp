@@ -8,7 +8,7 @@ export default function DesktopSidebar() {
   const { user } = useAuth();
   const { counts } = useNotifCounts(!!user);
 
-  const activityCount = counts.follow_requests + counts.inner_invites + counts.new_followers + counts.tag_pending + counts.group_invites + counts.warnings;
+  const activityCount = counts.follow_requests + counts.inner_invites + counts.new_followers + counts.tag_pending + counts.group_invites + counts.warnings + counts.activity_unread;
 
   const NAV = [
     { to: "/feed", icon: Home, label: "Feed", testId: "side-feed", badge: 0 },

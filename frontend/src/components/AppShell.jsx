@@ -6,11 +6,13 @@ import OnboardingTour from "./OnboardingTour";
 import IncomingCallRinger from "./IncomingCallRinger";
 import { useAuth } from "../context/AuthContext";
 import usePushNotifications from "../hooks/usePushNotifications";
+import useAndroidBackButton from "../hooks/useAndroidBackButton";
 
 export default function AppShell() {
   const { user } = useAuth();
   const loc = useLocation();
   usePushNotifications(user);
+  useAndroidBackButton();
   const isAuthRoute = ["/login", "/register", "/", "/onboard-google"].includes(loc.pathname);
   const inCall = loc.pathname.startsWith("/call/");
   const hideNav = !user || isAuthRoute || inCall;

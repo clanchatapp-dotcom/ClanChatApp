@@ -112,20 +112,51 @@ export function GroupChat() {
   const [data, setData] = useState(null);
   const [text, setText] = useState("");
 
-  const load = async () => {
+  const load = async (since) => {
     try {
-      const { data } = await api.get(`/groups/${groupId}/messages`);
-      setData(data);
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); nav("/groups"); }
+      const { data: fresh } = await api.get(
+        `/groups/${groupId}/messages${since ? `?since=${encodeURIComponent(since)}` : ""}`
+      );
+      // Incremental fetches append new messages; initial fetch replaces.
+      setData((prev) => {
+        if (!since || !prev) return fresh;
+        if (!fresh.messages?.length) return prev;
+        const seen = new Set(prev.messages.map((m) => m.message_id));
+        const merged = [...prev.messages, ...fresh.messages.filter((m) => !seen.has(m.message_id))];
+        return { ...prev, messages: merged };
+      });
+    } catch (e) {
+      // Only navigate away on the initial fetch failure — a transient
+      // network blip while polling shouldn't kick the user out of the chat.
+      if (!since) { toast.error(formatApiError(e.response?.data?.detail)); nav("/groups"); }
+    }
   };
-  useEffect(() => { load(); }, [groupId]);
+
+  useEffect(() => {
+    load();
+    // Poll every 4s for new messages. `since` is the timestamp of the
+    // last message we already have. Cheap because the endpoint returns
+    // only new rows.
+    const id = setInterval(() => {
+      setData((cur) => {
+        const last = cur?.messages?.[cur.messages.length - 1]?.created_at;
+        // Trigger async load without holding the setState.
+        load(last);
+        return cur;
+      });
+    }, 4000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupId]);
 
   const send = async (e) => {
     e.preventDefault();
     if (!text.trim()) return;
     try {
       await api.post(`/groups/${groupId}/messages`, { content: text });
-      setText(""); load();
+      setText("");
+      const last = data?.messages?.[data.messages.length - 1]?.created_at;
+      load(last);  // fetch the row we just sent + anything from others
     } catch (e2) { toast.error(formatApiError(e2.response?.data?.detail)); }
   };
 

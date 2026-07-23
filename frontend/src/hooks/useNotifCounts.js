@@ -16,13 +16,16 @@ export default function useNotifCounts(enabled = true) {
   const [counts, setCounts] = useState({
     follow_requests: 0, inner_invites: 0, unread_dms: 0,
     new_followers: 0, tag_pending: 0, group_invites: 0,
-    warnings: 0, total: 0,
+    warnings: 0, total: 0, activity_unread: 0,
   });
 
   const refresh = useCallback(async () => {
     try {
-      const { data } = await api.get("/notifications/counts");
-      setCounts(data);
+      const [c, a] = await Promise.all([
+        api.get("/notifications/counts"),
+        api.get("/activity/unread-count").catch(() => ({ data: { unread: 0 } })),
+      ]);
+      setCounts({ ...c.data, activity_unread: a.data?.unread || 0 });
     } catch (e) { console.warn("notif counts failed", e); }
   }, []);
 
