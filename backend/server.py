@@ -2544,6 +2544,17 @@ async def create_group(payload: GroupCreateIn, user=Depends(get_current_user)):
         "created_at": now_iso(),
     }
     await db.groups.insert_one(doc)
+    # Fan out group-invite activity events to every pending member so
+    # they see it on their Activity feed + get a push.
+    for m in member_objs:
+        if m.get("status") == "pending":
+            await emit_activity_event(
+                recipient_id=m["user_id"], kind="group_invite",
+                actor_id=user["user_id"], ref={"group_id": gid},
+                push_title="Group invite",
+                push_body=f"#{user.get('handle') or 'someone'} invited you to {doc['name']}",
+                push_data={"kind": "group_invite", "group_id": gid},
+            )
     doc.pop("_id", None)
     return serialize_group(doc, user["user_id"])
 
@@ -2608,6 +2619,14 @@ async def group_invite(group_id: str, payload: FollowActionIn, user=Depends(get_
     await db.groups.update_one(
         {"group_id": group_id},
         {"$push": {"members": {"user_id": payload.user_id, "status": "pending", "invited_at": now_iso()}}}
+    )
+    # Notify the invited user via activity feed + push.
+    await emit_activity_event(
+        recipient_id=payload.user_id, kind="group_invite",
+        actor_id=user["user_id"], ref={"group_id": group_id},
+        push_title="Group invite",
+        push_body=f"#{user.get('handle') or 'someone'} invited you to {g.get('name') or 'a group'}",
+        push_data={"kind": "group_invite", "group_id": group_id},
     )
     return {"ok": True}
 
