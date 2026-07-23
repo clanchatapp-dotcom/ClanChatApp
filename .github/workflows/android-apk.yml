@@ -239,3 +239,35 @@ jobs:
           path: dist/ClanChat-debug.apk
           retention-days: 30
           if-no-files-found: error
+
+      # Firebase App Distribution — push the fresh APK to registered
+      # testers. This step is a no-op unless the two required secrets
+      # are present, so it won't break external forks that don't have
+      # Firebase configured.
+      #
+      # Required GitHub secrets (Settings → Secrets and variables → Actions):
+      #   FIREBASE_APP_ID_ANDROID   — 1:286762294730:android:d187cdf44ff9f6d9430333
+      #   FIREBASE_SERVICE_ACCOUNT_JSON — full contents of a Firebase
+      #     service account JSON with the "Firebase App Distribution Admin"
+      #     role (generate at Firebase Console → Project Settings →
+      #     Service accounts → Generate new private key).
+      #
+      # Optional secret:
+      #   FIREBASE_APPDIST_TESTER_GROUPS — comma-separated group aliases
+      #     (default: "internal")
+      - name: Upload APK to Firebase App Distribution
+        if: ${{ env.FIREBASE_APP_ID_ANDROID != '' && env.FIREBASE_SERVICE_ACCOUNT_JSON != '' }}
+        env:
+          FIREBASE_APP_ID_ANDROID: ${{ secrets.FIREBASE_APP_ID_ANDROID }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_APPDIST_TESTER_GROUPS: ${{ secrets.FIREBASE_APPDIST_TESTER_GROUPS }}
+        run: |
+          set -euo pipefail
+          echo "$FIREBASE_SERVICE_ACCOUNT_JSON" > /tmp/firebase-sa.json
+          GOOGLE_APPLICATION_CREDENTIALS=/tmp/firebase-sa.json \
+          npx --yes firebase-tools@latest appdistribution:distribute \
+            dist/ClanChat-debug.apk \
+            --app "$FIREBASE_APP_ID_ANDROID" \
+            --release-notes "CI build ${{ github.sha }} on ${{ github.ref_name }}" \
+            --groups "${FIREBASE_APPDIST_TESTER_GROUPS:-internal}"
+          rm -f /tmp/firebase-sa.json

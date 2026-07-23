@@ -1,5 +1,15 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import api, { rememberToken, forgetToken } from "../lib/api";
+import {
+  fbSignInEmail,
+  fbSignUpEmail,
+  fbSignInGoogle,
+  fbGetRedirectResult,
+  fbSignOut as firebaseSignOut,
+  fbGetIdToken,
+  fbSendPasswordReset,
+  onFirebaseIdTokenRefresh,
+} from "../lib/firebase";
 
 const AuthContext = createContext(null);
 
@@ -72,6 +82,10 @@ export function AuthProvider({ children }) {
   };
   const logout = async () => {
     try { await api.post("/auth/logout"); } catch (e) { console.warn("logout failed", e); }
+    // Also sign out of Firebase so the client-side session persistence
+    // (indexedDB / localStorage) is cleared. Otherwise the next visit
+    // silently re-authenticates the user via the cached Firebase session.
+    try { await firebaseSignOut(); } catch { /* noop */ }
     await forgetToken();
     try { localStorage.removeItem("cc_last_user"); } catch { /* ignore */ }
     setUser(null);
@@ -82,8 +96,84 @@ export function AuthProvider({ children }) {
     return data;
   };
 
+  // ------------------------------------------------------------------
+  // Firebase-powered sign-in helpers.
+  //
+  // Flow: authenticate against Firebase → grab the fresh ID token →
+  // exchange it for a ClanChat JWT via /api/auth/firebase-login → set
+  // the user on the context. The internal JWT is still what the rest
+  // of the app uses for API calls, so we don't have to touch the
+  // axios interceptor or the ~200 backend Depends(get_current_user)
+  // callsites.
+  //
+  // For brand-new Firebase users the backend replies with
+  // { needs_profile: true, firebase_email, firebase_name } so the caller
+  // can prompt for DOB + handle and re-submit with those fields.
+  // ------------------------------------------------------------------
+  const exchangeFirebaseToken = useCallback(async ({ dob, handle } = {}) => {
+    const id_token = await fbGetIdToken(true); // force refresh
+    if (!id_token) throw new Error("No Firebase session");
+    const { data } = await api.post("/auth/firebase-login", {
+      id_token, dob, handle,
+    });
+    if (data.needs_profile) return data; // caller must collect DOB/handle
+    if (data.access_token) await rememberToken(data.access_token);
+    setUser(data.user);
+    return data;
+  }, []);
+
+  const loginWithFirebaseEmail = useCallback(async (email, password) => {
+    await fbSignInEmail(email, password);
+    return exchangeFirebaseToken();
+  }, [exchangeFirebaseToken]);
+
+  const registerWithFirebaseEmail = useCallback(async (email, password, dob, handle) => {
+    await fbSignUpEmail(email, password);
+    return exchangeFirebaseToken({ dob, handle });
+  }, [exchangeFirebaseToken]);
+
+  const loginWithFirebaseGoogle = useCallback(async () => {
+    const popupResult = await fbSignInGoogle();
+    // If we did a redirect (mobile / native path), the actual result
+    // arrives asynchronously via getRedirectResult on the next load —
+    // handled by the useEffect below.
+    if (!popupResult) return null;
+    return exchangeFirebaseToken();
+  }, [exchangeFirebaseToken]);
+
+  const requestFirebasePasswordReset = useCallback(async (email) => {
+    return fbSendPasswordReset(email);
+  }, []);
+
+  // On mount, complete any pending Firebase redirect sign-in (Google on
+  // mobile / native) and exchange the resulting ID token for a ClanChat
+  // JWT. Also register an ID-token refresh listener so long-lived
+  // sessions transparently re-mint the internal JWT before it expires.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fbGetRedirectResult();
+        if (res?.user && !cancelled) {
+          try { await exchangeFirebaseToken(); } catch (e) { console.warn("fb redirect exchange failed", e); }
+        }
+      } catch { /* no pending redirect */ }
+    })();
+    const unsub = onFirebaseIdTokenRefresh(async (fbUser) => {
+      if (!fbUser) return;
+      try { await exchangeFirebaseToken(); } catch (e) { console.warn("fb id-token refresh exchange failed", e); }
+    });
+    return () => { cancelled = true; unsub(); };
+  }, [exchangeFirebaseToken]);
+
   return (
-    <AuthContext.Provider value={{ user, setUser, login, register, logout, refresh, theme, setTheme }}>
+    <AuthContext.Provider value={{
+      user, setUser,
+      login, register, logout, refresh,
+      loginWithFirebaseEmail, registerWithFirebaseEmail,
+      loginWithFirebaseGoogle, requestFirebasePasswordReset,
+      theme, setTheme,
+    }}>
       {children}
     </AuthContext.Provider>
   );
