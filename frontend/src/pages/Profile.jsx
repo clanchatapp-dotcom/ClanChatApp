@@ -254,23 +254,23 @@ export default function Profile() {
         </div>
 
         {isMyProfile && myCounts.followers !== null && (
-          <div className="mt-5 flex items-center justify-center gap-6">
+          <div className="mt-5 flex items-center justify-center gap-4 sm:gap-6 min-w-0">
             <Link
               to="/me/followers"
               data-testid="my-followers-link"
-              className="text-center hover:opacity-80 transition"
+              className="text-center hover:opacity-80 transition min-w-0 flex-shrink"
             >
               <div className="font-heading text-2xl leading-none">{myCounts.followers}</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 mt-1">Followers</div>
+              <div className="text-[9px] sm:text-[10px] uppercase tracking-[0.16em] sm:tracking-[0.2em] text-zinc-500 mt-1 whitespace-nowrap">Followers</div>
             </Link>
-            <div className="w-px h-8 bg-zinc-900" />
+            <div className="w-px h-8 bg-zinc-900 shrink-0" />
             <Link
               to="/me/following"
               data-testid="my-following-link"
-              className="text-center hover:opacity-80 transition"
+              className="text-center hover:opacity-80 transition min-w-0 flex-shrink"
             >
               <div className="font-heading text-2xl leading-none">{myCounts.following}</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 mt-1">Following</div>
+              <div className="text-[9px] sm:text-[10px] uppercase tracking-[0.16em] sm:tracking-[0.2em] text-zinc-500 mt-1 whitespace-nowrap">Following</div>
             </Link>
           </div>
         )}

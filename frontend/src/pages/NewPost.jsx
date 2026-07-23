@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
 import VoiceRecorder from "../components/VoiceRecorder";
 import { useAuth } from "../context/AuthContext";
+import { scanImage } from "../lib/nsfwScanner";
 
 const TIERS = [
   { id: "public", label: "Public", desc: "Everyone can see" },
@@ -91,6 +92,31 @@ export default function NewPost() {
   const onFiles = async (e) => {
     const files = Array.from(e.target.files || []);
     for (const f of files.slice(0, 4)) {
+      // NSFW scan BEFORE upload for images. Videos/audio are skipped —
+      // NSFW.js only handles images. Server-side moderation still catches
+      // anything we miss.
+      if (f.type?.startsWith("image/")) {
+        try {
+          const result = await scanImage(f);
+          if (result.verdict === "nsfw") {
+            if (isMinor) {
+              toast.error("This image was flagged as adult content. Minors cannot post 18+ content.");
+              continue;
+            }
+            if (tier === "public") {
+              toast.error("This image was flagged as adult content. Switch the tier to Followers or Inner Circle to post it.");
+              continue;
+            }
+            if (!nsfw) {
+              // Auto-flag the post 18+ so it's gated correctly downstream.
+              setNsfw(true);
+              toast.warning(`Image auto-flagged as 18+ (${result.top} ${Math.round(result.score * 100)}%). You can uncheck if this is a false positive.`);
+            }
+          }
+        } catch (scanErr) {
+          console.warn("NSFW scan failed (proceeding without):", scanErr);
+        }
+      }
       try {
         const data = await uploadFile(f, "post");
         setMedia(m => [...m, data]);

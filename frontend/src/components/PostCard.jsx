@@ -2,6 +2,7 @@ import { Heart, MoreHorizontal, Sparkles, Pin, MessageCircle, Flag, ShieldAlert,
 import { useState } from "react";
 import TierBadge from "./TierBadge";
 import Comments from "./Comments";
+import Lightbox from "./Lightbox";
 import api, { fileUrl, formatApiError } from "../lib/api";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -40,6 +41,8 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
   const [draft, setDraft] = useState(post.content || "");
   const [postContent, setPostContent] = useState(post.content || "");
   const [editedAt, setEditedAt] = useState(post.edited_at || null);
+  // Lightbox state — array of image paths + starting index.
+  const [lightbox, setLightbox] = useState(null);
 
   const saveEdit = async () => {
     const next = (draft || "").trim();
@@ -185,10 +188,18 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
 
       {post.media?.length > 0 && (
         <div className={`grid gap-2 ${post.media.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
-          {post.media.map((m) => {
+          {post.media.map((m, idx) => {
             const isVideo = /\.(mp4|mov)$/i.test(m) || (/\.webm$/i.test(m) && !post.is_audio_track);
             const isAudio = /\.(mp3|m4a|aac|wav|ogg|flac|oga|opus)$/i.test(m) || (post.is_audio_track && /\.webm$/i.test(m));
             const shouldBlur = post.nsfw && !nsfwRevealed && !isAudio;
+            // Build the images-only array so the lightbox can page
+            // through just the pictures (skips inline video/audio).
+            const imagesOnly = post.media.filter((x) => {
+              const v = /\.(mp4|mov)$/i.test(x) || (/\.webm$/i.test(x) && !post.is_audio_track);
+              const a = /\.(mp3|m4a|aac|wav|ogg|flac|oga|opus)$/i.test(x) || (post.is_audio_track && /\.webm$/i.test(x));
+              return !v && !a;
+            });
+            const imageIndex = imagesOnly.indexOf(m);
             return (
               <div key={m} className={`relative overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950 ${isAudio ? "p-3" : ""}`}>
                 <div className={shouldBlur ? "blur-2xl scale-105 pointer-events-none select-none" : ""}>
@@ -202,7 +213,14 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
                       <audio src={fileUrl(m)} controls className="w-full" />
                     </div>
                   ) : (
-                    <img src={fileUrl(m)} alt="" className="w-full h-full object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => !shouldBlur && setLightbox({ items: imagesOnly, index: imageIndex >= 0 ? imageIndex : 0 })}
+                      className="block w-full h-full p-0 border-0 bg-transparent cursor-zoom-in"
+                      data-testid={`post-image-${post.post_id}-${idx}`}
+                    >
+                      <img src={fileUrl(m)} alt="" className="w-full h-full object-cover" />
+                    </button>
                   )}
                 </div>
                 {shouldBlur && (
@@ -221,6 +239,9 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
             );
           })}
         </div>
+      )}
+      {lightbox && (
+        <Lightbox items={lightbox.items} index={lightbox.index} onClose={() => setLightbox(null)} />
       )}
 
       {post.tags?.length > 0 && (

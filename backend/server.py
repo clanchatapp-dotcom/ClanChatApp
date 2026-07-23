@@ -1462,20 +1462,21 @@ async def invite_inner(payload: InnerInviteIn, user=Depends(get_current_user)):
             {"$set": {"permissions": perms}}
         )
         return {"status": existing["status"]}
+    invite_id = f"inv_{uuid.uuid4().hex[:10]}"
     await db.inner_circle.insert_one({
-        "invite_id": f"inv_{uuid.uuid4().hex[:10]}",
+        "invite_id": invite_id,
         "owner_id": user["user_id"], "member_id": payload.user_id,
         "permissions": perms, "status": "pending", "created_at": now_iso(),
     })
-    try:
-        await fcm_push(
-            payload.user_id, "Inner Circle invite",
-            f"#{user.get('handle', 'someone')} invited you to their Inner Circle",
-            data={"type": "inner_invite", "from_id": user["user_id"]},
-            notif_type="inner_invites",
-        )
-    except Exception as _e:
-        logging.warning("inner invite push failed: %s", _e)
+    # Push + activity event so the invited user sees it on their Activity
+    # tab AND gets a phone notification.
+    await emit_activity_event(
+        recipient_id=payload.user_id, kind="inner_invite",
+        actor_id=user["user_id"], ref={"invite_id": invite_id},
+        push_title="Inner Circle invite",
+        push_body=f"#{user.get('handle') or 'someone'} invited you to their Inner Circle",
+        push_data={"kind": "inner_invite", "invite_id": invite_id},
+    )
     return {"status": "pending"}
 
 
@@ -2328,16 +2329,13 @@ async def send_dm(payload: DMIn, user=Depends(get_current_user)):
     if not is_self:
         sender_handle = user.get("handle", "someone")
         preview = content[:80] if content else ("📎 Sent media" if payload.media_paths else "New message")
-        try:
-            await fcm_push(
-                payload.recipient_id,
-                f"#{sender_handle}",
-                preview,
-                data={"type": "dm", "from_id": user["user_id"], "from_handle": sender_handle},
-                notif_type="dms",
-            )
-        except Exception as _e:
-            logging.warning("dm push failed: %s", _e)
+        # Push + activity event go together.
+        await emit_activity_event(
+            recipient_id=payload.recipient_id, kind="dm_received",
+            actor_id=user["user_id"], ref={"message_id": doc["message_id"]},
+            push_title=f"#{sender_handle}", push_body=preview,
+            push_data={"kind": "dm_received", "from_id": user["user_id"], "message_id": doc["message_id"]},
+        )
     # Return the decrypted form to the caller so the optimistic UI matches
     # the persisted version when re-fetched.
     return hydrate_dm(doc)
