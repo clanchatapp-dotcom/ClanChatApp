@@ -23,10 +23,16 @@ async function loadConfig() {
   return data;
 }
 
-/** Lazy singleton Supabase browser client. */
+/** Lazy singleton Supabase browser client.
+ *
+ * If config load fails (e.g. old backend without /api/supabase/config),
+ * the cached promise is CLEARED so subsequent calls can retry once the
+ * backend catches up. This matters during the deployment window where
+ * production may still be running the pre-Supabase backend.
+ */
 export async function getSupabase() {
   if (_clientPromise) return _clientPromise;
-  _clientPromise = (async () => {
+  const p = (async () => {
     const cfg = await loadConfig();
     const supabase = createClient(cfg.url, cfg.anonKey, {
       auth: {
@@ -40,6 +46,10 @@ export async function getSupabase() {
     supabase._ccBucket = cfg.bucket;
     return supabase;
   })();
+  // Clear the cached promise if it rejects — otherwise a transient 404
+  // during a partial deploy would poison the whole session.
+  p.catch(() => { _clientPromise = null; });
+  _clientPromise = p;
   return _clientPromise;
 }
 

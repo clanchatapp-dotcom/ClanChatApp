@@ -72,9 +72,17 @@ export default function Login() {
       return;
     } catch (sbErr) {
       const msg = (sbErr?.message || "").toLowerCase();
-      // Only fall through to legacy for missing-account / bad-password
-      // cases. Anything else (network, disabled account) surfaces as-is.
+      const status = sbErr?.response?.status;
+      // Fall through to legacy login when Supabase is unreachable
+      // (production hasn't been redeployed with the /api/auth/supabase-login
+      // endpoint yet → 404), when the config endpoint is missing, or when
+      // Supabase says the account doesn't exist / has wrong password.
+      // Anything else (e.g. disabled account) surfaces to the user.
       const shouldFallback =
+        status === 404 || status === 502 || status === 503 ||
+        msg.includes("supabase config unavailable") ||
+        msg.includes("network error") ||
+        msg.includes("failed to fetch") ||
         msg.includes("invalid login credentials") ||
         msg.includes("user not found") ||
         msg.includes("email not confirmed") ||

@@ -29,17 +29,28 @@ export default function Register() {
       return;
     } catch (sbErr) {
       const msg = (sbErr?.message || "").toLowerCase();
+      const status = sbErr?.response?.status;
       if (msg.includes("user already registered") || msg.includes("already been registered")) {
         setErr("That email already has an account. Try signing in instead.");
         setBusy(false);
         return;
       }
-      if (msg && !msg.includes("provider is not enabled") && !msg.includes("network")) {
+      // Fall through to legacy register when Supabase is unavailable
+      // (production not yet redeployed → 404 on /api/auth/supabase-login
+      // or /api/supabase/config), when config is missing, or when
+      // provider isn't enabled yet.
+      const shouldFallback =
+        status === 404 || status === 502 || status === 503 ||
+        msg.includes("supabase config unavailable") ||
+        msg.includes("network error") ||
+        msg.includes("failed to fetch") ||
+        msg.includes("provider is not enabled") ||
+        msg === "";
+      if (!shouldFallback) {
         setErr(sbErr.message || String(sbErr));
         setBusy(false);
         return;
       }
-      // Fall through to legacy register.
     }
     try {
       await register(form);
