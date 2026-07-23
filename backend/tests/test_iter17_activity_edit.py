@@ -370,30 +370,70 @@ class TestEmitOnFollow:
 
 
 # --------------------------------------------------------------------
-# 5. Emit-on-group-message
+# 5. Emit-on-group-message  AND  Emit-on-group-invite (distinct kinds)
 # --------------------------------------------------------------------
 class TestEmitOnGroupMessage:
-    def test_group_message_emits_group_invite_kind(self, user_a, user_b, mutual_ab):
-        # A creates a group and invites B (needs B in A's IC — set up in
-        # mutual_ab). B accepts. A sends msg → B gets group_invite event.
+    def test_group_invite_emits_group_invite_kind(self, user_a, user_b, mutual_ab):
+        """POST /api/groups with a member_id → recipient sees a 'group_invite'
+        event on their activity feed (distinct from 'group_message')."""
         _mark_all_read(user_b["session"])
         g = user_a["session"].post(f"{API}/groups", json={
             "name": "TEST_iter17 grp", "member_ids": [user_b["user_id"]]})
         assert g.status_code == 200, g.text
         gid = g.json()["group_id"]
+
+        time.sleep(0.3)
+        feed_before_accept = user_b["session"].get(f"{API}/activity/feed").json()["events"]
+        invite_events = [e for e in feed_before_accept if e["kind"] == "group_invite"
+                          and e["actor_id"] == user_a["user_id"]
+                          and (e.get("ref") or {}).get("group_id") == gid]
+        assert invite_events, (
+            "expected a 'group_invite' event on B's feed after A created a "
+            f"group with B as member. Feed: {feed_before_accept}"
+        )
+        # Now B accepts membership so subsequent group-message test can send.
         r = user_b["session"].post(f"{API}/groups/{gid}/accept")
         assert r.status_code == 200, r.text
+        # save gid for follow-on tests
+        pytest.iter17_group_id = gid
+
+    def test_group_message_emits_group_message_kind(self, user_a, user_b, mutual_ab):
+        """POST /api/groups/{id}/messages → recipient sees a NEW 'group_message'
+        event (not 'group_invite'). Verifies the two kinds are distinct."""
+        # Ensure we have a group A owns with B as accepted member. Build one
+        # here so this test doesn't depend on the invite-event test above.
+        g = user_a["session"].post(f"{API}/groups", json={
+            "name": "TEST_iter17 gm-kind", "member_ids": [user_b["user_id"]]})
+        assert g.status_code == 200, g.text
+        gid = g.json()["group_id"]
+        r = user_b["session"].post(f"{API}/groups/{gid}/accept")
+        assert r.status_code == 200, r.text
+        # save for downstream block-filter test
+        pytest.iter17_group_id = gid
+        _mark_all_read(user_b["session"])
+
         r = user_a["session"].post(f"{API}/groups/{gid}/messages",
                                     json={"content": "TEST_iter17 group hello"})
         assert r.status_code == 200, r.text
         time.sleep(0.3)
+
         feed = user_b["session"].get(f"{API}/activity/feed").json()["events"]
-        match = [e for e in feed if e["kind"] == "group_invite"
-                 and e["actor_id"] == user_a["user_id"]
-                 and (e.get("ref") or {}).get("group_id") == gid]
-        assert match, f"group_invite (message) event missing: {feed}"
-        # keep group id for later tests
-        pytest.iter17_group_id = gid
+        # UNREAD portion only (we just cleared) — the new event must be group_message.
+        unread = [e for e in feed if not e.get("read")]
+        gm = [e for e in unread if e["kind"] == "group_message"
+              and e["actor_id"] == user_a["user_id"]
+              and (e.get("ref") or {}).get("group_id") == gid]
+        assert gm, (
+            f"expected new 'group_message' event on B's feed, got unread={unread}"
+        )
+        # And explicitly, the new event must NOT be a group_invite kind.
+        wrong = [e for e in unread if e["kind"] == "group_invite"
+                 and (e.get("ref") or {}).get("group_id") == gid
+                 and (e.get("ref") or {}).get("message_id")]
+        assert not wrong, (
+            f"BUG: group message is being emitted with kind='group_invite' — "
+            f"the two kinds must be distinct. Offending events: {wrong}"
+        )
 
 
 # --------------------------------------------------------------------

@@ -1564,6 +1564,11 @@ async def serialize_post(post: dict, viewer: Optional[dict]) -> dict:
         "tagged_users": tagged,
         "created_at": post["created_at"],
         "pinned": post.get("pinned", False),
+        # Edit-history metadata — the frontend uses `edited_at` to render
+        # the small "· edited" badge next to the post text, and
+        # `edit_history` to power the tap-to-see-history modal.
+        "edited_at": post.get("edited_at"),
+        "edit_history": post.get("edit_history") or [],
     }
 
 
@@ -2639,7 +2644,7 @@ async def group_send(group_id: str, payload: GroupMessageIn, user=Depends(get_cu
     for m in g.get("members", []):
         if m.get("status") == "accepted" and m.get("user_id") != user["user_id"]:
             await emit_activity_event(
-                recipient_id=m["user_id"], kind="group_invite",
+                recipient_id=m["user_id"], kind="group_message",
                 actor_id=user["user_id"],
                 ref={"group_id": group_id, "message_id": mid},
                 push_title=g.get("name") or "New group message",
@@ -4151,7 +4156,8 @@ async def notif_new_followers(user=Depends(get_current_user)):
 EVENT_KINDS = {
     "follow_request", "follow_accepted", "inner_invite",
     "post_liked", "post_commented", "post_tagged",
-    "tag_pending", "group_invite", "dm_received", "warning",
+    "tag_pending", "group_invite", "group_message",
+    "dm_received", "warning",
 }
 
 

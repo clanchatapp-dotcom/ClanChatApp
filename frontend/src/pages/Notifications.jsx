@@ -25,7 +25,8 @@ const KIND_META = {
   follow_request:  { icon: UserPlus,    label: "requested to follow you",   color: "text-[#FF5A00]" },
   follow_accepted: { icon: UserPlus,    label: "is now following you",      color: "text-emerald-300" },
   inner_invite:    { icon: Sparkles,    label: "invited you to their Inner Circle", color: "text-purple-300" },
-  group_invite:    { icon: Users,       label: "sent a message in a group", color: "text-[#FF5A00]" },
+  group_invite:    { icon: Users,       label: "invited you to a group",    color: "text-[#FF5A00]" },
+  group_message:   { icon: Users,       label: "sent a message in a group", color: "text-[#FF5A00]" },
   tag_pending:     { icon: Tag,         label: "tagged you (approval needed)", color: "text-amber-300" },
   dm_received:     { icon: MessageCircle, label: "sent you a message",      color: "text-blue-300" },
   warning:         { icon: ShieldAlert, label: "moderation warning",        color: "text-amber-400" },
@@ -134,6 +135,7 @@ export default function Notifications() {
         // Stay on Activity — invite section handles accept/decline.
         break;
       case "group_invite":
+      case "group_message":
         if (ref.group_id) nav(`/g/${ref.group_id}`);
         break;
       case "dm_received":
