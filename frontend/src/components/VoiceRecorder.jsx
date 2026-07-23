@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Mic, Square, Trash2, Send, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import api, { formatApiError } from "../lib/api";
+import { formatApiError, uploadFile } from "../lib/api";
 
 /**
  * VoiceRecorder — inline record-and-send widget for the DM composer.
@@ -114,16 +114,18 @@ export default function VoiceRecorder({ onSend, onCancel, maxSeconds = 120 }) {
     if (!blobRef.current) return;
     setPhase("sending");
     try {
-      const fd = new FormData();
       // Give the file a proper extension so the server MIME-detects correctly
       const ext = (blobRef.current.type || "").includes("mp4") ? "mp4"
         : (blobRef.current.type || "").includes("ogg") ? "ogg" : "webm";
-      fd.append("file", blobRef.current, `voice-${Date.now()}.${ext}`);
-      const { data } = await api.post("/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      // Wrap the raw Blob in a File so the uploader can read `.name` + `.type`.
+      const file = new File([blobRef.current], `voice-${Date.now()}.${ext}`, {
+        type: blobRef.current.type || "audio/webm",
+      });
+      const data = await uploadFile(file, "audio");
       await onSend?.(data.path);
       cleanup();
     } catch (e) {
-      toast.error(formatApiError(e.response?.data?.detail) || "Upload failed");
+      toast.error(formatApiError(e.response?.data?.detail) || e.message || "Upload failed");
       setPhase("preview");
     }
   };

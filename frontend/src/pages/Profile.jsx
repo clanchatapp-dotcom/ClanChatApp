@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import api, { fileUrl, formatApiError } from "../lib/api";
+import api, { fileUrl, formatApiError, uploadFile } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import PostCard from "../components/PostCard";
 import { LinkIcon, ShoppingBag, MoreHorizontal, Settings as Cog, Camera, Pin, Layers, Flag, UserMinus, VolumeX, Copy, Ban, UserRoundX } from "lucide-react";
@@ -161,14 +161,12 @@ export default function Profile() {
 
   const onAvatar = async (e) => {
     const f = e.target.files?.[0]; if (!f) return;
-    const form = new FormData();
-    form.append("file", f);
     try {
-      const { data: up } = await api.post("/upload", form, { headers: { "Content-Type": "multipart/form-data" } });
+      const up = await uploadFile(f, "avatar");
       await api.patch("/users/me", { avatar_path: up.path });
       toast.success("Avatar updated");
       refresh();
-    } catch (e2) { toast.error(formatApiError(e2.response?.data?.detail)); }
+    } catch (e2) { toast.error(formatApiError(e2.response?.data?.detail) || e2.message); }
   };
 
   return (

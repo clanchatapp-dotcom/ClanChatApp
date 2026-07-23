@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import api, { formatApiError, fileUrl } from "../lib/api";
+import api, { formatApiError, fileUrl, uploadFile } from "../lib/api";
 import { Sparkles, X, ImagePlus, AlertTriangle, ShieldAlert, AtSign, Music2, Mic } from "lucide-react";
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
@@ -91,13 +91,11 @@ export default function NewPost() {
   const onFiles = async (e) => {
     const files = Array.from(e.target.files || []);
     for (const f of files.slice(0, 4)) {
-      const form = new FormData();
-      form.append("file", f);
       try {
-        const { data } = await api.post("/upload", form, { headers: { "Content-Type": "multipart/form-data" } });
+        const data = await uploadFile(f, "post");
         setMedia(m => [...m, data]);
       } catch (e2) {
-        toast.error(formatApiError(e2.response?.data?.detail));
+        toast.error(formatApiError(e2.response?.data?.detail) || e2.message);
       }
     }
     if (fileRef.current) fileRef.current.value = "";
@@ -108,16 +106,14 @@ export default function NewPost() {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
     for (const f of files.slice(0, 2)) {
-      const form = new FormData();
-      form.append("file", f);
       try {
-        const { data } = await api.post("/upload", form, { headers: { "Content-Type": "multipart/form-data" } });
+        const data = await uploadFile(f, "audio");
         // Server may return image/* MIME for some containers; force audio so preview renders correctly.
         const ct = (data.content_type || "").startsWith("audio") ? data.content_type : (f.type || "audio/mpeg");
         setMedia(m => [...m, { ...data, content_type: ct }]);
         setIsAudio(true);
       } catch (e2) {
-        toast.error(formatApiError(e2.response?.data?.detail));
+        toast.error(formatApiError(e2.response?.data?.detail) || e2.message);
       }
     }
     if (audioFileRef.current) audioFileRef.current.value = "";

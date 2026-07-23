@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
-import api, { fileUrl, formatApiError } from "../lib/api";
+import api, { fileUrl, formatApiError, uploadFile } from "../lib/api";
 import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smile, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
@@ -140,9 +140,7 @@ export function MessageThread() {
     setBusy(true);
     try {
       for (const f of queue) {
-        const fd = new FormData();
-        fd.append("file", f);
-        const { data } = await api.post("/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+        const data = await uploadFile(f, "dm");
         const kind = f.type.startsWith("video/") ? "video" : f.type.startsWith("audio/") ? "audio" : "image";
         setPendingMedia((prev) => [...prev, { path: data.path, kind, name: f.name }]);
       }

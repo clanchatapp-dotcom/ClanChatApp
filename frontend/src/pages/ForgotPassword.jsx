@@ -3,26 +3,23 @@ import { useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { KeyRound, ArrowLeft } from "lucide-react";
 import api, { formatApiError } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
 
 /**
  * /forgot-password — public, no auth required.
  *
- * The user can't log in (forgotten password) so we cannot verify identity
- * with a current password. We also haven't wired email yet, so a reset
- * *link* is not possible. Pattern shipped here:
+ * Firebase Auth handles password reset natively — it sends a signed
+ * one-time link to the account email that lets the user set a new
+ * password without any human review. We ALWAYS return the same success
+ * message regardless of whether the email is on file, so attackers
+ * can't use this form to enumerate ClanChat accounts.
  *
- *   1. User submits handle + email + (optional) reason.
- *   2. We file a "password_reset_request" record visible to admins only.
- *   3. Admin reviews the request, contacts the user out-of-band (DM/email/
- *      phone) to verify it's really them, then uses the existing
- *      /admin/users/{id}/reset-password tool to issue a temporary password.
- *   4. Admin closes the ticket.
- *
- * Critically: we ALWAYS return the same success message regardless of
- * whether the email/handle matches an actual account. This stops attackers
- * using this endpoint to enumerate which emails belong to ClanChat users.
+ * The legacy admin-review request (POST /auth/request-reset) is still
+ * fired as a backup — that way accounts that pre-date Firebase migration
+ * still get a human touchpoint even if their Firebase reset link expires.
  */
 export default function ForgotPassword() {
+  const { requestFirebasePasswordReset } = useAuth();
   const [email, setEmail] = useState("");
   const [handle, setHandle] = useState("");
   const [reason, setReason] = useState("");
@@ -36,15 +33,27 @@ export default function ForgotPassword() {
       return;
     }
     setBusy(true);
-    try {
-      await api.post("/auth/request-reset", {
-        email: email.trim(),
-        handle: handle.trim().replace(/^#/, ""),
-        reason: reason.trim(),
+    // Fire the Firebase reset email (primary) and the legacy admin ticket
+    // (backup) in parallel. Both are silent-on-nonexistent-account so
+    // this doesn't leak whether an email is registered.
+    const firebaseSend = requestFirebasePasswordReset(email.trim())
+      .catch((err) => {
+        // auth/user-not-found is expected + intentionally silent.
+        const code = err?.code || "";
+        if (code !== "auth/user-not-found") {
+          console.warn("firebase reset email failed:", err);
+        }
       });
+    const legacySend = api.post("/auth/request-reset", {
+      email: email.trim(),
+      handle: handle.trim().replace(/^#/, ""),
+      reason: reason.trim(),
+    }).catch((err) => {
+      console.warn("legacy reset ticket failed:", formatApiError(err.response?.data?.detail));
+    });
+    try {
+      await Promise.allSettled([firebaseSend, legacySend]);
       setSubmitted(true);
-    } catch (err) {
-      toast.error(formatApiError(err.response?.data?.detail));
     } finally {
       setBusy(false);
     }
@@ -59,12 +68,12 @@ export default function ForgotPassword() {
         <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mb-6">
           <KeyRound size={22} className="text-emerald-300" />
         </div>
-        <h1 className="font-heading text-3xl mb-3">Request received</h1>
+        <h1 className="font-heading text-3xl mb-3">Check your email</h1>
         <p className="text-sm text-zinc-400 leading-relaxed mb-2">
-          If an account with these details exists, an admin will review your request and reach out to you to verify it&apos;s really you.
+          If an account with that email exists, we&apos;ve sent a password reset link. It expires in 1 hour — check spam if it doesn&apos;t arrive.
         </p>
         <p className="text-xs text-zinc-600 leading-relaxed mt-4">
-          We don&apos;t confirm whether an email is on file — that&apos;s a privacy protection so attackers can&apos;t use this form to fish for who&apos;s on ClanChat. Either way, if it&apos;s you, you&apos;ll hear back.
+          We don&apos;t confirm whether an email is on file — that&apos;s a privacy protection so attackers can&apos;t use this form to fish for who&apos;s on ClanChat.
         </p>
         <Link to="/login" className="cc-btn-secondary mt-10 text-center" data-testid="forgot-pw-back-link">
           Back to sign in

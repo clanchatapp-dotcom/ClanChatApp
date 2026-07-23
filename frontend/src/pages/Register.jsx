@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { GoogleButton } from "./Login";
 
 export default function Register() {
-  const { register } = useAuth();
+  const { register, registerWithFirebaseEmail } = useAuth();
   const nav = useNavigate();
   const [form, setForm] = useState({
     email: "", password: "", handle: "", display_name: "", dob: ""
@@ -16,15 +16,39 @@ export default function Register() {
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  // Firebase-first signup. If Firebase creation fails because auth is
+  // temporarily unavailable we fall back to the legacy /auth/register
+  // endpoint so signups aren't blocked while providers are being enabled.
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
+      await registerWithFirebaseEmail(form.email, form.password, form.dob, form.handle);
+      toast.success("Account created");
+      nav("/feed", { replace: true });
+      return;
+    } catch (fbErr) {
+      const code = fbErr?.code || "";
+      // If Firebase says the account already exists, don't silently create
+      // a legacy account — surface the error so the user goes to sign in.
+      if (code === "auth/email-already-in-use") {
+        setErr("That email already has an account. Try signing in instead.");
+        setBusy(false);
+        return;
+      }
+      if (code && code !== "auth/operation-not-allowed" && code !== "auth/network-request-failed") {
+        setErr(fbErr.message || String(fbErr));
+        setBusy(false);
+        return;
+      }
+      // Otherwise fall through to legacy register.
+    }
+    try {
       await register(form);
       toast.success("Account created");
       nav("/feed", { replace: true });
-    } catch (e) {
-      setErr(formatApiError(e.response?.data?.detail) || e.message);
+    } catch (legacyErr) {
+      setErr(formatApiError(legacyErr.response?.data?.detail) || legacyErr.message);
     } finally { setBusy(false); }
   };
 
