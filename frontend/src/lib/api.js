@@ -92,11 +92,11 @@ export function fileUrl(path) {
 }
 
 /**
- * Upload a File/Blob to Firebase Storage via a backend-issued signed URL.
+ * Upload a File/Blob to Supabase Storage via a backend-issued signed URL.
  *
  *   const { path, content_type } = await uploadFile(file, "post");
  *
- * `path` is the public Firebase Storage URL (starts with https://...).
+ * `path` is the public Supabase Storage URL (starts with https://...).
  * `fileUrl(path)` returns it verbatim so all existing render code works.
  *
  * Scopes: "post" | "avatar" | "wall" | "dm" | "audio"
@@ -106,24 +106,24 @@ export async function uploadFile(file, scope = "post") {
   const filename = file.name || `blob_${Date.now()}`;
   const contentType = file.type || "application/octet-stream";
   // Ask the backend for a scoped, time-limited signed URL.
-  const { data: signed } = await api.post("/upload/firebase-signed-url", {
+  const { data: signed } = await api.post("/upload/signed-url", {
     filename, content_type: contentType, scope,
   });
-  // PUT the raw bytes straight to Firebase Storage. axios is intentionally
-  // NOT used here — the signed URL is on firebasestorage.googleapis.com
-  // and the axios instance is scoped to our own backend.
+  // PUT the raw bytes straight to Supabase Storage. axios is intentionally
+  // NOT used here — the signed URL is on supabase.co and the axios instance
+  // is scoped to our own backend.
   const put = await fetch(signed.upload_url, {
     method: "PUT",
-    headers: { "Content-Type": contentType },
+    headers: { "Content-Type": contentType, "x-upsert": "true" },
     body: file,
   });
   if (!put.ok) {
     const body = await put.text().catch(() => "");
-    throw new Error(`Firebase upload failed (${put.status}): ${body.slice(0, 200)}`);
+    throw new Error(`Supabase upload failed (${put.status}): ${body.slice(0, 200)}`);
   }
   return {
-    path: signed.public_url,   // stored verbatim on the post/message/etc.
+    path: signed.public_url,      // stored verbatim on the post/message/etc.
     content_type: contentType,
-    firebase_path: signed.path,  // internal path — useful for admin deletes
+    supabase_path: signed.path,   // internal path — useful for admin deletes
   };
 }

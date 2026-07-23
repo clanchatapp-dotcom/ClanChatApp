@@ -1065,88 +1065,64 @@ async def google_session(payload: GoogleSessionIn, response: Response):
 
 
 # ------------------------------------------------------------------
-# Firebase Auth bridge
+# Supabase Auth bridge
 #
-# Firebase becomes the identity provider (email/password + Google + Apple
-# on the client), but ClanChat continues to issue its own short-lived JWT
-# for per-request auth so the ~200 existing `Depends(get_current_user)`
-# sites in this file don't need to be rewritten. Flow:
+# Supabase is the identity provider (email/password + Google via OAuth).
+# ClanChat still issues its own JWT for per-request auth so the ~200
+# existing `Depends(get_current_user)` sites in this file don't change.
 #
-#   1. Client authenticates against Firebase (email/pw, Google, Apple, …).
-#   2. Client fetches an ID token from Firebase and POSTs it to
-#      /api/auth/firebase-login.
-#   3. Server verifies the ID token, upserts the Mongo user record keyed
-#      by firebase_uid (linked to email so legacy accounts merge on first
-#      Firebase login), and returns the standard ClanChat JWT pair.
-#   4. Frontend keeps a Firebase auth listener alive; on ID-token refresh
-#      the client silently re-exchanges for a fresh ClanChat JWT.
-#
-# Migration: legacy accounts (auth_provider != "firebase") are auto-merged
-# by email on first firebase-login call. Their old password_hash is left
-# in place but marked stale — they'll need to complete a Firebase password
-# reset to keep signing in via email/pw. Google/social users flow through
-# without password disruption.
+# Flow:
+#   1. Client signs in against Supabase (email/pw or Google).
+#   2. Client sends the resulting access_token to /api/auth/supabase-login.
+#   3. Server verifies via supabase.auth.get_user(), upserts the Mongo
+#      user record keyed by supabase_uid (linked by email so legacy
+#      accounts auto-merge on first Supabase login), returns the standard
+#      ClanChat JWT pair.
 # ------------------------------------------------------------------
-class FirebaseLoginIn(BaseModel):
-    id_token: str
+class SupabaseLoginIn(BaseModel):
+    access_token: str
     dob: Optional[str] = None
     handle: Optional[str] = None
 
 
-@api.post("/auth/firebase-login")
-async def firebase_login(payload: FirebaseLoginIn, response: Response):
-    from firebase_helpers import verify_id_token
+@api.post("/auth/supabase-login")
+async def supabase_login(payload: SupabaseLoginIn, response: Response):
+    from supabase_helpers import verify_access_token
     try:
-        claims = verify_id_token(payload.id_token)
+        info = verify_access_token(payload.access_token)
     except Exception as e:
-        logging.warning("firebase id token verify failed: %s", e)
-        raise HTTPException(401, "Invalid Firebase token") from e
+        logging.warning("supabase token verify failed: %s", e)
+        raise HTTPException(401, "Invalid Supabase token") from e
 
-    firebase_uid = claims.get("uid") or claims.get("user_id")
-    email = (claims.get("email") or "").lower()
-    if not firebase_uid or not email:
-        raise HTTPException(401, "Firebase token missing uid/email")
-    email_verified = bool(claims.get("email_verified"))
-    name = (claims.get("name") or "").strip() or email.split("@")[0]
-    picture = claims.get("picture") or None
-    provider = "firebase"
-    firebase = claims.get("firebase") or {}
-    sign_in_provider = firebase.get("sign_in_provider") or "unknown"
+    supabase_uid = info.get("id")
+    email = (info.get("email") or "").lower()
+    if not supabase_uid or not email:
+        raise HTTPException(401, "Supabase token missing id/email")
+    email_verified = bool(info.get("email_verified"))
+    name = (info.get("name") or "").strip() or email.split("@")[0]
+    picture = info.get("picture") or None
 
-    # 1) Match on firebase_uid first (fast path for returning users).
-    existing = await db.users.find_one({"firebase_uid": firebase_uid})
-    # 2) Fall back to email match — this is the legacy-migration path.
+    existing = await db.users.find_one({"supabase_uid": supabase_uid})
     if not existing and email:
         existing = await db.users.find_one({"email": email})
 
     if existing:
         uid = existing["user_id"]
-        update = {"firebase_uid": firebase_uid, "auth_provider": provider}
+        update = {"supabase_uid": supabase_uid, "auth_provider": "supabase"}
         if email_verified and not existing.get("email_verified"):
             update["email_verified"] = True
         if not existing.get("display_name") and name:
             update["display_name"] = name
         if not existing.get("avatar_path") and picture:
             update["avatar_path"] = picture
-        # Refresh Firebase custom claims so Storage rules can key off them.
-        try:
-            from firebase_admin import auth as fbauth
-            fbauth.set_custom_user_claims(firebase_uid, {
-                "role": existing.get("role") or "user",
-                "is_minor": bool(existing.get("is_minor")),
-                "user_id": uid,
-            })
-        except Exception as e:
-            logging.warning("set_custom_user_claims failed: %s", e)
         await db.users.update_one({"user_id": uid}, {"$set": update})
         user = await db.users.find_one({"user_id": uid}, {"_id": 0})
         new_user = False
     else:
-        # Brand-new Firebase user → require DOB + handle just like the
-        # Emergent Google flow so minor protections are enforced from
-        # the very first record.
+        # Brand-new Supabase account → require DOB + handle so minor
+        # protections are enforced from the very first record.
         if not payload.dob:
-            return {"needs_profile": True, "firebase_email": email, "firebase_name": name}
+            return {"needs_profile": True, "supabase_email": email, "supabase_name": name}
         try:
             date.fromisoformat(payload.dob)
         except Exception:
@@ -1163,22 +1139,14 @@ async def firebase_login(payload: FirebaseLoginIn, response: Response):
         uid = f"user_{uuid.uuid4().hex[:12]}"
         user = {
             "user_id": uid, "email": email, "password_hash": None,
-            "firebase_uid": firebase_uid, "email_verified": email_verified,
+            "supabase_uid": supabase_uid, "email_verified": email_verified,
             "handle": candidate, "display_name": name, "dob": payload.dob,
             "is_minor": age < 18, "bio": "", "avatar_path": picture,
             "links": [], "follow_mode": "open", "settings": default_settings(),
-            "role": "user", "auth_provider": provider,
-            "sign_in_provider": sign_in_provider,
+            "role": "user", "auth_provider": "supabase",
             "strikes": 0, "suspended_until": None, "created_at": now_iso(),
         }
         await db.users.insert_one(user)
-        try:
-            from firebase_admin import auth as fbauth
-            fbauth.set_custom_user_claims(firebase_uid, {
-                "role": "user", "is_minor": age < 18, "user_id": uid,
-            })
-        except Exception as e:
-            logging.warning("set_custom_user_claims (new) failed: %s", e)
         new_user = True
 
     access_token = create_access_token(user["user_id"])
@@ -1191,25 +1159,14 @@ async def firebase_login(payload: FirebaseLoginIn, response: Response):
             "access_token": access_token, "refresh_token": refresh_token}
 
 
-@api.get("/firebase/config")
-async def firebase_client_config():
-    """Web-safe Firebase config the frontend needs to init the JS SDK.
-    All of these values are documented as public by Firebase (security
-    lives in Auth + Storage rules, not in these strings)."""
-    project = os.environ.get("FIREBASE_PROJECT_ID", "")
+@api.get("/supabase/config")
+async def supabase_client_config():
+    """Web-safe Supabase config for the frontend SDK. anon key is meant
+    to be public — RLS + Auth rules enforce security."""
     return {
-        "apiKey": os.environ.get("FIREBASE_WEB_API_KEY", ""),
-        "authDomain": f"{project}.firebaseapp.com" if project else "",
-        "projectId": project,
-        "storageBucket": os.environ.get("FIREBASE_STORAGE_BUCKET", ""),
-        "messagingSenderId": os.environ.get("FIREBASE_MESSAGING_SENDER_ID", ""),
-        # Falls back to the Android app id if no dedicated Web app id has
-        # been registered yet. Firebase Web SDK is tolerant of this in
-        # dev but you should still register a Web app in the console.
-        "appId": (
-            os.environ.get("FIREBASE_APP_ID_WEB")
-            or os.environ.get("FIREBASE_APP_ID_ANDROID", "")
-        ),
+        "url": os.environ.get("SUPABASE_URL", ""),
+        "anonKey": os.environ.get("SUPABASE_ANON_KEY", ""),
+        "bucket": os.environ.get("SUPABASE_BUCKET", "clanchat"),
     }
 
 
@@ -1219,24 +1176,30 @@ class SignedUploadIn(BaseModel):
     scope: str = "post"  # post | avatar | dm | wall | audio
 
 
-@api.post("/upload/firebase-signed-url")
-async def firebase_signed_upload(payload: SignedUploadIn, user=Depends(get_current_user)):
-    """Return a v4 signed URL the client can PUT its media to directly.
-    The path is scoped by the authenticated user's id so nobody can
-    overwrite somebody else's uploads even with a stolen signed URL."""
-    from firebase_helpers import admin_signed_upload_url
+@api.post("/upload/signed-url")
+async def upload_signed_url(payload: SignedUploadIn, user=Depends(get_current_user)):
+    """Return a Supabase Storage signed upload URL scoped to the auth'd
+    user's id so nobody can overwrite somebody else's uploads."""
+    from supabase_helpers import signed_upload_url
     safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", payload.filename or "").strip("._-")[:80]
     if not safe_name:
         safe_name = f"file_{uuid.uuid4().hex[:8]}"
-    ct = (payload.content_type or "application/octet-stream").split(";", 1)[0].strip()
     scope = payload.scope if payload.scope in ("post", "avatar", "dm", "wall", "audio") else "post"
     path = f"u/{user['user_id']}/{scope}/{uuid.uuid4().hex[:10]}_{safe_name}"
     try:
-        info = admin_signed_upload_url(path, ct)
+        info = signed_upload_url(path)
     except Exception as e:
-        logging.warning("firebase signed url failed: %s", e)
-        raise HTTPException(503, "Firebase Storage not available yet") from e
-    return info
+        logging.warning("supabase signed url failed: %s", e)
+        raise HTTPException(503, f"Supabase Storage not available: {e}") from e
+    # Keep a stable response shape close to the old Firebase one so
+    # frontend uploadFile() code doesn't have to branch by provider.
+    return {
+        "upload_url": info["signed_url"],
+        "path": info["path"],
+        "public_url": info["public_url"],
+        "token": info.get("token"),
+        "provider": "supabase",
+    }
 
 
 # ------------------------------------------------------------------
@@ -4006,6 +3969,29 @@ async def notif_mark_seen(user=Depends(get_current_user)):
         {"$set": {"notifications_seen_at": now_iso()}}
     )
     return {"ok": True}
+
+
+@api.get("/notifications/new-followers")
+async def notif_new_followers(user=Depends(get_current_user)):
+    """Followers that appeared AFTER the user last saw the Activity tab.
+    Used to render the 'New followers' section on the Activity page for
+    open-follow accounts (where there's no pending request to display)."""
+    uid = user["user_id"]
+    last_seen = user.get("notifications_seen_at") or "1970-01-01T00:00:00+00:00"
+    out = []
+    cursor = db.follows.find(
+        {"followee_id": uid, "status": "active",
+         "created_at": {"$gt": last_seen}},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(50)
+    async for f in cursor:
+        u = await db.users.find_one(
+            {"user_id": f["follower_id"]},
+            {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1}
+        )
+        if u:
+            out.append({**u, "followed_at": f.get("created_at")})
+    return {"followers": out}
 
 
 @api.get("/users/me/followers")

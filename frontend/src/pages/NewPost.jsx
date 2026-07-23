@@ -182,15 +182,18 @@ export default function NewPost() {
         <button onClick={() => nav(-1)} className="text-zinc-500" data-testid="cancel-post"><X size={20} /></button>
       </header>
 
-      {/* Tier selector */}
+      {/* Tier selector — 3 equal columns that always fit their content.
+          min-w-0 lets the flex/grid child shrink instead of overflowing.
+          The label uses smaller uppercase text on tiny screens to keep
+          "INNER CIRCLE" on one line, then scales up on larger widths. */}
       <div className="grid grid-cols-3 gap-2 mb-5">
         {TIERS.map(t => (
           <button key={t.id} onClick={() => setTier(t.id)} data-testid={`tier-${t.id}`}
-            className={`p-3 border rounded-2xl text-left transition ${
+            className={`min-w-0 p-3 border rounded-2xl text-left transition flex flex-col justify-start ${
               tier === t.id ? "border-[#FF5A00] bg-[#FF5A00]/5" : "border-zinc-900 hover:border-zinc-700"
             }`}>
-            <div className="text-xs uppercase tracking-[0.18em] font-semibold">{t.label}</div>
-            <div className="text-[10px] text-zinc-500 mt-1 leading-tight">{t.desc}</div>
+            <div className="text-[10px] sm:text-xs uppercase tracking-[0.14em] font-semibold leading-tight break-words">{t.label}</div>
+            <div className="text-[10px] text-zinc-500 mt-1 leading-tight break-words">{t.desc}</div>
           </button>
         ))}
       </div>

@@ -10,15 +10,17 @@ export default function Notifications() {
   const [tagPending, setTagPending] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [unreadThreads, setUnreadThreads] = useState([]);
+  const [newFollowers, setNewFollowers] = useState([]);
 
   const load = async () => {
     try {
-      const [fr, ii, tp, w, threads] = await Promise.all([
+      const [fr, ii, tp, w, threads, nf] = await Promise.all([
         api.get("/follow/requests"),
         api.get("/inner/invites"),
         api.get("/tags/pending"),
         api.get("/me/warnings"),
         api.get("/dms/threads"),
+        api.get("/notifications/new-followers"),
       ]);
       setFollowRequests(fr.data.requests);
       setInnerInvites(ii.data.invites);
@@ -31,26 +33,54 @@ export default function Notifications() {
           (t) => t.last?.read === false && t.last?.from_id !== undefined && !t.with?.is_self
         )
       );
+      setNewFollowers(nf.data.followers || []);
     } catch (e) { console.warn("notifications load failed", e); }
   };
   useEffect(() => {
     load();
     // Mark all activity as seen the moment the user opens this tab — clears the dot badge.
-    api.post("/notifications/mark-seen")
-      .then(() => window.dispatchEvent(new Event("clanchat:notif-refresh")))
-      .catch(() => {});
+    // We DEFER the mark-seen until after `load()` has captured the current
+    // `new_followers` snapshot, so the section stays visible on this
+    // render (mark-seen would otherwise instantly return 0 followers).
+    const t = setTimeout(() => {
+      api.post("/notifications/mark-seen")
+        .then(() => window.dispatchEvent(new Event("clanchat:notif-refresh")))
+        .catch(() => {});
+    }, 400);
+    // Refresh whenever the app comes back to the foreground — otherwise
+    // stale state persists after a background/foreground swap.
+    const onFocus = () => load();
+    const onVisibility = () => { if (document.visibilityState === "visible") load(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   const actFollow = async (id, approve) => {
-    try { await api.post(`/follow/requests/${id}/${approve ? "approve" : "decline"}`); load(); }
-    catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    try {
+      await api.post(`/follow/requests/${id}/${approve ? "approve" : "decline"}`);
+      // Optimistic remove so the row disappears immediately.
+      setFollowRequests((rs) => rs.filter((r) => r.follow_id !== id));
+      window.dispatchEvent(new Event("clanchat:notif-refresh"));
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
   const actInner = async (id, accept) => {
-    try { await api.post(`/inner/invites/${id}/${accept ? "accept" : "decline"}`); load(); }
-    catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    try {
+      await api.post(`/inner/invites/${id}/${accept ? "accept" : "decline"}`);
+      setInnerInvites((is) => is.filter((i) => i.invite_id !== id));
+      window.dispatchEvent(new Event("clanchat:notif-refresh"));
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
   const dismissWarn = async (id) => {
-    try { await api.post(`/me/warnings/${id}/dismiss`); load(); } catch (e) { console.warn("dismiss warning failed", e); }
+    try {
+      await api.post(`/me/warnings/${id}/dismiss`);
+      setWarnings((ws) => ws.filter((w) => w.warning_id !== id));
+      window.dispatchEvent(new Event("clanchat:notif-refresh"));
+    } catch (e) { console.warn("dismiss warning failed", e); }
   };
 
   return (
@@ -103,15 +133,40 @@ export default function Notifications() {
         {followRequests.map(r => (
           <div key={r.follow_id} className="flex items-center gap-3 p-3 border border-zinc-900 rounded-2xl mb-2">
             <Avatar u={r.user} />
-            <div className="flex-1 text-sm">
-              <Link to={`/u/${r.user.handle}`} className="font-medium">#{r.user.handle}</Link>
-              <div className="text-xs text-zinc-500">{r.user.display_name}</div>
+            <div className="flex-1 text-sm min-w-0">
+              <Link to={`/u/${r.user.handle}`} className="font-medium truncate block">#{r.user.handle}</Link>
+              <div className="text-xs text-zinc-500 truncate">{r.user.display_name}</div>
             </div>
             <button data-testid={`approve-follow-${r.user.handle}`} onClick={() => actFollow(r.follow_id, true)} className="cc-btn-primary text-xs py-1.5 px-3">Approve</button>
             <button onClick={() => actFollow(r.follow_id, false)} className="cc-btn-secondary text-xs py-1.5 px-3">Decline</button>
           </div>
         ))}
       </section>
+
+      {newFollowers.length > 0 && (
+        <section className="mb-6" data-testid="notif-new-followers">
+          <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mb-3">
+            New followers
+          </div>
+          {newFollowers.map((f) => (
+            <Link
+              key={f.user_id}
+              to={`/u/${f.handle}`}
+              data-testid={`new-follower-${f.handle}`}
+              className="flex items-center gap-3 p-3 border border-zinc-900 rounded-2xl mb-2 hover:border-zinc-700 transition"
+            >
+              <Avatar u={f} />
+              <div className="flex-1 text-sm min-w-0">
+                <div className="font-medium truncate">#{f.handle}</div>
+                <div className="text-xs text-zinc-500 truncate">
+                  {f.display_name || "is now following you"}
+                </div>
+              </div>
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500 shrink-0">Following</div>
+            </Link>
+          ))}
+        </section>
+      )}
 
       <section className="mb-6">
         <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mb-3">Inner Circle invites</div>

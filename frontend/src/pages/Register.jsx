@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { GoogleButton } from "./Login";
 
 export default function Register() {
-  const { register, registerWithFirebaseEmail } = useAuth();
+  const { register, registerWithSupabaseEmail } = useAuth();
   const nav = useNavigate();
   const [form, setForm] = useState({
     email: "", password: "", handle: "", display_name: "", dob: ""
@@ -16,32 +16,30 @@ export default function Register() {
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  // Firebase-first signup. If Firebase creation fails because auth is
-  // temporarily unavailable we fall back to the legacy /auth/register
-  // endpoint so signups aren't blocked while providers are being enabled.
+  // Supabase-first signup. Falls back to legacy /auth/register if Supabase
+  // is temporarily unavailable so signups aren't hard-blocked while
+  // providers are being configured.
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      await registerWithFirebaseEmail(form.email, form.password, form.dob, form.handle);
+      await registerWithSupabaseEmail(form.email, form.password, form.dob, form.handle);
       toast.success("Account created");
       nav("/feed", { replace: true });
       return;
-    } catch (fbErr) {
-      const code = fbErr?.code || "";
-      // If Firebase says the account already exists, don't silently create
-      // a legacy account — surface the error so the user goes to sign in.
-      if (code === "auth/email-already-in-use") {
+    } catch (sbErr) {
+      const msg = (sbErr?.message || "").toLowerCase();
+      if (msg.includes("user already registered") || msg.includes("already been registered")) {
         setErr("That email already has an account. Try signing in instead.");
         setBusy(false);
         return;
       }
-      if (code && code !== "auth/operation-not-allowed" && code !== "auth/network-request-failed") {
-        setErr(fbErr.message || String(fbErr));
+      if (msg && !msg.includes("provider is not enabled") && !msg.includes("network")) {
+        setErr(sbErr.message || String(sbErr));
         setBusy(false);
         return;
       }
-      // Otherwise fall through to legacy register.
+      // Fall through to legacy register.
     }
     try {
       await register(form);

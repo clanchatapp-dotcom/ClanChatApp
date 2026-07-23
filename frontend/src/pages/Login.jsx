@@ -12,32 +12,23 @@ import { toast } from "sonner";
  * getRedirectResult.
  */
 function GoogleButton({ extra }) {
-  const { loginWithFirebaseGoogle } = useAuth();
+  const { loginWithSupabaseGoogle } = useAuth();
   const [busy, setBusy] = useState(false);
-  const nav = useNavigate();
   const onClick = async () => {
     setBusy(true);
     try {
-      const res = await loginWithFirebaseGoogle();
-      if (res?.user) {
-        toast.success("Welcome");
-        nav("/feed", { replace: true });
-      }
-      // If null: mobile redirect flow in progress — the redirect will
-      // return the user to this page and AuthContext's onMount effect
-      // will complete the exchange automatically.
+      // Supabase OAuth kicks a redirect; on return, AuthContext's onMount
+      // effect exchanges the session for a ClanChat JWT automatically.
+      await loginWithSupabaseGoogle();
     } catch (e) {
-      const code = e?.code || "";
-      if (code === "auth/popup-blocked" || code === "auth/cancelled-popup-request") {
-        toast.error("Popup was blocked — please allow popups and try again");
-      } else if (code === "auth/popup-closed-by-user") {
-        // User closed the popup — silent.
-      } else if (code === "auth/operation-not-allowed") {
-        toast.error("Google sign-in is not enabled yet in Firebase Console");
+      const msg = e?.message || "Google sign-in failed";
+      if (msg.toLowerCase().includes("provider is not enabled")) {
+        toast.error("Google sign-in is not enabled in the Supabase dashboard yet");
       } else {
-        toast.error(e.message || "Google sign-in failed");
+        toast.error(msg);
       }
-    } finally { setBusy(false); }
+      setBusy(false);
+    }
   };
   return (
     <button
@@ -58,7 +49,7 @@ function GoogleButton({ extra }) {
 }
 
 export default function Login() {
-  const { login, loginWithFirebaseEmail } = useAuth();
+  const { login, loginWithSupabaseEmail } = useAuth();
   const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -66,39 +57,39 @@ export default function Login() {
   const [err, setErr] = useState("");
 
   /**
-   * Try Firebase first (all new accounts and migrated legacy accounts
-   * live there). If Firebase says "user-not-found" or "wrong-password"
+   * Try Supabase first (all new accounts and migrated legacy accounts
+   * live there). If Supabase says "user-not-found" / "invalid-credentials"
    * we fall through to the legacy ClanChat login so users who haven't
-   * completed the Firebase password reset flow can still get in.
+   * completed the Supabase password reset flow can still get in.
    */
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      await loginWithFirebaseEmail(email, password);
+      await loginWithSupabaseEmail(email, password);
       toast.success("Welcome back");
       nav("/feed", { replace: true });
       return;
-    } catch (fbErr) {
-      const code = fbErr?.code || "";
-      // Only fall back to legacy for account-not-in-firebase cases.
-      // Anything else (network, disabled account, ...) surfaces as-is.
+    } catch (sbErr) {
+      const msg = (sbErr?.message || "").toLowerCase();
+      // Only fall through to legacy for missing-account / bad-password
+      // cases. Anything else (network, disabled account) surfaces as-is.
       const shouldFallback =
-        code === "auth/user-not-found" ||
-        code === "auth/wrong-password" ||
-        code === "auth/invalid-credential" ||
-        code === "auth/operation-not-allowed";
+        msg.includes("invalid login credentials") ||
+        msg.includes("user not found") ||
+        msg.includes("email not confirmed") ||
+        msg.includes("provider is not enabled");
       if (!shouldFallback) {
-        setErr(fbErr.message || String(fbErr));
+        setErr(sbErr.message || String(sbErr));
         setBusy(false);
         return;
       }
     }
-    // Legacy fallback — for users who haven't reset their password to Firebase yet.
+    // Legacy fallback for users who haven't reset their password to Supabase yet.
     try {
       await login(email, password);
       toast.success("Welcome back");
-      toast.message("Please reset your password in Settings — we've moved to Firebase auth for stronger security.", { duration: 8000 });
+      toast.message("Please reset your password in Settings — we've moved to Supabase auth for stronger security.", { duration: 8000 });
       nav("/feed", { replace: true });
     } catch (legacyErr) {
       setErr(formatApiError(legacyErr.response?.data?.detail) || legacyErr.message);

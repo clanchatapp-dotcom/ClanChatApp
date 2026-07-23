@@ -1,15 +1,15 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import api, { rememberToken, forgetToken } from "../lib/api";
 import {
-  fbSignInEmail,
-  fbSignUpEmail,
-  fbSignInGoogle,
-  fbGetRedirectResult,
-  fbSignOut as firebaseSignOut,
-  fbGetIdToken,
-  fbSendPasswordReset,
-  onFirebaseIdTokenRefresh,
-} from "../lib/firebase";
+  sbSignInEmail,
+  sbSignUpEmail,
+  sbSignInGoogle,
+  sbSignOut as supabaseSignOut,
+  sbGetAccessToken,
+  sbGetSession,
+  sbSendPasswordReset,
+  onSupabaseAuth,
+} from "../lib/supabase";
 
 const AuthContext = createContext(null);
 
@@ -82,10 +82,9 @@ export function AuthProvider({ children }) {
   };
   const logout = async () => {
     try { await api.post("/auth/logout"); } catch (e) { console.warn("logout failed", e); }
-    // Also sign out of Firebase so the client-side session persistence
-    // (indexedDB / localStorage) is cleared. Otherwise the next visit
-    // silently re-authenticates the user via the cached Firebase session.
-    try { await firebaseSignOut(); } catch { /* noop */ }
+    // Also sign out of Supabase so the browser-side session doesn't
+    // silently re-authenticate the user on next visit.
+    try { await supabaseSignOut(); } catch { /* noop */ }
     await forgetToken();
     try { localStorage.removeItem("cc_last_user"); } catch { /* ignore */ }
     setUser(null);
@@ -97,24 +96,23 @@ export function AuthProvider({ children }) {
   };
 
   // ------------------------------------------------------------------
-  // Firebase-powered sign-in helpers.
+  // Supabase-powered sign-in helpers.
   //
-  // Flow: authenticate against Firebase → grab the fresh ID token →
-  // exchange it for a ClanChat JWT via /api/auth/firebase-login → set
+  // Flow: authenticate against Supabase → grab the fresh access token →
+  // exchange it for a ClanChat JWT via /api/auth/supabase-login → set
   // the user on the context. The internal JWT is still what the rest
-  // of the app uses for API calls, so we don't have to touch the
-  // axios interceptor or the ~200 backend Depends(get_current_user)
-  // callsites.
+  // of the app uses for API calls, so we don't touch the axios
+  // interceptor or the ~200 backend Depends(get_current_user) sites.
   //
-  // For brand-new Firebase users the backend replies with
-  // { needs_profile: true, firebase_email, firebase_name } so the caller
+  // For brand-new Supabase users the backend replies with
+  // { needs_profile: true, supabase_email, supabase_name } so the caller
   // can prompt for DOB + handle and re-submit with those fields.
   // ------------------------------------------------------------------
-  const exchangeFirebaseToken = useCallback(async ({ dob, handle } = {}) => {
-    const id_token = await fbGetIdToken(true); // force refresh
-    if (!id_token) throw new Error("No Firebase session");
-    const { data } = await api.post("/auth/firebase-login", {
-      id_token, dob, handle,
+  const exchangeSupabaseToken = useCallback(async ({ dob, handle } = {}) => {
+    const access_token = await sbGetAccessToken();
+    if (!access_token) throw new Error("No Supabase session");
+    const { data } = await api.post("/auth/supabase-login", {
+      access_token, dob, handle,
     });
     if (data.needs_profile) return data; // caller must collect DOB/handle
     if (data.access_token) await rememberToken(data.access_token);
@@ -122,56 +120,55 @@ export function AuthProvider({ children }) {
     return data;
   }, []);
 
-  const loginWithFirebaseEmail = useCallback(async (email, password) => {
-    await fbSignInEmail(email, password);
-    return exchangeFirebaseToken();
-  }, [exchangeFirebaseToken]);
+  const loginWithSupabaseEmail = useCallback(async (email, password) => {
+    await sbSignInEmail(email, password);
+    return exchangeSupabaseToken();
+  }, [exchangeSupabaseToken]);
 
-  const registerWithFirebaseEmail = useCallback(async (email, password, dob, handle) => {
-    await fbSignUpEmail(email, password);
-    return exchangeFirebaseToken({ dob, handle });
-  }, [exchangeFirebaseToken]);
+  const registerWithSupabaseEmail = useCallback(async (email, password, dob, handle) => {
+    await sbSignUpEmail(email, password);
+    return exchangeSupabaseToken({ dob, handle });
+  }, [exchangeSupabaseToken]);
 
-  const loginWithFirebaseGoogle = useCallback(async () => {
-    const popupResult = await fbSignInGoogle();
-    // If we did a redirect (mobile / native path), the actual result
-    // arrives asynchronously via getRedirectResult on the next load —
-    // handled by the useEffect below.
-    if (!popupResult) return null;
-    return exchangeFirebaseToken();
-  }, [exchangeFirebaseToken]);
-
-  const requestFirebasePasswordReset = useCallback(async (email) => {
-    return fbSendPasswordReset(email);
+  const loginWithSupabaseGoogle = useCallback(async () => {
+    // OAuth redirect kicks the browser to Google. On return the Supabase
+    // SDK auto-hydrates the session and the useEffect below picks up
+    // SIGNED_IN and exchanges the token.
+    await sbSignInGoogle();
+    return null;
   }, []);
 
-  // On mount, complete any pending Firebase redirect sign-in (Google on
-  // mobile / native) and exchange the resulting ID token for a ClanChat
-  // JWT. Also register an ID-token refresh listener so long-lived
-  // sessions transparently re-mint the internal JWT before it expires.
+  const requestSupabasePasswordReset = useCallback(async (email) => {
+    return sbSendPasswordReset(email);
+  }, []);
+
+  // On mount, hydrate any pending Supabase session (fresh OAuth redirect
+  // or a returning user with persisted localStorage session) and swap it
+  // for a ClanChat JWT. Also listen for SIGNED_IN / TOKEN_REFRESHED so
+  // long sessions silently re-mint the internal JWT.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fbGetRedirectResult();
-        if (res?.user && !cancelled) {
-          try { await exchangeFirebaseToken(); } catch (e) { console.warn("fb redirect exchange failed", e); }
+        const sess = await sbGetSession();
+        if (sess && !cancelled) {
+          try { await exchangeSupabaseToken(); } catch (e) { console.warn("sb initial exchange failed", e); }
         }
-      } catch { /* no pending redirect */ }
+      } catch { /* no session */ }
     })();
-    const unsub = onFirebaseIdTokenRefresh(async (fbUser) => {
-      if (!fbUser) return;
-      try { await exchangeFirebaseToken(); } catch (e) { console.warn("fb id-token refresh exchange failed", e); }
+    const unsub = onSupabaseAuth(async (session) => {
+      if (!session) return;
+      try { await exchangeSupabaseToken(); } catch (e) { console.warn("sb auth-change exchange failed", e); }
     });
     return () => { cancelled = true; unsub(); };
-  }, [exchangeFirebaseToken]);
+  }, [exchangeSupabaseToken]);
 
   return (
     <AuthContext.Provider value={{
       user, setUser,
       login, register, logout, refresh,
-      loginWithFirebaseEmail, registerWithFirebaseEmail,
-      loginWithFirebaseGoogle, requestFirebasePasswordReset,
+      loginWithSupabaseEmail, registerWithSupabaseEmail,
+      loginWithSupabaseGoogle, requestSupabasePasswordReset,
       theme, setTheme,
     }}>
       {children}

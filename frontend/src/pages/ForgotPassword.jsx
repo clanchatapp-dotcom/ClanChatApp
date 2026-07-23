@@ -19,7 +19,7 @@ import { useAuth } from "../context/AuthContext";
  * still get a human touchpoint even if their Firebase reset link expires.
  */
 export default function ForgotPassword() {
-  const { requestFirebasePasswordReset } = useAuth();
+  const { requestSupabasePasswordReset } = useAuth();
   const [email, setEmail] = useState("");
   const [handle, setHandle] = useState("");
   const [reason, setReason] = useState("");
@@ -33,16 +33,12 @@ export default function ForgotPassword() {
       return;
     }
     setBusy(true);
-    // Fire the Firebase reset email (primary) and the legacy admin ticket
+    // Fire the Supabase reset email (primary) and the legacy admin ticket
     // (backup) in parallel. Both are silent-on-nonexistent-account so
     // this doesn't leak whether an email is registered.
-    const firebaseSend = requestFirebasePasswordReset(email.trim())
+    const supabaseSend = requestSupabasePasswordReset(email.trim())
       .catch((err) => {
-        // auth/user-not-found is expected + intentionally silent.
-        const code = err?.code || "";
-        if (code !== "auth/user-not-found") {
-          console.warn("firebase reset email failed:", err);
-        }
+        console.warn("supabase reset email failed:", err?.message || err);
       });
     const legacySend = api.post("/auth/request-reset", {
       email: email.trim(),
@@ -52,7 +48,7 @@ export default function ForgotPassword() {
       console.warn("legacy reset ticket failed:", formatApiError(err.response?.data?.detail));
     });
     try {
-      await Promise.allSettled([firebaseSend, legacySend]);
+      await Promise.allSettled([supabaseSend, legacySend]);
       setSubmitted(true);
     } finally {
       setBusy(false);
