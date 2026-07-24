@@ -1,5 +1,5 @@
 import { Heart, MoreHorizontal, Sparkles, Pin, MessageCircle, Flag, ShieldAlert, Pencil } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import TierBadge from "./TierBadge";
 import Comments from "./Comments";
 import Lightbox from "./Lightbox";
@@ -21,13 +21,13 @@ function timeAgo(iso) {
   return d.toLocaleDateString();
 }
 
-export default function PostCard({ post, onChange, showPin = false, currentUserId }) {
+export default function PostCard({ post, onChange, showPin = false, currentUserId, autoOpenLightboxIndex = null, autoOpenComments = false, highlight = false }) {
   const [liked, setLiked] = useState(post.liked);
   const [count, setCount] = useState(post.like_count);
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleted, setDeleted] = useState(false);
-  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(!!autoOpenComments);
   const [commentCount, setCommentCount] = useState(post.comment_count || 0);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportCat, setReportCat] = useState("");
@@ -43,6 +43,30 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
   const [editedAt, setEditedAt] = useState(post.edited_at || null);
   // Lightbox state — array of image paths + starting index.
   const [lightbox, setLightbox] = useState(null);
+  const articleRef = useRef(null);
+
+  // Auto-open the lightbox when the parent requests it (e.g. deep-link
+  // from the Gallery grid). Runs once on mount + when the requested
+  // index changes.
+  useEffect(() => {
+    if (autoOpenLightboxIndex == null) return;
+    const media = post.media || [];
+    if (media.length === 0) return;
+    const imagesOnly = media.filter((x) => {
+      const v = /\.(mp4|mov)$/i.test(x) || (/\.webm$/i.test(x) && !post.is_audio_track);
+      const a = /\.(mp3|m4a|aac|wav|ogg|flac|oga|opus)$/i.test(x) || (post.is_audio_track && /\.webm$/i.test(x));
+      return !v && !a;
+    });
+    if (imagesOnly.length === 0) return;
+    // Resolve the requested media index onto the images-only list.
+    const requestedPath = media[autoOpenLightboxIndex];
+    const idx = requestedPath ? Math.max(0, imagesOnly.indexOf(requestedPath)) : 0;
+    // Suppress if the post is 18+ and hasn't been revealed — user must
+    // explicitly tap through the NSFW gate first.
+    if (post.nsfw && !nsfwRevealed) return;
+    setLightbox({ items: imagesOnly, index: idx });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenLightboxIndex, post.post_id, nsfwRevealed]);
 
   const saveEdit = async () => {
     const next = (draft || "").trim();
@@ -124,8 +148,11 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
 
   return (
     <article
+      ref={articleRef}
       data-testid={`post-${post.post_id}`}
-      className="bg-zinc-950/60 light:bg-white/80 border border-zinc-900 rounded-3xl p-5 flex flex-col gap-4 fade-up"
+      className={`bg-zinc-950/60 light:bg-white/80 border rounded-3xl p-5 flex flex-col gap-4 fade-up transition-all duration-500 ${
+        highlight ? "border-[#FF5A00] ring-2 ring-[#FF5A00]/40 shadow-[0_0_30px_rgba(255,90,0,0.25)]" : "border-zinc-900"
+      }`}
     >
       <header className="flex items-center justify-between gap-3">
         <Link to={`/u/${post.author?.handle}`} className="flex items-center gap-3 min-w-0">

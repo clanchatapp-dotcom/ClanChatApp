@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import api, { fileUrl, formatApiError, uploadFile } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import PostCard from "../components/PostCard";
@@ -12,7 +12,16 @@ export default function Profile() {
   const { handle } = useParams();
   const { user: me, refresh } = useAuth();
   const nav = useNavigate();
+  const location = useLocation();
   const isMyProfile = !handle || handle === me?.handle;
+
+  // Deep-link state from Feed gallery / Activity notifications.
+  const openPostId = location.state?.openPostId || null;
+  const openMediaIndex = location.state?.openMediaIndex ?? null;
+  const openPostHasMedia = location.state?.openPostHasMedia || false;
+  const openComments = location.state?.openComments || false;
+  const [highlightId, setHighlightId] = useState(null);
+  const scrolledRef = useRef(false);
 
   const [data, setData] = useState(null); // { user, relation }
   const [tab, setTab] = useState("media");
@@ -146,6 +155,36 @@ export default function Profile() {
     api.get(`/posts/audio/${target.user_id}`).then(r => setAudio(r.data.posts)).catch(() => setAudio([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.user_id, tab]);
+
+  // Deep-link post handling: after posts load, switch to the right tab,
+  // scroll to the requested post, and briefly highlight it.
+  useEffect(() => {
+    if (!openPostId || scrolledRef.current) return;
+    if (posts.length === 0 && wall.length === 0 && audio.length === 0) return;
+    const found = posts.find(p => p.post_id === openPostId);
+    // Pick the correct tab so the post is actually rendered.
+    let wantedTab = tab;
+    if (found) {
+      if (found.is_audio_track) wantedTab = "audio";
+      else if (found.media && found.media.length > 0) wantedTab = "media";
+      else wantedTab = "wall";
+    } else if (openPostHasMedia) {
+      wantedTab = "media";
+    }
+    if (wantedTab !== tab) { setTab(wantedTab); return; } // wait for re-render
+    // Post is in the DOM now — scroll to it and light it up.
+    scrolledRef.current = true;
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-testid="post-${openPostId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        setHighlightId(openPostId);
+        setTimeout(() => setHighlightId(null), 2400);
+      }
+    });
+    // Clear the router state so a back/forward doesn't re-trigger.
+    try { window.history.replaceState({}, ""); } catch { /* ignore */ }
+  }, [openPostId, openPostHasMedia, posts, wall, audio, tab]);
 
   if (!data || !target) return <div className="p-10 text-zinc-500 text-sm">Loading…</div>;
 
@@ -323,14 +362,35 @@ export default function Profile() {
           {(() => {
             const mediaPosts = posts.filter(p => (p.media && p.media.length > 0) && !p.is_audio_track);
             if (mediaPosts.length === 0) return <div className="text-zinc-600 text-sm text-center py-8">No media posts yet.</div>;
-            return mediaPosts.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />);
+            return mediaPosts.map(p => (
+              <PostCard
+                key={p.post_id}
+                post={p}
+                onChange={reloadPosts}
+                showPin={isMyProfile}
+                currentUserId={me?.user_id}
+                autoOpenLightboxIndex={p.post_id === openPostId ? (openMediaIndex ?? 0) : null}
+                autoOpenComments={p.post_id === openPostId && openComments}
+                highlight={p.post_id === highlightId}
+              />
+            ));
           })()}
         </div>
       )}
       {tab === "audio" && (
         <div className="flex flex-col gap-3">
           {audio.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">No audio tracks.</div>}
-          {audio.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMyProfile} currentUserId={me?.user_id} />)}
+          {audio.map(p => (
+            <PostCard
+              key={p.post_id}
+              post={p}
+              onChange={reloadPosts}
+              showPin={isMyProfile}
+              currentUserId={me?.user_id}
+              autoOpenComments={p.post_id === openPostId && openComments}
+              highlight={p.post_id === highlightId}
+            />
+          ))}
         </div>
       )}
       {tab === "wall" && (
@@ -339,13 +399,14 @@ export default function Profile() {
           boards={boards}
           reload={() => api.get(`/wall/${target.user_id}`).then(r => setWall(r.data.posts))}
           reloadBoards={() => api.get(`/boards/by-user/${target.user_id}`).then(r => setBoards(r.data.boards))}
-          reloadPosts={reloadPosts} me={me} />
+          reloadPosts={reloadPosts} me={me}
+          openPostId={openPostId} openComments={openComments} highlightId={highlightId} />
       )}
     </div>
   );
 }
 
-function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoards, reloadPosts, me }) {
+function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoards, reloadPosts, me, openPostId = null, openComments = false, highlightId = null }) {
   const [text, setText] = useState("");
   const [boardsOpen, setBoardsOpen] = useState(false);
   const [creatingBoard, setCreatingBoard] = useState(false);
@@ -431,7 +492,17 @@ function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoard
       {textPosts.length > 0 && (
         <div className="flex flex-col gap-3">
           <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Words</div>
-          {textPosts.map(p => <PostCard key={p.post_id} post={p} onChange={reloadPosts} showPin={isMine} currentUserId={me?.user_id} />)}
+          {textPosts.map(p => (
+            <PostCard
+              key={p.post_id}
+              post={p}
+              onChange={reloadPosts}
+              showPin={isMine}
+              currentUserId={me?.user_id}
+              autoOpenComments={p.post_id === openPostId && openComments}
+              highlight={p.post_id === highlightId}
+            />
+          ))}
         </div>
       )}
 

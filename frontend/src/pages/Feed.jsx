@@ -75,7 +75,11 @@ export default function Feed() {
       ) : mode === "gallery" ? (
         <div className="grid grid-cols-2 gap-2">
           {filtered.map(p => p.media.map((m, i) => (
-            <Link key={`${p.post_id}-${i}`} to={`/u/${p.author?.handle}`}
+            <Link
+              key={`${p.post_id}-${i}`}
+              to={`/u/${p.author?.handle}`}
+              state={{ openPostId: p.post_id, openMediaIndex: i, openPostHasMedia: true }}
+              data-testid={`gallery-thumb-${p.post_id}-${i}`}
               className="aspect-square overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950 relative">
               {/\.(mp4|webm|mov)$/i.test(m) ? (
                 <video src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${m}`} className="w-full h-full object-cover" />

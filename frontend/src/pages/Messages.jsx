@@ -188,7 +188,7 @@ export function MessageThread() {
   if (!data) return <div className="p-10 text-zinc-500 text-sm">Loading…</div>;
 
   return (
-    <div className="px-5 pt-6 pb-40 flex flex-col min-h-screen">
+    <div className="px-5 pt-6 pb-48 flex flex-col min-h-screen">
       <header
         data-testid="dm-thread-header"
         className="sticky top-0 -mx-5 px-5 z-30 bg-black/95 backdrop-blur border-b border-zinc-900 pt-3 pb-3 mb-3 flex items-center gap-2"
@@ -343,8 +343,9 @@ export function MessageThread() {
 
       <form
         onSubmit={send}
-        className="fixed left-1/2 -translate-x-1/2 w-full max-w-lg px-5 z-[55]"
-        style={{ bottom: "calc(4rem + env(safe-area-inset-bottom, 0px))" }}
+        data-testid="dm-composer"
+        className="fixed left-0 right-0 mx-auto w-full max-w-lg px-3 z-[55]"
+        style={{ bottom: "calc(4.5rem + env(safe-area-inset-bottom, 0px))" }}
       >
         {/* Giphy picker floats above the composer; positioned absolute so
             it doesn't push the input off-screen. */}
@@ -399,7 +400,7 @@ export function MessageThread() {
           </div>
         )}
 
-        <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-900 rounded-full p-1.5">
+        <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-900 rounded-full p-2 shadow-[0_-6px_24px_rgba(0,0,0,0.6)]">
           <button
             type="button"
             data-testid="dm-attach"
@@ -411,10 +412,10 @@ export function MessageThread() {
               fileRef.current?.click();
             }}
             disabled={!data.can_send || pendingMedia.length >= 4 || busy}
-            className="p-2 text-zinc-400 hover:text-[#FF5A00] disabled:opacity-40"
+            className="p-2.5 text-zinc-400 hover:text-[#FF5A00] disabled:opacity-40"
             aria-label="Attach"
           >
-            <Paperclip size={16} />
+            <Paperclip size={18} />
           </button>
           <input
             ref={fileRef}
@@ -430,11 +431,11 @@ export function MessageThread() {
             data-testid="dm-stickers"
             onClick={() => setGiphyOpen(!giphyOpen)}
             disabled={!data.can_send || busy}
-            className={`p-2 disabled:opacity-40 ${giphyOpen ? "text-[#FF5A00]" : "text-zinc-500 hover:text-[#FF5A00]"}`}
+            className={`p-2.5 disabled:opacity-40 ${giphyOpen ? "text-[#FF5A00]" : "text-zinc-500 hover:text-[#FF5A00]"}`}
             aria-label="Stickers & GIFs"
             title="Stickers & GIFs"
           >
-            <Smile size={16} />
+            <Smile size={18} />
           </button>
           {data.can_send && (
             <VoiceRecorder
@@ -455,7 +456,7 @@ export function MessageThread() {
           )}
           <input
             data-testid="dm-input"
-            className="flex-1 bg-transparent px-1 py-1 outline-none text-sm"
+            className="flex-1 bg-transparent px-2 py-2.5 outline-none text-[15px] min-w-0"
             placeholder={data.can_send ? "Message…" : "DM not allowed"}
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -463,10 +464,10 @@ export function MessageThread() {
           />
           <button
             data-testid="dm-send"
-            className="bg-[#FF5A00] disabled:bg-zinc-800 text-black p-2 rounded-full"
+            className="bg-[#FF5A00] disabled:bg-zinc-800 text-black p-2.5 rounded-full transition-transform active:scale-95"
             disabled={!data.can_send || busy || (!text.trim() && pendingMedia.length === 0)}
           >
-            <Send size={16} />
+            <Send size={18} />
           </button>
         </div>
       </form>

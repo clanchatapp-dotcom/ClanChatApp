@@ -116,13 +116,25 @@ export default function Notifications() {
     // 2. Route to the referenced content.
     const ref = e.ref || {};
     const actor = e.actor;
+    const preview = e.post_preview || {};
+    const hasMedia = Array.isArray(preview.media) && preview.media.length > 0;
     switch (e.kind) {
       case "post_liked":
+        // My post — jump to /me, auto-scroll, brief highlight.
+        nav("/me", { state: { openPostId: ref.post_id, openPostHasMedia: hasMedia } });
+        break;
       case "post_commented":
+        // My post — jump to /me, scroll, and auto-open the comments drawer.
+        nav("/me", { state: { openPostId: ref.post_id, openComments: true, openPostHasMedia: hasMedia } });
+        break;
       case "post_tagged":
-        // No standalone post-detail page yet — send to the user's own
-        // profile Feed tab, that's where their liked/commented post lives.
-        nav("/me");
+        // Someone else tagged me in THEIR post — post preview lives on
+        // the actor's profile. Fall back to /me if we don't know them.
+        if (actor?.handle) {
+          nav(`/u/${actor.handle}`, { state: { openPostId: ref.post_id, openPostHasMedia: hasMedia } });
+        } else {
+          nav("/me", { state: { openPostId: ref.post_id, openPostHasMedia: hasMedia } });
+        }
         break;
       case "follow_request":
         // Stay on Activity — the pending-actions row above lets the user

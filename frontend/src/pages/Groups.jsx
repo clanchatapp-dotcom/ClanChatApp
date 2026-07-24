@@ -169,7 +169,7 @@ export function GroupChat() {
   if (!data) return <div className="p-10 text-zinc-500 text-sm">Loading…</div>;
 
   return (
-    <div className="px-5 pt-6 pb-32 flex flex-col min-h-screen">
+    <div className="px-5 pt-6 pb-48 flex flex-col min-h-screen">
       <header className="flex items-center justify-between mb-5">
         <button onClick={() => nav("/groups")} className="text-zinc-500 text-sm">← Groups</button>
         <button onClick={leave} data-testid="group-leave" className="text-zinc-500 text-xs hover:text-red-400">Leave silently</button>
@@ -186,12 +186,17 @@ export function GroupChat() {
         ))}
       </div>
 
-      <form onSubmit={send} className="fixed bottom-16 left-1/2 -translate-x-1/2 w-full max-w-lg px-5 pb-2">
-        <div className="flex gap-2 bg-zinc-950 border border-zinc-900 rounded-full p-1.5">
-          <input data-testid="group-input" className="flex-1 bg-transparent px-3 py-1 outline-none text-sm"
+      <form
+        onSubmit={send}
+        data-testid="group-composer"
+        className="fixed left-0 right-0 mx-auto w-full max-w-lg px-3 z-[55]"
+        style={{ bottom: "calc(4.5rem + env(safe-area-inset-bottom, 0px))" }}
+      >
+        <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-900 rounded-full p-2 shadow-[0_-6px_24px_rgba(0,0,0,0.6)]">
+          <input data-testid="group-input" className="flex-1 bg-transparent px-3 py-2.5 outline-none text-[15px] min-w-0"
             placeholder="Message…" value={text} onChange={e => setText(e.target.value)} />
-          <button data-testid="group-send" className="bg-[#FF5A00] text-black p-2 rounded-full" disabled={!text.trim()}>
-            <Send size={16} />
+          <button data-testid="group-send" className="bg-[#FF5A00] disabled:bg-zinc-800 text-black p-2.5 rounded-full transition-transform active:scale-95" disabled={!text.trim()}>
+            <Send size={18} />
           </button>
         </div>
       </form>
