@@ -369,7 +369,7 @@ export default function Profile() {
                 onChange={reloadPosts}
                 showPin={isMyProfile}
                 currentUserId={me?.user_id}
-                autoOpenLightboxIndex={p.post_id === openPostId ? (openMediaIndex ?? 0) : null}
+                autoOpenLightboxIndex={p.post_id === openPostId && openMediaIndex != null ? openMediaIndex : null}
                 autoOpenComments={p.post_id === openPostId && openComments}
                 highlight={p.post_id === highlightId}
               />

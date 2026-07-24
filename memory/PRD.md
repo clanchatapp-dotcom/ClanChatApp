@@ -71,6 +71,12 @@ Privacy-first social with three tiers (Public / Followers / Inner Circle), no al
 - `frontend/eslint.config.mjs` (ESLint 9 flat config) — real-bug rules only, noise off
 - `backend/pyproject.toml` (Ruff) — focused selection + explicit ignores for false positives
 
+### Iter 22 — Deep-link polish & Android back-button (Feb 2026)
+- Feed Gallery thumbs deep-link to profile with auto-scroll + auto-open Lightbox
+- Activity notifications (post_liked/post_commented/post_tagged) scroll to the referenced post, briefly highlight it, and auto-open Comments for `post_commented`
+- `useAndroidBackButton` now: any non-feed route → nav to /feed; on /feed → double-tap-within-2s to exit (sonner toast prompt)
+- Chat composer bar (DMs + Groups) centered, lowered to `calc(4.5rem + safe-area)`, bigger tap targets (`p-2` container, `py-2.5 text-[15px]` input, 18px icons)
+
 ## Backlog — Phase B (Mobile App)
 - Capacitor first build + `cap add ios` / `cap add android` (config ready)
 - Auth migration: cookies → bearer tokens in secure storage
@@ -80,11 +86,12 @@ Privacy-first social with three tiers (Public / Followers / Inner Circle), no al
 
 ## Backlog — Phase 2 (P1/P2)
 - Hive Moderation AI scan (replace manual is_ai)
-- Yoti / Veriff age verification
-- WebRTC audio/video calls + screenshot protection in DMs
+- Yoti / Veriff age verification (deferred — after ClanChat Ltd registration)
 - Verified accounts + shield colours
 - E2E encryption (Signal Protocol)
-- Creator monetization (premium subs, paid IC, tips)
+- Creator monetization: **Stripe + Xsolla + ЮMoney** — tips, paid IC, premium subs
+- Live streaming (RTMP/HLS + LiveKit)
+- iOS Capacitor build
 
 ## Refactor backlog
 - Split `backend/server.py` (~2100 lines) into routers
