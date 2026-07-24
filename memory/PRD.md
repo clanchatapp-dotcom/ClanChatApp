@@ -93,10 +93,15 @@ Privacy-first social with three tiers (Public / Followers / Inner Circle), no al
 ## Backlog — Phase 2 (P1/P2)
 - Hive Moderation AI scan (replace manual is_ai)
 - Yoti / Veriff age verification (deferred — after ClanChat Ltd registration)
-- Verified accounts + shield colours
-- E2E encryption (Signal Protocol)
-- Creator monetization: **Stripe + Xsolla + ЮMoney** — tips, paid IC, premium subs
-- Live streaming (RTMP/HLS + LiveKit)
+- Verified accounts + shield colours ("Shields can wait" — per user)
+- E2E encryption (Signal Protocol — replaces interim AES-256-GCM)
+- 🆕 **Creator monetisation** — Stripe (UK/EU/US/AU/RoW) + Xsolla (in-app/gaming) + ЮMoney (Russia/CIS)
+  - **10% cut on Tier 3 subscriptions** (creator keeps 90%)
+  - **7.5% cut on tips** (creator keeps 92.5%)
+  - **7.5% cut on native-store merch sales** (creator keeps 92.5%)
+  - 7.5% on digital downloads / live tips / super comments
+  - 100% ClanChat on Premium (platform sub · no creator involved)
+- 🆕 **Live streaming** (promoted P3 → P2) — RTMP/HLS + LiveKit reuse
 - iOS Capacitor build
 
 ## Refactor backlog
@@ -105,3 +110,11 @@ Privacy-first social with three tiers (Public / Followers / Inner Circle), no al
 
 ## Test Credentials
 See /app/memory/test_credentials.md
+
+## Full Product Specification
+Canonical spec — **`/app/memory/SPEC_v4.md`** (v4.0 · Feb 2026)
+- Full v3 spec text preserved with per-section implementation status markers (✅ built · 🧩 partial · 🕒 planned · 🆕 new-in-v4)
+- Monetisation rates updated: **10% subs · 7.5% tips · 7.5% merch native store**
+- Payment rails documented: **Stripe · Xsolla · ЮMoney**
+- Live streaming promoted from Phase 3 → Phase 2
+- New "§23 What's Been Built" section captures every feature shipped beyond the v3 spec
