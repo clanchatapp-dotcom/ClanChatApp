@@ -71,6 +71,12 @@ Privacy-first social with three tiers (Public / Followers / Inner Circle), no al
 - `frontend/eslint.config.mjs` (ESLint 9 flat config) — real-bug rules only, noise off
 - `backend/pyproject.toml` (Ruff) — focused selection + explicit ignores for false positives
 
+### Iter 23 — Gallery overhaul + Feed scope (Feb 2026)
+- Gallery thumbs now open the fullscreen Lightbox directly (no more forced profile jump)
+- Lightbox shows an author footer (`#handle` + name + "Go to profile" pill) beneath each image
+- Feed header now has a "General ▾ / Followers" scope selector (default: General)
+- Backend `/posts/feed?scope=followers` returns posts only from people the viewer follows / IC-owners / self (tier privacy still enforced)
+
 ### Iter 22 — Deep-link polish & Android back-button (Feb 2026)
 - Feed Gallery thumbs deep-link to profile with auto-scroll + auto-open Lightbox
 - Activity notifications (post_liked/post_commented/post_tagged) scroll to the referenced post, briefly highlight it, and auto-open Comments for `post_commented`

@@ -1802,7 +1802,17 @@ async def posts_tagged_in(user=Depends(get_current_user)):
 
 
 @api.get("/posts/feed")
-async def get_feed(user=Depends(get_current_user), limit: int = 50, before: Optional[str] = None):
+async def get_feed(user=Depends(get_current_user), limit: int = 50, before: Optional[str] = None,
+                   scope: str = "general"):
+    """Chronological feed.
+
+    scope:
+      - "general" (default): everything the viewer is allowed to see,
+        respecting the 3-tier privacy rules and minor/NSFW filters.
+      - "followers": only posts authored by people the viewer follows,
+        by owners of Inner Circles the viewer is a member of, and by the
+        viewer themselves. Tier visibility still applies.
+    """
     # following ids
     following = []
     async for f in db.follows.find({"follower_id": user["user_id"], "status": "active"}, {"_id": 0}):
@@ -1832,14 +1842,31 @@ async def get_feed(user=Depends(get_current_user), limit: int = 50, before: Opti
     if before:
         query["created_at"] = {"$lt": before}
 
+    # "followers" scope restricts author_id to people the viewer has an
+    # explicit connection with (follow / IC member / self). Applied AFTER
+    # the tier or_clauses so tier privacy still holds.
+    if scope == "followers":
+        allowed_authors = list({*following, *inner_owners, user["user_id"]})
+        if not allowed_authors:
+            return {"posts": []}
+        existing_nin = query.get("author_id", {}).get("$nin", []) if isinstance(query.get("author_id"), dict) else []
+        query["author_id"] = {"$in": allowed_authors}
+        if existing_nin:
+            query["author_id"]["$nin"] = existing_nin
+
     # Bug 1 fix: Minors are completely invisible on the global/public feed
     # to non-minor, non-admin viewers. Hardcoded — no override. Their posts
     # only surface to other minors or to admins acting on reports.
     if not is_minor(user) and user.get("role") != "admin":
         minor_ids = [u["user_id"] async for u in db.users.find({"is_minor": True}, {"_id": 0, "user_id": 1})]
         if minor_ids:
-            existing_nin = query.get("author_id", {}).get("$nin", []) if isinstance(query.get("author_id"), dict) else []
-            query["author_id"] = {"$nin": list(set(existing_nin + minor_ids))}
+            author_cond = query.get("author_id")
+            if isinstance(author_cond, dict):
+                existing_nin = author_cond.get("$nin", [])
+                author_cond["$nin"] = list(set(existing_nin + minor_ids))
+                # preserve $in if set by scope=followers
+            else:
+                query["author_id"] = {"$nin": list(set(minor_ids))}
 
     # Quarantined content is invisible to everyone (admin still sees via /admin/csam/queue).
     # This is the same rule enforced in can_view_post — applied at the Mongo layer here

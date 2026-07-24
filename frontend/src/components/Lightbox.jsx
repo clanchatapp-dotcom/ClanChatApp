@@ -1,27 +1,21 @@
 import { useEffect, useRef, useState } from "react";
-import { X, ChevronLeft, ChevronRight, ZoomIn } from "lucide-react";
+import { Link } from "react-router-dom";
+import { X, ChevronLeft, ChevronRight, ZoomIn, ArrowRight } from "lucide-react";
 import { fileUrl } from "../lib/api";
 
 /**
  * Full-screen image viewer with pinch-to-zoom support.
  *
- * Design notes
- * ------------
- * Pinch-zoom is done with `touch-action: pinch-zoom` on the image + a
- * simple two-pointer scale tracker. Native browser gestures do the real
- * work — we just track transform state so the reset button can restore
- * the identity transform between images.
- *
- * Keyboard: Esc closes, Left/Right navigates, `+` / `-` zoom on desktop.
- *
  * Props:
- *   items:  Array of media path strings (may include a mix of images,
- *           videos, audio; we render only images in this viewer — videos
- *           and audio still render inline).
- *   index:  Zero-based starting index inside `items`.
+ *   items:  Array of image path strings.
+ *   index:  Zero-based starting index.
+ *   meta:   Optional array (same length as items) of
+ *           `{ handle, avatar_path, display_name }` for the author of each
+ *           image. When set, a footer with a "Go to #handle's profile"
+ *           button renders beneath the image.
  *   onClose(): required.
  */
-export default function Lightbox({ items = [], index = 0, onClose }) {
+export default function Lightbox({ items = [], index = 0, meta = null, onClose }) {
   const [i, setI] = useState(Math.max(0, Math.min(index, items.length - 1)));
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
@@ -145,6 +139,40 @@ export default function Lightbox({ items = [], index = 0, onClose }) {
       {items.length > 1 && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[11px] text-zinc-400 bg-black/60 border border-zinc-800 rounded-full px-3 py-1">
           {i + 1} / {items.length}
+        </div>
+      )}
+      {/* Author footer — appears when the caller passes per-item meta.
+          Anchored to the bottom edge with a safe-area buffer so it clears
+          the phone home-indicator. Clicking "Go to profile" closes the
+          lightbox and navigates. */}
+      {meta && meta[i] && (
+        <div
+          data-testid="lightbox-author-footer"
+          className="absolute left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/70 backdrop-blur-md border border-zinc-800 rounded-2xl px-3 py-2 max-w-[92vw]"
+          style={{ bottom: `calc(3.5rem + env(safe-area-inset-bottom, 0px))` }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="w-9 h-9 rounded-full bg-zinc-800 overflow-hidden flex items-center justify-center shrink-0">
+            {meta[i].avatar_path ? (
+              <img src={fileUrl(meta[i].avatar_path)} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <span className="font-heading text-zinc-300 text-sm">{(meta[i].handle?.[0] || "?").toUpperCase()}</span>
+            )}
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-white truncate">#{meta[i].handle}</div>
+            {meta[i].display_name && (
+              <div className="text-[11px] text-zinc-400 truncate">{meta[i].display_name}</div>
+            )}
+          </div>
+          <Link
+            to={`/u/${meta[i].handle}`}
+            onClick={() => onClose?.()}
+            data-testid="lightbox-go-to-profile"
+            className="ml-1 inline-flex items-center gap-1 bg-[#FF5A00] hover:bg-[#E65000] text-black text-xs uppercase tracking-[0.15em] font-medium rounded-full px-3 py-1.5 shrink-0"
+          >
+            Go to profile <ArrowRight size={12} />
+          </Link>
         </div>
       )}
     </div>
