@@ -2349,6 +2349,285 @@ async def edit_wall_reply(reply_id: str, payload: WallReplyIn, user=Depends(get_
     return {"ok": True}
 
 
+# ==================================================================
+#  Emoji reactions (generic — DMs / comments / wall notes /
+#  wall replies / board messages)
+# ==================================================================
+REACTION_EMOJIS = ["❤️", "😂", "👍", "😮", "😢", "🔥"]
+REACTION_KINDS = {"dm", "comment", "wall_post", "wall_reply", "board_message"}
+
+
+async def _reaction_check_access(kind: str, target_id: str, viewer: dict) -> dict:
+    """Verify the viewer is allowed to see the target being reacted to.
+
+    Returns the target document (for downstream hooks like activity
+    events). Raises 404 if missing, 403 if not allowed to react.
+
+    We keep the checks light — full tier / block enforcement is done at
+    the read endpoints. Reactions inherit the read permission by proxy
+    (if you can't fetch it, you can't get the id in the first place).
+    """
+    if kind == "dm":
+        doc = await db.dms.find_one({"message_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "DM not found")
+        if viewer["user_id"] not in (doc["from_id"], doc["to_id"]):
+            raise HTTPException(403, "Not a participant")
+        return doc
+    if kind == "comment":
+        doc = await db.comments.find_one({"comment_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Comment not found")
+        return doc
+    if kind == "wall_post":
+        doc = await db.wall_posts.find_one({"wall_post_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Wall note not found")
+        return doc
+    if kind == "wall_reply":
+        doc = await db.wall_replies.find_one({"reply_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Wall reply not found")
+        return doc
+    if kind == "board_message":
+        doc = await db.board_messages.find_one({"message_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Board message not found")
+        return doc
+    raise HTTPException(400, "Unknown reaction kind")
+
+
+class ReactionIn(BaseModel):
+    kind: str
+    target_id: str
+    emoji: str
+
+
+@api.post("/reactions")
+async def add_reaction(payload: ReactionIn, user=Depends(get_current_user)):
+    """Toggle a reaction: same emoji again removes it; a different
+    emoji replaces the existing one (one reaction per user per target)."""
+    if payload.kind not in REACTION_KINDS:
+        raise HTTPException(400, "Unsupported reaction kind")
+    if payload.emoji not in REACTION_EMOJIS:
+        raise HTTPException(400, "Emoji not allowed")
+    await _reaction_check_access(payload.kind, payload.target_id, user)
+    existing = await db.reactions.find_one({
+        "kind": payload.kind,
+        "target_id": payload.target_id,
+        "user_id": user["user_id"],
+    }, {"_id": 0})
+    if existing and existing.get("emoji") == payload.emoji:
+        # toggle off
+        await db.reactions.delete_one({
+            "kind": payload.kind, "target_id": payload.target_id, "user_id": user["user_id"],
+        })
+        return {"ok": True, "removed": True}
+    await db.reactions.update_one(
+        {"kind": payload.kind, "target_id": payload.target_id, "user_id": user["user_id"]},
+        {"$set": {
+            "kind": payload.kind, "target_id": payload.target_id,
+            "user_id": user["user_id"], "emoji": payload.emoji,
+            "created_at": now_iso(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "emoji": payload.emoji}
+
+
+@api.delete("/reactions")
+async def remove_reaction(kind: str, target_id: str, user=Depends(get_current_user)):
+    if kind not in REACTION_KINDS:
+        raise HTTPException(400, "Unsupported reaction kind")
+    await db.reactions.delete_one({
+        "kind": kind, "target_id": target_id, "user_id": user["user_id"],
+    })
+    return {"ok": True}
+
+
+@api.get("/reactions/{kind}/{target_id}")
+async def get_reactions(kind: str, target_id: str, user=Depends(get_current_user)):
+    """Return `{ counts: {emoji: n}, mine: emoji|null }` — cheap to
+    fetch alongside message lists."""
+    if kind not in REACTION_KINDS:
+        raise HTTPException(400, "Unsupported reaction kind")
+    counts = {}
+    mine = None
+    async for r in db.reactions.find({"kind": kind, "target_id": target_id}, {"_id": 0}):
+        e = r.get("emoji")
+        if e not in REACTION_EMOJIS:
+            continue
+        counts[e] = counts.get(e, 0) + 1
+        if r["user_id"] == user["user_id"]:
+            mine = e
+    return {"counts": counts, "mine": mine}
+
+
+@api.post("/reactions/bulk")
+async def get_reactions_bulk(payload: dict, user=Depends(get_current_user)):
+    """Batch fetch: `{ kind, ids: [...] }` → `{ id: {counts, mine} }`.
+
+    Used by messages/comments lists to avoid N+1 queries when hydrating
+    reaction pills on many items.
+    """
+    kind = payload.get("kind")
+    ids = payload.get("ids") or []
+    if kind not in REACTION_KINDS:
+        raise HTTPException(400, "Unsupported reaction kind")
+    if not isinstance(ids, list) or not ids:
+        return {}
+    ids = [str(x) for x in ids][:500]
+    out = {i: {"counts": {}, "mine": None} for i in ids}
+    async for r in db.reactions.find({"kind": kind, "target_id": {"$in": ids}}, {"_id": 0}):
+        tid = r["target_id"]
+        emoji = r.get("emoji")
+        if tid not in out or emoji not in REACTION_EMOJIS:
+            continue
+        out[tid]["counts"][emoji] = out[tid]["counts"].get(emoji, 0) + 1
+        if r["user_id"] == user["user_id"]:
+            out[tid]["mine"] = emoji
+    return out
+
+
+# ==================================================================
+#  My Comments — unified history of everything the viewer has written
+#  as a reply / comment (post comments + wall replies + board messages)
+# ==================================================================
+@api.get("/me/comments")
+async def my_comments(user=Depends(get_current_user), limit: int = 100):
+    """Reverse-chronological feed of every comment / reply / board
+    message the viewer has written. Deleted parents are filtered out.
+    """
+    limit = max(1, min(500, limit))
+    items = []
+
+    # 1) Post comments
+    async for c in db.comments.find(
+        {"author_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).limit(limit):
+        post = await db.posts.find_one({"post_id": c["post_id"]}, {"_id": 0})
+        if not post:
+            continue
+        pauthor = await db.users.find_one({"user_id": post["author_id"]}, {"_id": 0})
+        items.append({
+            "kind": "comment",
+            "id": c["comment_id"],
+            "content": c.get("content") or "",
+            "created_at": c["created_at"],
+            "edited_at": c.get("edited_at"),
+            "target": {
+                "post_id": post["post_id"],
+                "author_handle": (pauthor or {}).get("handle"),
+                "author_user_id": post["author_id"],
+                "excerpt": (post.get("content") or "")[:120],
+            },
+        })
+
+    # 2) Wall replies
+    async for r in db.wall_replies.find(
+        {"author_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).limit(limit):
+        w = await db.wall_posts.find_one({"wall_post_id": r["wall_post_id"]}, {"_id": 0})
+        if not w:
+            continue
+        owner = await db.users.find_one({"user_id": w["owner_id"]}, {"_id": 0})
+        items.append({
+            "kind": "wall_reply",
+            "id": r["reply_id"],
+            "content": r.get("content") or "",
+            "created_at": r["created_at"],
+            "edited_at": r.get("edited_at"),
+            "target": {
+                "wall_post_id": w["wall_post_id"],
+                "owner_handle": (owner or {}).get("handle"),
+                "owner_user_id": w["owner_id"],
+                "excerpt": (w.get("content") or "")[:120],
+            },
+        })
+
+    # 3) Board messages
+    async for m in db.board_messages.find(
+        {"author_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).limit(limit):
+        board = await db.boards.find_one({"board_id": m["board_id"]}, {"_id": 0})
+        if not board:
+            continue
+        items.append({
+            "kind": "board_message",
+            "id": m["message_id"],
+            "content": m.get("content") or "",
+            "created_at": m["created_at"],
+            "target": {
+                "board_id": board["board_id"],
+                "board_title": board.get("title") or "Untitled board",
+                "owner_user_id": board.get("owner_id"),
+            },
+        })
+
+    # Sort merged list newest first, respecting the caller's limit.
+    items.sort(key=lambda x: x["created_at"], reverse=True)
+    return {"items": items[:limit], "total": len(items)}
+
+
+# ==================================================================
+#  Pin threads (DMs + groups)  —  max 3 total per user
+# ==================================================================
+MAX_PINNED_THREADS = 3
+
+
+class PinThreadIn(BaseModel):
+    kind: str  # "dm" | "group"
+    target_id: str  # other user_id (DM) or group_id (group)
+
+
+def _pinned_threads(user: dict) -> list[dict]:
+    """Return the user's pinned-threads list (always a list)."""
+    pinned = (user.get("settings") or {}).get("pinned_threads") or []
+    return [p for p in pinned if isinstance(p, dict) and p.get("kind") and p.get("target_id")]
+
+
+@api.post("/messages/pin")
+async def pin_thread(payload: PinThreadIn, user=Depends(get_current_user)):
+    if payload.kind not in ("dm", "group"):
+        raise HTTPException(400, "Kind must be 'dm' or 'group'")
+    pinned = _pinned_threads(user)
+    # Already pinned? no-op.
+    if any(p["kind"] == payload.kind and p["target_id"] == payload.target_id for p in pinned):
+        return {"ok": True, "pinned": pinned}
+    if len(pinned) >= MAX_PINNED_THREADS:
+        raise HTTPException(400, f"Max {MAX_PINNED_THREADS} pinned threads. Unpin one first.")
+    pinned.append({
+        "kind": payload.kind,
+        "target_id": payload.target_id,
+        "pinned_at": now_iso(),
+    })
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"settings.pinned_threads": pinned}},
+    )
+    return {"ok": True, "pinned": pinned}
+
+
+@api.delete("/messages/pin")
+async def unpin_thread(kind: str, target_id: str, user=Depends(get_current_user)):
+    pinned = [
+        p for p in _pinned_threads(user)
+        if not (p["kind"] == kind and p["target_id"] == target_id)
+    ]
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"settings.pinned_threads": pinned}},
+    )
+    return {"ok": True, "pinned": pinned}
+
+
+@api.get("/messages/pinned")
+async def get_pinned_threads(user=Depends(get_current_user)):
+    """Return the raw pinned list — the DM/group list endpoints already
+    include a `pinned` boolean, this exists mainly for the settings UI."""
+    return {"pinned": _pinned_threads(user)}
+
+
 # ------------------------------------------------------------------
 # Boards
 # ------------------------------------------------------------------
@@ -2529,6 +2808,11 @@ async def list_threads(user=Depends(get_current_user)):
         }},
     ]
     cursor = db.dms.aggregate(pipeline)
+    # Load the pinned map once; keys are the other participant's user_id.
+    pin_map = {}
+    for p in _pinned_threads(user):
+        if p["kind"] == "dm":
+            pin_map[p["target_id"]] = p.get("pinned_at")
     threads = []
     self_thread = None
     async for t in cursor:
@@ -2538,6 +2822,8 @@ async def list_threads(user=Depends(get_current_user)):
             self_thread = {
                 "with": {**public_user(user), "is_self": True, "display_name": "Me, myself and I"},
                 "last": hydrate_dm({k: v for k, v in t["last_message"].items() if k != "_id"}),
+                "pinned": False,
+                "pinned_at": None,
             }
             continue
         other = await db.users.find_one({"user_id": other_id}, {"_id": 0})
@@ -2546,12 +2832,21 @@ async def list_threads(user=Depends(get_current_user)):
         threads.append({
             "with": public_user(other),
             "last": hydrate_dm({k: v for k, v in t["last_message"].items() if k != "_id"}),
+            "pinned": other_id in pin_map,
+            "pinned_at": pin_map.get(other_id),
         })
+    # Sort: pinned first (newest pin at top), then unpinned by recency
+    # (already sorted by aggregate).
+    threads.sort(
+        key=lambda t: (0 if t["pinned"] else 1, -(int(datetime.fromisoformat(t["pinned_at"].replace("Z", "+00:00")).timestamp()) if t["pinned_at"] else 0)),
+    )
     # Always surface the self thread, even if empty.
     if self_thread is None:
         self_thread = {
             "with": {**public_user(user), "is_self": True, "display_name": "Me, myself and I"},
             "last": None,
+            "pinned": False,
+            "pinned_at": None,
         }
     return {"threads": [self_thread, *threads]}
 
@@ -2736,9 +3031,20 @@ async def list_my_groups(user=Depends(get_current_user)):
     cursor = db.groups.find({
         "members": {"$elemMatch": {"user_id": user["user_id"], "status": {"$in": ["accepted", "pending"]}}}
     }, {"_id": 0}).sort("created_at", -1)
+    pin_map = {}
+    for p in _pinned_threads(user):
+        if p["kind"] == "group":
+            pin_map[p["target_id"]] = p.get("pinned_at")
     out = []
     async for g in cursor:
-        out.append(serialize_group(g, user["user_id"]))
+        row = serialize_group(g, user["user_id"])
+        row["pinned"] = g.get("group_id") in pin_map
+        row["pinned_at"] = pin_map.get(g.get("group_id"))
+        out.append(row)
+    # Pinned groups float to the top (newest pin first), rest keep recency.
+    out.sort(
+        key=lambda x: (0 if x.get("pinned") else 1, -(int(datetime.fromisoformat(x["pinned_at"].replace("Z", "+00:00")).timestamp()) if x.get("pinned_at") else 0)),
+    )
     return {"groups": out}
 
 

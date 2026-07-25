@@ -27,6 +27,7 @@ import TagApprovals from "./pages/TagApprovals";
 import MyConnections from "./pages/MyConnections";
 import Connections from "./pages/Connections";
 import MyReports from "./pages/MyReports";
+import MyComments from "./pages/MyComments";
 import Install from "./pages/Install";
 import { Toaster } from "sonner";
 
@@ -60,6 +61,7 @@ function AppRouter() {
         <Route path="/edit-profile" element={<Protected><EditProfile /></Protected>} />
         <Route path="/settings" element={<Protected><Settings /></Protected>} />
         <Route path="/notifications" element={<Protected><Notifications /></Protected>} />
+        <Route path="/me/comments" element={<Protected><MyComments /></Protected>} />
         <Route path="/inner" element={<Protected><InnerCircle /></Protected>} />
         <Route path="/groups" element={<Protected><Groups /></Protected>} />
         <Route path="/g/:groupId" element={<Protected><GroupChat /></Protected>} />

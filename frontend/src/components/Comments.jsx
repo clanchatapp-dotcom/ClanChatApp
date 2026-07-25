@@ -3,6 +3,7 @@ import api, { fileUrl, formatApiError } from "../lib/api";
 import { Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "react-router-dom";
+import ReactionsBar from "./ReactionsBar";
 
 function timeAgo(iso) {
   const d = new Date(iso);
@@ -77,6 +78,7 @@ export default function Comments({ post, currentUserId, onChange }) {
               <span className="mx-1">·</span>{timeAgo(c.created_at)}
             </div>
             <div className="text-sm whitespace-pre-wrap break-words">{c.content}</div>
+            <ReactionsBar kind="comment" targetId={c.comment_id} />
           </div>
           {(c.author?.user_id === currentUserId || post.author?.user_id === currentUserId) && (
             <button onClick={() => remove(c.comment_id)} data-testid={`del-comment-${c.comment_id}`}

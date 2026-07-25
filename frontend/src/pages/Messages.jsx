@@ -1,11 +1,12 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import api, { fileUrl, formatApiError, uploadFile } from "../lib/api";
-import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smile, Trash2 } from "lucide-react";
+import { Send, Paperclip, X, Search, ShieldAlert, ShieldCheck, Phone, Video, Smile, Trash2, Pin, PinOff } from "lucide-react";
 import { toast } from "sonner";
 import useMediaPermission from "../hooks/useMediaPermission";
 import GiphyPicker from "../components/GiphyPicker";
 import VoiceRecorder from "../components/VoiceRecorder";
+import ReactionsBar from "../components/ReactionsBar";
 
 // Native screenshot-block bridge. On the Android Capacitor APK we set
 // FLAG_SECURE on the window while a "no screenshots" thread is open. On
@@ -35,9 +36,30 @@ async function setNativeScreenshotBlock(block) {
 
 export function Messages() {
   const [threads, setThreads] = useState([]);
-  useEffect(() => {
-    api.get("/dms/threads").then(r => setThreads(r.data.threads)).catch(() => {});
-  }, []);
+  const load = () => api.get("/dms/threads").then(r => setThreads(r.data.threads)).catch(() => {});
+  useEffect(() => { load(); }, []);
+
+  const pinnedCount = threads.filter(t => t.pinned).length;
+
+  const togglePin = async (e, t) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      if (t.pinned) {
+        await api.delete("/messages/pin", { params: { kind: "dm", target_id: t.with.user_id } });
+      } else {
+        if (pinnedCount >= 3) {
+          toast.error("Max 3 pinned threads. Unpin one first.");
+          return;
+        }
+        await api.post("/messages/pin", { kind: "dm", target_id: t.with.user_id });
+      }
+      load();
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || "Could not update pin");
+    }
+  };
+
   return (
     <div className="px-5 pt-6">
       <div className="flex items-center justify-between mb-5">
@@ -51,8 +73,8 @@ export function Messages() {
           return (
             <Link to={`/m/${t.with.user_id}`} key={t.with.user_id}
               data-testid={isSelf ? "thread-self" : `thread-${t.with.handle}`}
-              className={`flex items-center gap-3 p-3 rounded-2xl hover:bg-zinc-950 transition ${
-                isSelf ? "border border-[#FF5A00]/20 bg-[#FF5A00]/[0.03]" : ""
+              className={`group flex items-center gap-3 p-3 rounded-2xl hover:bg-zinc-950 transition ${
+                isSelf ? "border border-[#FF5A00]/20 bg-[#FF5A00]/[0.03]" : t.pinned ? "border border-zinc-800 bg-zinc-950/40" : ""
               }`}>
               <div className={`w-12 h-12 rounded-full overflow-hidden flex items-center justify-center shrink-0 ${
                 isSelf ? "bg-gradient-to-br from-[#FF5A00] to-[#A00B00]" : "bg-zinc-800"
@@ -67,6 +89,7 @@ export function Messages() {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium flex items-center gap-2">
+                  {t.pinned && !isSelf && <Pin size={11} className="text-[#FF5A00]" />}
                   {isSelf ? "Me, myself and I" : `#${t.with.handle}`}
                   {isSelf && <span className="text-[9px] uppercase tracking-[0.25em] text-[#FF5A00]">Saved</span>}
                 </div>
@@ -74,6 +97,19 @@ export function Messages() {
                   {t.last ? t.last.content : (isSelf ? "Notes to self · photos · audio — all in one place." : "")}
                 </div>
               </div>
+              {!isSelf && (
+                <button
+                  type="button"
+                  data-testid={`thread-pin-${t.with.handle}`}
+                  onClick={(e) => togglePin(e, t)}
+                  className={`p-2 rounded-full transition ${
+                    t.pinned ? "text-[#FF5A00] hover:text-white" : "text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                  }`}
+                  aria-label={t.pinned ? "Unpin conversation" : "Pin conversation"}
+                >
+                  {t.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                </button>
+              )}
             </Link>
           );
         })}
@@ -308,6 +344,15 @@ export function MessageThread() {
               {m.content && (
                 <div className="text-sm whitespace-pre-wrap break-words">{m.content}</div>
               )}
+              {/* Reactions — same bar for outgoing and incoming; positioned
+                  outside the tap-to-confirm-delete flow so tapping a heart
+                  never accidentally arms delete. */}
+              <div
+                className={`${outgoing ? "text-black" : "text-white"}`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ReactionsBar kind="dm" targetId={m.message_id} compact />
+              </div>
               {outgoing && showConfirm && (
                 <div
                   className="absolute -top-8 right-0 flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-full px-1 py-0.5 shadow-lg z-10"

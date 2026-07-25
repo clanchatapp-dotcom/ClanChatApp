@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import api, { formatApiError, fileUrl } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { Users, Plus, X, Send } from "lucide-react";
+import { Users, Plus, X, Send, Pin, PinOff } from "lucide-react";
 import { useParams } from "react-router-dom";
 
 export function Groups() {
@@ -74,18 +74,51 @@ export function Groups() {
 
       {groups.length === 0 && <div className="text-zinc-600 text-sm text-center py-8">No groups yet.</div>}
       <div className="flex flex-col gap-2">
-        {groups.map(g => (
-          <Link to={`/g/${g.group_id}`} key={g.group_id} data-testid={`group-${g.group_id}`} className="border border-zinc-900 rounded-2xl p-3 hover:border-zinc-700 transition flex items-center gap-3">
+        {groups.map(g => {
+          const pinnedCount = groups.filter(x => x.pinned).length;
+          const togglePin = async (e) => {
+            e.preventDefault(); e.stopPropagation();
+            try {
+              if (g.pinned) {
+                await api.delete("/messages/pin", { params: { kind: "group", target_id: g.group_id } });
+              } else {
+                if (pinnedCount >= 3) { toast.error("Max 3 pinned threads. Unpin one first."); return; }
+                await api.post("/messages/pin", { kind: "group", target_id: g.group_id });
+              }
+              load();
+            } catch (err) {
+              toast.error(formatApiError(err.response?.data?.detail) || "Could not update pin");
+            }
+          };
+          return (
+          <Link to={`/g/${g.group_id}`} key={g.group_id} data-testid={`group-${g.group_id}`} className={`group border rounded-2xl p-3 hover:border-zinc-700 transition flex items-center gap-3 ${g.pinned ? "border-zinc-800 bg-zinc-950/40" : "border-zinc-900"}`}>
             <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center"><Users size={16} className="text-zinc-400" /></div>
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium">{g.name}</div>
+              <div className="text-sm font-medium flex items-center gap-2">
+                {g.pinned && <Pin size={11} className="text-[#FF5A00]" />}
+                {g.name}
+              </div>
               <div className="text-xs text-zinc-500">{g.member_count} member{g.member_count !== 1 ? "s" : ""} · {g.my_status === "pending" ? "Invite pending" : "Active"}</div>
             </div>
+            {g.my_status === "accepted" && (
+              <button
+                type="button"
+                data-testid={`group-pin-${g.group_id}`}
+                onClick={togglePin}
+                className={`p-2 rounded-full transition ${
+                  g.pinned ? "text-[#FF5A00] hover:text-white" : "text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                }`}
+                aria-label={g.pinned ? "Unpin group" : "Pin group"}
+              >
+                {g.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+              </button>
+            )}
             {g.my_status === "pending" && (
               <PendingButtons groupId={g.group_id} reload={load} />
             )}
           </Link>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

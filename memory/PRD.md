@@ -71,6 +71,16 @@ Privacy-first social with three tiers (Public / Followers / Inner Circle), no al
 - `frontend/eslint.config.mjs` (ESLint 9 flat config) — real-bug rules only, noise off
 - `backend/pyproject.toml` (Ruff) — focused selection + explicit ignores for false positives
 
+### Iter 25 — Comment history + emoji reactions + pinned threads (Feb 2026)
+- 🆕 **My Comments** page (`/me/comments`) — unified reverse-chrono feed of every post comment, wall reply, and board message the viewer has written · filter pills · grouped by day · "Go to post" deep-link
+- 🆕 **Emoji reactions** (❤️ 😂 👍 😮 😢 🔥) on **DMs · post comments · wall notes · wall replies · board messages**
+  - Generic `db.reactions` collection + `POST /reactions` / `DELETE /reactions` / `GET /reactions/{kind}/{id}` / `POST /reactions/bulk`
+  - Single reaction per user per target · same emoji toggles off · different emoji swaps
+- 🆕 **Pin up to 3 threads** — DMs + groups share one 3-pin limit
+  - `POST /messages/pin` · `DELETE /messages/pin` · `GET /messages/pinned`
+  - Pinned threads float to the top with a small pin icon
+  - Server enforces MAX 3 (returns 400 otherwise)
+
 ### Iter 23 — Gallery overhaul + Feed scope (Feb 2026)
 - Gallery thumbs now open the fullscreen Lightbox directly (no more forced profile jump)
 - Lightbox shows an author footer (`#handle` + name + "Go to profile" pill) beneath each image

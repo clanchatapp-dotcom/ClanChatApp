@@ -4,6 +4,7 @@ import api, { fileUrl, formatApiError, uploadFile } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import PostCard from "../components/PostCard";
 import WallReplies from "../components/WallReplies";
+import ReactionsBar from "../components/ReactionsBar";
 import { LinkIcon, ShoppingBag, MoreHorizontal, Settings as Cog, Camera, Pin, Layers, Flag, UserMinus, VolumeX, Copy, Ban, UserRoundX } from "lucide-react";
 import { toast } from "sonner";
 
@@ -517,6 +518,7 @@ function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoard
           <div key={w.wall_post_id} className="border border-zinc-900 rounded-2xl p-4 relative group">
             <div className="text-xs text-zinc-500 mb-1">#{w.author?.handle}</div>
             <div className="text-sm whitespace-pre-wrap">{w.content}</div>
+            <ReactionsBar kind="wall_post" targetId={w.wall_post_id} />
             {canDelete && (
               <button
                 data-testid={`wall-delete-${w.wall_post_id}`}
