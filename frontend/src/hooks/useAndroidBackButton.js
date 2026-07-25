@@ -1,62 +1,66 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
+import { App } from "@capacitor/app";
+import { Capacitor } from "@capacitor/core";
 
 /**
  * Android hardware back button handler for the Capacitor APK.
  *
- * Rules (per user request — never accidentally kill the app):
- *   1. Anywhere OFF the home feed → navigate to /feed (replace).
- *   2. On the home feed → require a second back-press within 2s to exit.
- *      Anything shorter surfaces a subtle toast so users can back-out
- *      of the app deliberately without a modal.
+ * Behaviour (per user request — never kick the user out of the app):
+ *   - Any screen except the home feed → navigate to `/feed`.
+ *   - On the home feed → minimise the app (send to Android home screen).
+ *     The app stays alive in the background exactly like every other
+ *     well-behaved Android app.
+ *   - The back button NEVER calls `App.exitApp()`. Only a swipe from
+ *     recents can actually kill the process.
  *
  * The handler is a no-op on web / iOS.
+ *
+ * NOTE: `@capacitor/app` must be installed as a dependency AND synced
+ * into the Android project (`npx cap sync android`) or `App.addListener`
+ * won't be registered, and Capacitor's DEFAULT back-button behaviour
+ * (exit-app) will fire instead. This bug bit us — the plugin was missing
+ * from package.json until iter24.
  */
-const HOME_PATHS = ["/", "/feed", "/login"];
+const HOME_PATHS = new Set(["/", "/feed", "/login"]);
 
 export default function useAndroidBackButton() {
   const nav = useNavigate();
   const location = useLocation();
-  // Persist the "arm exit" timestamp across re-registrations of the
-  // listener (the effect re-runs on every route change).
-  const lastPressRef = useRef(0);
 
   useEffect(() => {
-    const Cap = typeof window !== "undefined" ? window.Capacitor : null;
-    if (!Cap?.isNativePlatform?.()) return;
-    const CapApp = Cap?.Plugins?.App;
-    if (!CapApp?.addListener) return;
+    // Guard: only run on native Android/iOS shells.
+    if (!Capacitor?.isNativePlatform?.()) return;
 
-    let listenerHandle;
-    const isHome = () => HOME_PATHS.includes(location.pathname);
+    let handleRef;
+    let cancelled = false;
 
-    const attach = async () => {
-      listenerHandle = await CapApp.addListener("backButton", () => {
-        if (!isHome()) {
-          // Always land on the feed — cheaper than trying to unwind an
-          // unknown history stack and guarantees no accidental exit.
-          nav("/feed", { replace: true });
-          return;
-        }
-        // Home feed → double-tap-to-exit within 2 seconds.
-        const now = Date.now();
-        if (now - lastPressRef.current < 2000) {
-          CapApp.exitApp?.();
-          return;
-        }
-        lastPressRef.current = now;
-        try {
-          // Lightweight in-app toast; falls back silently if sonner
-          // isn't mounted for some reason.
-          import("sonner").then(({ toast }) => {
-            toast("Press back again to exit ClanChat", { duration: 1800 });
-          });
-        } catch { /* ignore */ }
-      });
-    };
-    attach();
+    (async () => {
+      try {
+        handleRef = await App.addListener("backButton", () => {
+          const path = location.pathname;
+          if (!HOME_PATHS.has(path)) {
+            // Anywhere off the feed → always land on the feed.
+            nav("/feed", { replace: true });
+            return;
+          }
+          // On the feed → minimise to Android home screen (background).
+          // Never calls exitApp — that's the whole point of this fix.
+          App.minimizeApp?.().catch(() => { /* older plugin versions may lack it */ });
+        });
+      } catch (e) {
+        // Log but don't crash the app if the plugin isn't available.
+        // eslint-disable-next-line no-console
+        console.warn("useAndroidBackButton: App plugin unavailable", e);
+      }
+    })();
+
     return () => {
-      try { listenerHandle?.remove?.(); } catch { /* ignore */ }
+      cancelled = true;
+      try { handleRef?.remove?.(); } catch { /* ignore */ }
+      // `cancelled` is referenced so lint doesn't complain about the
+      // dangling ref. Kept for future async cleanup if we add polling.
+      void cancelled;
     };
   }, [location.pathname, nav]);
 }
