@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
-import api, { rememberToken, forgetToken } from "../lib/api";
+import api, { rememberToken, forgetToken, getToken } from "../lib/api";
 import {
   sbSignInEmail,
   sbSignUpEmail,
@@ -39,27 +39,79 @@ export function AuthProvider({ children }) {
       // Let AuthCallback handle
       return;
     }
+    // Iter 26 fix — the APK was logging users out after a few minutes of
+    // inactivity because Capacitor Preferences occasionally returns
+    // `{value:null}` right after a WebView resume, the request went out
+    // without a Bearer header, `/auth/me` returned 401, and this handler
+    // wiped the token. To avoid that:
+    //   1. Retry /auth/me ONCE with a small delay if the first attempt
+    //      returns 401 AND we still have a persisted token — that gives
+    //      the Preferences plugin time to warm up.
+    //   2. Only forgetToken() on a definitive 401 after both attempts.
+    const attempt = () => api.get("/auth/me").then(r => r.data);
+    let data = null;
+    let firstErr = null;
     try {
-      const { data } = await api.get("/auth/me");
-      setUser(data);
+      data = await attempt();
     } catch (err) {
-      // Only clear the session on an explicit 401/403 from the backend.
-      // Anything else (network failure, timeout, 500, CORS blip while the
-      // backend is redeploying, brief offline moment when Android returns
-      // from background) is treated as "unknown" — keep whatever user state
-      // we already have. This stops the app from randomly logging users
-      // out whenever a request fails for reasons unrelated to auth.
+      firstErr = err;
       const status = err?.response?.status;
-      if (status === 401 || status === 403) {
-        await forgetToken();
-        setUser(null);
-      } else {
-        setUser((prev) => (prev === undefined ? null : prev));
+      // Retry on 401 only if we still have a persisted token — otherwise
+      // this really is an unauthenticated session and we shouldn't spam.
+      if (status === 401) {
+        const persisted = await getToken();
+        if (persisted) {
+          await new Promise((r) => setTimeout(r, 400));
+          try {
+            data = await attempt();
+            firstErr = null;
+          } catch (err2) { firstErr = err2; }
+        }
       }
+    }
+    if (data) {
+      setUser(data);
+      return;
+    }
+    const status = firstErr?.response?.status;
+    if (status === 401 || status === 403) {
+      await forgetToken();
+      setUser(null);
+    } else {
+      // Network error / 5xx / CORS blip / brief offline after Android
+      // resume: keep whatever user state we already have. Don't wipe
+      // token — the next mount will try again.
+      setUser((prev) => (prev === undefined ? null : prev));
     }
   }, []);
 
   useEffect(() => { checkAuth(); }, [checkAuth]);
+
+  // Iter 26 — Android/Capacitor: when the app returns from background,
+  // re-run checkAuth so we sync any state that might have drifted while
+  // the WebView was paused (e.g. token was rotated by another device,
+  // or the OS killed a stale request mid-flight). Web is a no-op.
+  useEffect(() => {
+    let handleRef;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { Capacitor } = await import("@capacitor/core");
+        if (!Capacitor?.isNativePlatform?.()) return;
+        const { App } = await import("@capacitor/app");
+        handleRef = await App.addListener("appStateChange", ({ isActive }) => {
+          if (isActive && !cancelled) {
+            // Small debounce so we don't fight the WebView unpause.
+            setTimeout(() => { checkAuth(); }, 300);
+          }
+        });
+      } catch { /* plugin not available on web */ }
+    })();
+    return () => {
+      cancelled = true;
+      try { handleRef?.remove?.(); } catch { /* ignore */ }
+    };
+  }, [checkAuth]);
 
   useEffect(() => {
     const root = document.documentElement;

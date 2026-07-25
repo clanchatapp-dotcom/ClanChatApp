@@ -183,8 +183,12 @@ def create_refresh_token(user_id: str) -> str:
 
 
 def set_auth_cookies(response: Response, access: str, refresh: str):
+    # Iter 26 — bump access cookie max_age to match the JWT lifetime (30d)
+    # so browser sessions don't silently expire cookies while the JWT is
+    # still valid. This matters for web; the Capacitor APK uses Bearer
+    # tokens exclusively so cookies are moot there.
     response.set_cookie("access_token", access, httponly=True, secure=True,
-                        samesite="none", max_age=60 * 60 * 24, path="/")
+                        samesite="none", max_age=60 * 60 * 24 * 30, path="/")
     response.set_cookie("refresh_token", refresh, httponly=True, secure=True,
                         samesite="none", max_age=60 * 60 * 24 * 7, path="/")
 
@@ -1059,7 +1063,7 @@ async def google_session(payload: GoogleSessionIn, response: Response):
     access_token = create_access_token(user["user_id"])
     refresh_token = create_refresh_token(user["user_id"])
     response.set_cookie("access_token", access_token, httponly=True, secure=True,
-                        samesite="none", max_age=60 * 60 * 24, path="/")
+                        samesite="none", max_age=60 * 60 * 24 * 30, path="/")
     response.set_cookie("refresh_token", refresh_token, httponly=True, secure=True,
                         samesite="none", max_age=60 * 60 * 24 * 7, path="/")
     return {"user": private_user(user), "new_user": new_user, "access_token": access_token}

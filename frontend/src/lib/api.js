@@ -15,12 +15,19 @@ const ACCESS_KEY = "clanchat_access_token";
 const isNative = () => { try { return Capacitor.isNativePlatform(); } catch { return false; } };
 
 export async function getToken() {
-  try {
-    if (isNative()) {
+  // Try Capacitor Preferences first on native. If the plugin bridge is still
+  // warming up right after a WebView cold-start / OS resume, `Preferences.get`
+  // resolves with `{value: null}` even though the token is in SharedPreferences.
+  // In that case we MUST still fall through to localStorage — otherwise the
+  // request goes out with no Bearer header, hits 401, and the AuthContext
+  // logs the user out. That was the "kicked out after a few minutes of
+  // inactivity" bug (iter 26).
+  if (isNative()) {
+    try {
       const { value } = await Preferences.get({ key: ACCESS_KEY });
-      return value || null;
-    }
-  } catch { /* fall through to localStorage */ }
+      if (value) return value;
+    } catch { /* fall through */ }
+  }
   try { return localStorage.getItem(ACCESS_KEY); } catch { return null; }
 }
 
@@ -48,9 +55,14 @@ const api = axios.create({
 let _tokenCache = null;
 let _tokenLoaded = false;
 async function primeTokenCache() {
-  if (_tokenLoaded) return;
-  _tokenCache = await getToken();
-  _tokenLoaded = true;
+  if (_tokenLoaded && _tokenCache) return;
+  const val = await getToken();
+  _tokenCache = val;
+  // Only mark loaded when we actually got a token. If storage was empty
+  // right now, allow the next request to try again — otherwise a single
+  // racy read after a WebView resume permanently poisons the cache for
+  // the rest of the session.
+  _tokenLoaded = !!val;
 }
 export async function rememberToken(token) {
   _tokenCache = token || null;
