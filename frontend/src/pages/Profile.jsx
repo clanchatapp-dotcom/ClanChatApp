@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import api, { fileUrl, formatApiError, uploadFile } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import PostCard from "../components/PostCard";
+import WallReplies from "../components/WallReplies";
 import { LinkIcon, ShoppingBag, MoreHorizontal, Settings as Cog, Camera, Pin, Layers, Flag, UserMinus, VolumeX, Copy, Ban, UserRoundX } from "lucide-react";
 import { toast } from "sonner";
 
@@ -534,6 +535,11 @@ function WallTab({ ownerId, isMine, wall, textPosts, boards, reload, reloadBoard
                 Delete
               </button>
             )}
+            <WallReplies
+              wallPostId={w.wall_post_id}
+              ownerId={ownerId}
+              currentUserId={me?.user_id}
+            />
           </div>
         );
       })}

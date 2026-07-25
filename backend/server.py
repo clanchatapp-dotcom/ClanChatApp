@@ -2203,6 +2203,153 @@ async def edit_wall_post(wall_post_id: str, payload: WallEditIn, user=Depends(ge
 
 
 # ------------------------------------------------------------------
+# Wall replies (threaded conversation under a wall note)
+# ------------------------------------------------------------------
+class WallReplyIn(BaseModel):
+    content: str
+
+
+async def _wall_reply_permission(owner: dict, viewer_id: str) -> None:
+    """Raise 403 if `viewer_id` cannot reply on `owner`'s wall.
+
+    Uses the same permission model as posting a primary wall note. The
+    wall owner can always reply on their own wall regardless of the
+    setting (they might be following up their own thoughts).
+    """
+    if owner["user_id"] == viewer_id:
+        return
+    perm = owner.get("settings", {}).get("wall_post_permission", "owner")
+    if perm == "owner":
+        raise HTTPException(403, "Wall replies are owner-only")
+    if perm == "followers":
+        if not await db.follows.find_one({
+            "follower_id": viewer_id, "followee_id": owner["user_id"], "status": "active"
+        }):
+            raise HTTPException(403, "Followers only")
+    if perm == "inner":
+        if not await db.inner_circle.find_one({
+            "owner_id": owner["user_id"], "member_id": viewer_id, "status": "active"
+        }):
+            raise HTTPException(403, "Inner circle only")
+
+
+@api.post("/wall/{wall_post_id}/replies")
+async def create_wall_reply(wall_post_id: str, payload: WallReplyIn, user=Depends(get_current_user)):
+    """Create a threaded reply under a wall note."""
+    w = await db.wall_posts.find_one({"wall_post_id": wall_post_id}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Wall note not found")
+    owner = await db.users.find_one({"user_id": w["owner_id"]}, {"_id": 0})
+    if not owner:
+        raise HTTPException(404, "Wall owner not found")
+    await _wall_reply_permission(owner, user["user_id"])
+    text = (payload.content or "").strip()[:1000]
+    if not text:
+        raise HTTPException(400, "Empty reply")
+    rid = f"wrep_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "reply_id": rid,
+        "wall_post_id": wall_post_id,
+        "owner_id": w["owner_id"],
+        "author_id": user["user_id"],
+        "content": text,
+        "created_at": now_iso(),
+    }
+    await db.wall_replies.insert_one(doc)
+    doc.pop("_id", None)
+    # Notify the wall-note author when someone else replies (but not the
+    # note author replying to their own note).
+    if w["author_id"] != user["user_id"]:
+        await emit_activity_event(
+            recipient_id=w["author_id"], kind="post_commented",
+            actor_id=user["user_id"], ref={"wall_post_id": wall_post_id, "reply_id": rid},
+            push_title=f"#{user.get('handle') or 'someone'} replied to your wall note",
+            push_body=text[:120],
+            push_data={"kind": "wall_reply", "wall_post_id": wall_post_id},
+        )
+    # Also nudge the wall owner if they're neither the reply author nor
+    # the note author (e.g. Alice writes on Bob's wall, Carol replies —
+    # Bob wants to know his wall has activity).
+    if w["owner_id"] not in (user["user_id"], w["author_id"]):
+        await emit_activity_event(
+            recipient_id=w["owner_id"], kind="post_commented",
+            actor_id=user["user_id"], ref={"wall_post_id": wall_post_id, "reply_id": rid},
+            push_title=f"#{user.get('handle') or 'someone'} replied on your wall",
+            push_body=text[:120],
+            push_data={"kind": "wall_reply", "wall_post_id": wall_post_id},
+        )
+    return {**doc, "author": public_user(user)}
+
+
+@api.get("/wall/{wall_post_id}/replies")
+async def list_wall_replies(wall_post_id: str, viewer=Depends(get_current_user)):
+    """List replies under a wall note, oldest first (chat-style)."""
+    w = await db.wall_posts.find_one({"wall_post_id": wall_post_id}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Wall note not found")
+    cursor = db.wall_replies.find(
+        {"wall_post_id": wall_post_id}, {"_id": 0}
+    ).sort("created_at", 1).limit(500)
+    out = []
+    async for r in cursor:
+        u = await db.users.find_one({"user_id": r["author_id"]}, {"_id": 0})
+        out.append({**r, "author": public_user(u) if u else None})
+    # `can_reply` tells the client whether to render the input field.
+    can_reply = True
+    try:
+        owner = await db.users.find_one({"user_id": w["owner_id"]}, {"_id": 0})
+        if owner:
+            await _wall_reply_permission(owner, viewer["user_id"])
+    except HTTPException:
+        can_reply = False
+    return {"replies": out, "can_reply": can_reply}
+
+
+@api.delete("/wall/replies/{reply_id}")
+async def delete_wall_reply(reply_id: str, user=Depends(get_current_user)):
+    """Delete a wall reply. Author OR wall owner OR admin can delete."""
+    r = await db.wall_replies.find_one({"reply_id": reply_id}, {"_id": 0})
+    if not r:
+        raise HTTPException(404, "Not found")
+    is_admin = user.get("role") == "admin"
+    if (r["author_id"] != user["user_id"]
+            and r["owner_id"] != user["user_id"]
+            and not is_admin):
+        raise HTTPException(403, "Not allowed")
+    await db.wall_replies.delete_one({"reply_id": reply_id})
+    return {"ok": True}
+
+
+@api.patch("/wall/replies/{reply_id}")
+async def edit_wall_reply(reply_id: str, payload: WallReplyIn, user=Depends(get_current_user)):
+    """Edit a wall reply. Only the reply's author can edit."""
+    r = await db.wall_replies.find_one({"reply_id": reply_id}, {"_id": 0})
+    if not r:
+        raise HTTPException(404, "Not found")
+    if r["author_id"] != user["user_id"]:
+        raise HTTPException(403, "Not the author")
+    new_text = (payload.content or "").strip()[:1000]
+    if not new_text:
+        raise HTTPException(400, "Empty reply")
+    if new_text == (r.get("content") or ""):
+        return {"ok": True, "unchanged": True}
+    history = r.get("edit_history") or []
+    history.append({
+        "content": r.get("content") or "",
+        "at": r.get("edited_at") or r.get("created_at"),
+    })
+    await db.wall_replies.update_one(
+        {"reply_id": reply_id},
+        {"$set": {
+            "content": new_text,
+            "edited_at": now_iso(),
+            "edit_history": history[-10:],
+        }}
+    )
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
 # Boards
 # ------------------------------------------------------------------
 @api.post("/boards")
