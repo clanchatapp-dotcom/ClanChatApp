@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import api, { formatApiError } from "../lib/api";
 import { toast } from "sonner";
 import ReactionsBar from "../components/ReactionsBar";
+import Linkify from "../components/Linkify";
 
 export default function BoardView() {
   const { boardId } = useParams();
@@ -37,7 +38,7 @@ export default function BoardView() {
         {data.messages.map(m => (
           <div key={m.message_id} className="border border-zinc-900 rounded-2xl p-3">
             <div className="text-xs text-zinc-500 mb-1">#{m.author?.handle}</div>
-            <div className="text-sm whitespace-pre-wrap">{m.content}</div>
+            <div className="text-sm whitespace-pre-wrap"><Linkify text={m.content} /></div>
             <ReactionsBar kind="board_message" targetId={m.message_id} />
           </div>
         ))}

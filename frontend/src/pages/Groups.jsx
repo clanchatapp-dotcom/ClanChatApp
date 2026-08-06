@@ -4,6 +4,7 @@ import api, { formatApiError, fileUrl } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
 import { Users, Plus, X, Send, Pin, PinOff } from "lucide-react";
+import Linkify from "../components/Linkify";
 import { useParams } from "react-router-dom";
 
 export function Groups() {
@@ -214,7 +215,7 @@ export function GroupChat() {
         {data.messages.length === 0 && <div className="text-zinc-600 text-sm text-center py-10">Start the conversation.</div>}
         {data.messages.map(m => (
           <div key={m.message_id} className={`max-w-[80%] rounded-2xl px-4 py-2 ${m.from_id === user?.user_id ? "bg-[#FF5A00] text-black self-end" : "bg-zinc-900 self-start"}`}>
-            <div className="text-sm whitespace-pre-wrap break-words">{m.content}</div>
+            <div className="text-sm whitespace-pre-wrap break-words"><Linkify text={m.content} /></div>
           </div>
         ))}
       </div>

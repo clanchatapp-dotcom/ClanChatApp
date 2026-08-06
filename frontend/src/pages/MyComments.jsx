@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { MessageCircle, StickyNote, Layers, ArrowRight } from "lucide-react";
+import Linkify from "../components/Linkify";
 
 function timeAgo(iso) {
   if (!iso) return "";
@@ -117,7 +118,7 @@ export default function MyComments() {
                       <span>{timeAgo(i.created_at)}</span>
                       {i.edited_at && <span className="uppercase text-[9px]">· edited</span>}
                     </div>
-                    <div className="text-sm whitespace-pre-wrap break-words">{i.content}</div>
+                    <div className="text-sm whitespace-pre-wrap break-words"><Linkify text={i.content} /></div>
                     {i.target.excerpt && (
                       <div className="mt-2 text-xs text-zinc-500 italic line-clamp-2 border-l-2 border-zinc-800 pl-2">
                         “{i.target.excerpt}”

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Heart, MessageCircle, UserPlus, Users, Sparkles, Tag, Bell, ShieldAlert, Check } from "lucide-react";
+import { Heart, MessageCircle, UserPlus, Users, Sparkles, Tag, Bell, ShieldAlert, Check, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError, fileUrl } from "../lib/api";
 
@@ -108,6 +108,22 @@ export default function Notifications() {
     }
   };
 
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const clearAll = async () => {
+    if (clearing) return;
+    setClearing(true);
+    try {
+      await api.delete("/activity/clear-all");
+      setEvents([]);
+      setClearOpen(false);
+      window.dispatchEvent(new Event("clanchat:notif-refresh"));
+      toast.success("Activity cleared");
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || "Could not clear");
+    } finally { setClearing(false); }
+  };
+
   const openEvent = async (e) => {
     // 1. Mark this specific event read optimistically + on server.
     setEvents((ev) => ev.map((x) => x.event_id === e.event_id ? { ...x, read: true } : x));
@@ -183,14 +199,57 @@ export default function Notifications() {
     <div className="px-5 pt-6 pb-24">
       <header className="flex items-center justify-between mb-5">
         <h1 className="font-heading text-3xl">Activity</h1>
-        <button
-          data-testid="mark-all-read-btn"
-          onClick={markAllRead}
-          className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 hover:text-[#FF5A00] transition"
-        >
-          Mark all read
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            data-testid="mark-all-read-btn"
+            onClick={markAllRead}
+            className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 hover:text-[#FF5A00] transition"
+          >
+            Mark all read
+          </button>
+          <button
+            data-testid="clear-all-btn"
+            onClick={() => setClearOpen(true)}
+            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.2em] text-zinc-500 hover:text-red-400 transition"
+          >
+            <Trash2 size={11} /> Clear all
+          </button>
+        </div>
       </header>
+
+      {clearOpen && (
+        <div
+          data-testid="clear-all-modal"
+          className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center px-4 pb-6 sm:pb-0"
+          onClick={() => !clearing && setClearOpen(false)}
+        >
+          <div className="w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-3xl p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-3">
+              <Trash2 size={16} className="text-red-400" />
+              <div className="font-heading text-lg">Clear activity feed?</div>
+            </div>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              This permanently deletes every event on your activity timeline (likes, comments, tags, follows, DMs).
+              Pending follow requests, Inner Circle invites and moderation warnings are kept — you still need to handle those.
+            </p>
+            <button
+              data-testid="clear-all-confirm"
+              onClick={clearAll}
+              disabled={clearing}
+              className="w-full mt-4 bg-red-500 hover:bg-red-600 disabled:bg-zinc-700 text-white rounded-full py-3 font-medium transition"
+            >
+              {clearing ? "Clearing…" : "Clear all"}
+            </button>
+            <button
+              onClick={() => setClearOpen(false)}
+              disabled={clearing}
+              className="w-full mt-2 border border-zinc-800 hover:border-zinc-600 rounded-full py-3 text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Pending decisions — approvals/invites always float to the top */}
       {(followRequests.length > 0 || innerInvites.length > 0 || warnings.length > 0) && (

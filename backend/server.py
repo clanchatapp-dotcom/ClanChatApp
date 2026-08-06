@@ -4782,6 +4782,19 @@ async def activity_mark_all_read(user=Depends(get_current_user)):
     return {"ok": True}
 
 
+@api.delete("/activity/clear-all")
+@api.post("/activity/clear-all")
+async def activity_clear_all(user=Depends(get_current_user)):
+    """Permanently delete every activity event on the caller's timeline.
+    Pending decisions (follow_requests, inner_invites, warnings) live in
+    other collections and are NOT touched — they still need explicit
+    approve/decline/dismiss actions."""
+    res = await db.activity_events.delete_many(
+        {"recipient_id": user["user_id"]}
+    )
+    return {"ok": True, "deleted": res.deleted_count}
+
+
 @api.get("/activity/unread-count")
 async def activity_unread_count(user=Depends(get_current_user)):
     n = await db.activity_events.count_documents(

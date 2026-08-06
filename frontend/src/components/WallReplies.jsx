@@ -4,6 +4,7 @@ import { CornerDownRight, Send, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import ReactionsBar from "./ReactionsBar";
+import Linkify from "./Linkify";
 
 function timeAgo(iso) {
   if (!iso) return "";
@@ -109,7 +110,7 @@ export default function WallReplies({ wallPostId, ownerId, currentUserId }) {
                     <span className="mx-1">·</span>{timeAgo(r.created_at)}
                     {r.edited_at && <span className="ml-1 uppercase text-[9px] tracking-wider text-zinc-600">· edited</span>}
                   </div>
-                  <div className="text-sm whitespace-pre-wrap break-words mt-0.5">{r.content}</div>
+                  <div className="text-sm whitespace-pre-wrap break-words mt-0.5"><Linkify text={r.content} /></div>
                   <ReactionsBar kind="wall_reply" targetId={r.reply_id} />
                 </div>
                 {canDelete && (

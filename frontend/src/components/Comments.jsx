@@ -4,6 +4,7 @@ import { Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "react-router-dom";
 import ReactionsBar from "./ReactionsBar";
+import Linkify from "./Linkify";
 
 function timeAgo(iso) {
   const d = new Date(iso);
@@ -77,7 +78,7 @@ export default function Comments({ post, currentUserId, onChange }) {
               <Link to={`/u/${c.author?.handle}`} className="text-zinc-300 hover:text-[#FF5A00]">#{c.author?.handle}</Link>
               <span className="mx-1">·</span>{timeAgo(c.created_at)}
             </div>
-            <div className="text-sm whitespace-pre-wrap break-words">{c.content}</div>
+            <div className="text-sm whitespace-pre-wrap break-words"><Linkify text={c.content} /></div>
             <ReactionsBar kind="comment" targetId={c.comment_id} />
           </div>
           {(c.author?.user_id === currentUserId || post.author?.user_id === currentUserId) && (

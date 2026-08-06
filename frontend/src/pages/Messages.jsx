@@ -7,6 +7,7 @@ import useMediaPermission from "../hooks/useMediaPermission";
 import GiphyPicker from "../components/GiphyPicker";
 import VoiceRecorder from "../components/VoiceRecorder";
 import ReactionsBar from "../components/ReactionsBar";
+import Linkify from "../components/Linkify";
 
 // Native screenshot-block bridge. On the Android Capacitor APK we set
 // FLAG_SECURE on the window while a "no screenshots" thread is open. On
@@ -342,7 +343,7 @@ export function MessageThread() {
                 </div>
               )}
               {m.content && (
-                <div className="text-sm whitespace-pre-wrap break-words">{m.content}</div>
+                <div className="text-sm whitespace-pre-wrap break-words"><Linkify text={m.content} /></div>
               )}
               {/* Reactions — same bar for outgoing and incoming; positioned
                   outside the tap-to-confirm-delete flow so tapping a heart

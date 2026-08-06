@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import TierBadge from "./TierBadge";
 import Comments from "./Comments";
 import Lightbox from "./Lightbox";
+import Linkify from "./Linkify";
 import api, { fileUrl, formatApiError } from "../lib/api";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -199,7 +200,7 @@ export default function PostCard({ post, onChange, showPin = false, currentUserI
       ) : (
         postContent && (
           <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">
-            {postContent}
+            <Linkify text={postContent} />
             {editedAt && (
               <span
                 className="text-[10px] uppercase tracking-wider text-zinc-500 ml-2 align-middle"
