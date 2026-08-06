@@ -354,6 +354,11 @@ def public_user(u: dict) -> dict:
         "is_minor": u.get("is_minor", False),
         "nsfw_account": u.get("nsfw_account", False),
         "role": u.get("role", "user"),
+        # Account-type flags — public so profile badges can render.
+        "is_creator": u.get("is_creator", False),
+        "creator_category": u.get("creator_category"),
+        "is_premium": u.get("is_premium", False),
+        "is_verified": u.get("is_verified", False),
     }
 
 
