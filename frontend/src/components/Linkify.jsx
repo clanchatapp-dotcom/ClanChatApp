@@ -44,7 +44,7 @@ export default function Linkify({ text, className = "" }) {
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}
-        className="text-[#FF5A00] underline decoration-[#FF5A00]/40 hover:decoration-[#FF5A00] break-all"
+        className="text-[#6412a3] underline decoration-[#FF5A00]/40 hover:decoration-[#FF5A00] break-all"
       >
         {raw.replace(/^https?:\/\//, "")}
       </a>
