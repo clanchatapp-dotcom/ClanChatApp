@@ -1,14 +1,6 @@
-/**
- * Supabase Web SDK bootstrap for ClanChat.
- *
- * Config comes from the backend (`GET /api/supabase/config`) so ops can
- * rotate keys without a frontend rebuild.
- *
- * Session persistence: Supabase's default is localStorage. It survives
- * Capacitor cold starts and iOS Safari, so no extra config needed.
- */
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
+import { Preferences } from "@capacitor/preferences";
 
 const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
 const CONFIG_ENDPOINT = `${BACKEND}/api/supabase/config`;
@@ -21,6 +13,29 @@ async function loadConfig() {
     throw new Error("Supabase config unavailable — backend returned empty url/anonKey");
   }
   return data;
+}
+
+// Key used to persist Supabase session on native platforms
+const SB_SESSION_KEY = "cc_sb_session";
+
+async function persistSbSession(session) {
+  try {
+    await Preferences.set({ key: SB_SESSION_KEY, value: JSON.stringify(session || null) });
+  } catch { /* ignore */ }
+}
+
+async function restoreSbSession(supabase) {
+  try {
+    const { value } = await Preferences.get({ key: SB_SESSION_KEY });
+    if (value) {
+      const sess = JSON.parse(value);
+      // setSession expects an object with access_token and refresh_token
+      if (sess?.access_token || sess?.refresh_token) {
+        // supabase client v2 exposes auth.setSession
+        try { await supabase.auth.setSession({ access_token: sess.access_token, refresh_token: sess.refresh_token }); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
 }
 
 /** Lazy singleton Supabase browser client.
@@ -44,6 +59,19 @@ export async function getSupabase() {
     });
     // Attach bucket name for convenience in uploaders.
     supabase._ccBucket = cfg.bucket;
+
+    // Try to restore a persisted Supabase session (native only). This helps
+    // when the WebView is cold-started / resumed — restoring the client
+    // session lets exchangeSupabaseToken succeed without a round-trip.
+    await restoreSbSession(supabase).catch(() => {});
+
+    // Keep the persisted copy up-to-date when the client session changes.
+    try {
+      supabase.auth.onAuthStateChange((_evt, session) => {
+        persistSbSession(session);
+      });
+    } catch { /* ignore */ }
+
     return supabase;
   })();
   // Clear the cached promise if it rejects — otherwise a transient 404
@@ -96,6 +124,8 @@ export async function sbSignOut() {
   try {
     const supa = await getSupabase();
     await supa.auth.signOut();
+    // clear persisted native session on signout
+    try { await Preferences.remove({ key: SB_SESSION_KEY }); } catch { /* ignore */ }
   } catch { /* ignore */ }
 }
 
