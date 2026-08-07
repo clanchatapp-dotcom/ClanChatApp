@@ -3,6 +3,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { formatApiError } from "../lib/api";
 import { toast } from "sonner";
+import { Eye, EyeOff } from "lucide-react";
 
 /**
  * Firebase-powered Google button — replaces the old Emergent OAuth flow.
@@ -55,6 +56,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   /**
    * Try Supabase first (all new accounts and migrated legacy accounts
@@ -119,13 +121,26 @@ export default function Login() {
           type="email" placeholder="Email"
           value={email} onChange={e => setEmail(e.target.value)} required
         />
-        <input
-          data-testid="login-password"
-          autoComplete="current-password"
-          className="cc-input"
-          type="password" placeholder="Password"
-          value={password} onChange={e => setPassword(e.target.value)} required
-        />
+        <div className="flex items-center gap-2">
+          <input
+            data-testid="login-password"
+            autoComplete="current-password"
+            className="cc-input flex-1"
+            type={showPassword ? "text" : "password"}
+            placeholder="Password"
+            value={password} onChange={e => setPassword(e.target.value)} required
+          />
+          <button
+            type="button"
+            aria-label={showPassword ? "Hide password" : "Show password"}
+            title={showPassword ? "Hide password" : "Show password"}
+            onClick={() => setShowPassword(s => !s)}
+            className="p-2 rounded hover:bg-zinc-900/40 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#FF5A00]"
+            data-testid="toggle-password-visibility"
+          >
+            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+        </div>
         {err && <div className="text-sm text-red-400" data-testid="login-error">{err}</div>}
         <button
           data-testid="login-submit"
