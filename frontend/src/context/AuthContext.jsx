@@ -34,6 +34,41 @@ export function AuthProvider({ children }) {
     } catch { /* private mode / storage disabled */ }
   }, [user]);
 
+  // -------------------- Token refresh scheduling ----------------------
+  let refreshTimer = null;
+  const clearRefreshTimer = () => { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } };
+
+  function parseJwtExp(token) {
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+      return payload.exp ? payload.exp * 1000 : null; // ms
+    } catch { return null; }
+  }
+
+  function scheduleRefreshForToken(token) {
+    try {
+      clearRefreshTimer();
+      if (!token) return;
+      const expMs = parseJwtExp(token);
+      if (!expMs) return;
+      // refresh 60s before expiry
+      const msUntilRefresh = expMs - Date.now() - 60_000;
+      const delay = Math.max(msUntilRefresh, 0);
+      refreshTimer = setTimeout(async () => {
+        try {
+          // Prefer re-exchanging the Supabase session for a fresh internal JWT
+          await exchangeSupabaseToken().catch(async () => {
+            // If exchange fails, optionally call a server refresh endpoint here
+            // await api.post('/auth/refresh');
+          });
+        } catch (e) {
+          console.warn("scheduled token refresh failed", e);
+        } finally { clearRefreshTimer(); }
+      }, delay);
+    } catch (e) { console.warn("scheduleRefreshForToken failed", e); }
+  }
+
+  // ------------------------------------------------------------------
   const checkAuth = useCallback(async () => {
     if (window.location.hash?.includes("session_id=")) {
       // Let AuthCallback handle
@@ -76,6 +111,7 @@ export function AuthProvider({ children }) {
     const status = firstErr?.response?.status;
     if (status === 401 || status === 403) {
       await forgetToken();
+      clearRefreshTimer();
       setUser(null);
     } else {
       // Network error / 5xx / CORS blip / brief offline after Android
@@ -102,7 +138,17 @@ export function AuthProvider({ children }) {
         handleRef = await App.addListener("appStateChange", ({ isActive }) => {
           if (isActive && !cancelled) {
             // Small debounce so we don't fight the WebView unpause.
-            setTimeout(() => { checkAuth(); }, 300);
+            setTimeout(async () => {
+              try {
+                // Try to rehydrate Supabase session first — this avoids a
+                // premature /auth/me 401 when Preferences is still warming up.
+                const sess = await sbGetSession();
+                if (sess) {
+                  try { await exchangeSupabaseToken(); return; } catch (e) { console.warn("sb re-exchange failed", e); }
+                }
+              } catch (e) { /* ignore */ }
+              checkAuth();
+            }, 300);
           }
         });
       } catch { /* plugin not available on web */ }
@@ -122,13 +168,19 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
-    if (data.access_token) await rememberToken(data.access_token);
+    if (data.access_token) {
+      await rememberToken(data.access_token);
+      scheduleRefreshForToken(data.access_token);
+    }
     setUser(data.user);
     return data.user;
   };
   const register = async (payload) => {
     const { data } = await api.post("/auth/register", payload);
-    if (data.access_token) await rememberToken(data.access_token);
+    if (data.access_token) {
+      await rememberToken(data.access_token);
+      scheduleRefreshForToken(data.access_token);
+    }
     setUser(data.user);
     return data.user;
   };
@@ -138,6 +190,7 @@ export function AuthProvider({ children }) {
     // silently re-authenticate the user on next visit.
     try { await supabaseSignOut(); } catch { /* noop */ }
     await forgetToken();
+    clearRefreshTimer();
     try { localStorage.removeItem("cc_last_user"); } catch { /* ignore */ }
     setUser(null);
   };
@@ -167,7 +220,10 @@ export function AuthProvider({ children }) {
       access_token, dob, handle,
     });
     if (data.needs_profile) return data; // caller must collect DOB/handle
-    if (data.access_token) await rememberToken(data.access_token);
+    if (data.access_token) {
+      await rememberToken(data.access_token);
+      scheduleRefreshForToken(data.access_token);
+    }
     setUser(data.user);
     return data;
   }, []);
