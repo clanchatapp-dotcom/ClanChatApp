@@ -1,0 +1,5 @@
+Trigger debug APK build
+
+This file triggers CI to build a debug APK artifact for external testing.
+
+Timestamp: 2026-08-07T12:58:00Z
