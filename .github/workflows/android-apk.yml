@@ -160,6 +160,45 @@ jobs:
           print(x)
           PY
 
+      - name: Inject custom URL scheme intent filter (Google OAuth deep-link)
+        working-directory: frontend/android/app/src/main
+        run: |
+          # Register the `clanchat://` custom scheme so Google/Supabase
+          # OAuth can bounce back into the APK after Chrome Custom Tabs
+          # finishes. The redirect URL used by supabase.js is
+          # `clanchat://auth-callback` — Android sees this scheme, opens
+          # the app, and the @capacitor/app appUrlOpen listener grabs
+          # the hash/query to complete the session.
+          python3 - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("AndroidManifest.xml")
+          x = p.read_text()
+          if 'android:scheme="clanchat"' in x:
+              print("intent filter already present")
+          else:
+              filter_xml = (
+                  '            <intent-filter android:autoVerify="false">\n'
+                  '                <action android:name="android.intent.action.VIEW" />\n'
+                  '                <category android:name="android.intent.category.DEFAULT" />\n'
+                  '                <category android:name="android.intent.category.BROWSABLE" />\n'
+                  '                <data android:scheme="clanchat" />\n'
+                  '            </intent-filter>\n'
+              )
+              # Insert into the main .MainActivity <activity> block, right
+              # before its closing </activity>.
+              new_x, count = re.subn(
+                  r'(<activity[^>]*android:name="\.MainActivity"[\s\S]*?)</activity>',
+                  lambda m: m.group(1) + filter_xml + '        </activity>',
+                  x,
+                  count=1,
+              )
+              if count == 1:
+                  p.write_text(new_x)
+                  print("manifest patched with clanchat:// intent filter")
+              else:
+                  print("::warning::could not locate MainActivity to attach intent filter")
+          PY
+
       - name: Install custom CallAudio Capacitor plugin
         working-directory: frontend
         run: |

@@ -85,6 +85,13 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
+  // Iter 30 — Google OAuth on the Capacitor APK.
+  // OAuth opens in Chrome Custom Tabs and redirects to
+  // `clanchat://auth-callback#access_token=…&refresh_token=…`. Android
+  // routes that URL to the app via the intent filter; we grab it here,
+  // hand the tokens to Supabase, then exchange for a ClanChat JWT.
+  // (See useEffect below `exchangeSupabaseToken` — moved to avoid TDZ.)
+
   useEffect(() => { checkAuth(); }, [checkAuth]);
 
   // Iter 26 — Android/Capacitor: when the app returns from background,
@@ -213,6 +220,54 @@ export function AuthProvider({ children }) {
       try { await exchangeSupabaseToken(); } catch (e) { console.warn("sb auth-change exchange failed", e); }
     });
     return () => { cancelled = true; unsub(); };
+  }, [exchangeSupabaseToken]);
+
+  // Iter 30 — Google OAuth deep-link handler for the Capacitor APK.
+  // OAuth opens in Chrome Custom Tabs and redirects to
+  // `clanchat://auth-callback#access_token=…&refresh_token=…`. Android
+  // routes that URL back into the app via the intent filter; we grab
+  // it here, feed the tokens into Supabase, then exchange for a
+  // ClanChat JWT via the existing helper.
+  useEffect(() => {
+    let handleRef;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { Capacitor } = await import("@capacitor/core");
+        if (!Capacitor?.isNativePlatform?.()) return;
+        const { App } = await import("@capacitor/app");
+        let Browser = null;
+        try { Browser = (await import("@capacitor/browser")).Browser; } catch { /* optional */ }
+        handleRef = await App.addListener("appUrlOpen", async ({ url }) => {
+          if (cancelled || !url) return;
+          if (!url.startsWith("clanchat://")) return;
+          try { await Browser?.close?.(); } catch { /* ignore */ }
+          try {
+            const supa = await (await import("../lib/supabase")).getSupabase();
+            const [, query = ""] = url.split("?");
+            const [, hash = ""] = url.split("#");
+            const params = new URLSearchParams(hash || query);
+            const access = params.get("access_token");
+            const refresh = params.get("refresh_token");
+            const code = params.get("code");
+            if (access && refresh) {
+              await supa.auth.setSession({ access_token: access, refresh_token: refresh });
+            } else if (code) {
+              await supa.auth.exchangeCodeForSession(code);
+            } else {
+              return;
+            }
+            await exchangeSupabaseToken();
+          } catch (err) {
+            console.warn("google deep-link auth failed", err);
+          }
+        });
+      } catch { /* plugin missing on web */ }
+    })();
+    return () => {
+      cancelled = true;
+      try { handleRef?.remove?.(); } catch { /* ignore */ }
+    };
   }, [exchangeSupabaseToken]);
 
   return (

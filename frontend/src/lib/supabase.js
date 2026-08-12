@@ -80,11 +80,42 @@ export async function sbSendPasswordReset(email) {
 
 export async function sbSignInGoogle() {
   const supa = await getSupabase();
+  // Detect Capacitor native (Android/iOS APK) — the WebView origin is
+  // `https://localhost` which Google can't redirect to. Instead we open
+  // OAuth in Chrome Custom Tabs and redirect back via a custom URL
+  // scheme (`clanchat://auth-callback`) that the OS routes to the app
+  // through the Android intent filter. The AuthContext listens for the
+  // deep-link and completes the session.
+  let isNativeApp = false;
+  try {
+    const { Capacitor } = await import("@capacitor/core");
+    isNativeApp = Capacitor?.isNativePlatform?.() || false;
+  } catch { /* web */ }
+
+  if (isNativeApp) {
+    const { data, error } = await supa.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: "clanchat://auth-callback",
+        skipBrowserRedirect: true, // give us the URL, we'll open Chrome Custom Tabs
+      },
+    });
+    if (error) throw error;
+    if (!data?.url) throw new Error("Supabase did not return an OAuth URL");
+    try {
+      const { Browser } = await import("@capacitor/browser");
+      await Browser.open({ url: data.url, presentationStyle: "popover" });
+    } catch (openErr) {
+      // Fallback to plain window.open if @capacitor/browser is missing.
+      window.open(data.url, "_system");
+    }
+    return data;
+  }
+
+  // Web: normal redirect flow.
   const { data, error } = await supa.auth.signInWithOAuth({
     provider: "google",
     options: {
-      // Send the user straight back to /feed after Google finishes — the
-      // AuthContext hydration effect will pick up the session on load.
       redirectTo: `${window.location.origin}/feed`,
     },
   });
