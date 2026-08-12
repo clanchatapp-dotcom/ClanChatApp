@@ -95,7 +95,6 @@ export default function Login() {
     try {
       await login(email, password);
       toast.success("Welcome back");
-      toast.message("Please update your credentials in Settings to secure your account.", { duration: 8000 });
       nav("/feed", { replace: true });
     } catch (legacyErr) {
       setErr(formatApiError(legacyErr.response?.data?.detail) || legacyErr.message);
