@@ -3,6 +3,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { formatApiError } from "../lib/api";
 import { toast } from "sonner";
+import { Eye, EyeOff } from "lucide-react"; // Or use emoji ("👁️"/"🙈") if you prefer no icon imports
 
 /**
  * Firebase-powered Google button — replaces the old Emergent OAuth flow.
@@ -53,6 +54,7 @@ export default function Login() {
   const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -73,11 +75,6 @@ export default function Login() {
     } catch (sbErr) {
       const msg = (sbErr?.message || "").toLowerCase();
       const status = sbErr?.response?.status;
-      // Fall through to legacy login when Supabase is unreachable
-      // (production hasn't been redeployed with the /api/auth/supabase-login
-      // endpoint yet → 404), when the config endpoint is missing, or when
-      // Supabase says the account doesn't exist / has wrong password.
-      // Anything else (e.g. disabled account) surfaces to the user.
       const shouldFallback =
         status === 404 || status === 502 || status === 503 ||
         msg.includes("supabase config unavailable") ||
@@ -94,11 +91,11 @@ export default function Login() {
         return;
       }
     }
-    // Legacy fallback for users who haven't reset their password to Supabase yet.
+    // Legacy fallback
     try {
       await login(email, password);
       toast.success("Welcome back");
-      toast.message("Please reset your password in Settings — we've moved to Supabase auth for stronger security.", { duration: 8000 });
+      toast.message("Please update your credentials in Settings to secure your account.", { duration: 8000 });
       nav("/feed", { replace: true });
     } catch (legacyErr) {
       setErr(formatApiError(legacyErr.response?.data?.detail) || legacyErr.message);
@@ -112,21 +109,44 @@ export default function Login() {
         <h1 className="font-heading text-4xl mt-3">Welcome back</h1>
         <p className="text-zinc-500 mt-2 text-sm">Sign in to your clubhouse.</p>
       </div>
-      <form onSubmit={submit} className="flex flex-col gap-3">
+      <form onSubmit={submit} className="flex flex-col gap-3" autoComplete="on">
         <input
           data-testid="login-email"
+          name="username"
           autoComplete="email"
           className="cc-input"
           type="email" placeholder="Email"
           value={email} onChange={e => setEmail(e.target.value)} required
         />
-        <input
-          data-testid="login-password"
-          autoComplete="current-password"
-          className="cc-input"
-          type="password" placeholder="Password"
-          value={password} onChange={e => setPassword(e.target.value)} required
-        />
+        
+        {/* Password input container with integrated toggle button */}
+        <div className="relative w-full">
+          <input
+            data-testid="login-password"
+            name="password"
+            autoComplete="current-password"
+            className="cc-input pr-12 w-full"
+            type={showPassword ? "text" : "password"}
+            placeholder="Password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            required
+          />
+          <button
+            type="button"
+            tabIndex="-1"
+            onClick={() => setShowPassword(!showPassword)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200 p-1 z-10"
+            aria-label={showPassword ? "Hide password" : "Show password"}
+          >
+            {showPassword ? (
+              <EyeOff className="w-5 h-5" />
+            ) : (
+              <Eye className="w-5 h-5" />
+            )}
+          </button>
+        </div>
+
         {err && <div className="text-sm text-red-400" data-testid="login-error">{err}</div>}
         <button
           data-testid="login-submit"
@@ -154,3 +174,4 @@ export default function Login() {
 }
 
 export { GoogleButton };
+
