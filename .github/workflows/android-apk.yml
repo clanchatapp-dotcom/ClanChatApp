@@ -4,14 +4,6 @@ name: Build Android APK
 # manually-triggered run. The APK is uploaded as a workflow artifact that
 # testers can download directly from the Actions tab — no Android Studio
 # required on the user's machine.
-#
-# Workflow Dispatch URL (after first push):
-#   https://github.com/<your-account>/<repo>/actions/workflows/android-apk.yml
-#
-# Each successful run produces:
-#   - ClanChat-debug.apk  (sideload-ready, ~10 MB)
-# Testers install it by enabling "Install unknown apps" for their browser
-# or file manager on Android, then tapping the APK file.
 
 on:
   push:
@@ -30,11 +22,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Node 22 LTS — Node 20 hit deprecation on GitHub Actions runners in
-      # late 2025. We intentionally DO NOT use the built-in `cache: yarn`
-      # option because some forks of this repo don't commit frontend/yarn.lock,
-      # and setup-node treats that as a hard failure. The yarn install below
-      # generates the lockfile on the fly when missing.
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
@@ -49,27 +36,18 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: |
-          # If yarn.lock is committed we honour it; otherwise we let yarn
-          # generate one. Either way the APK still builds.
           if [ -f yarn.lock ]; then
             yarn install --frozen-lockfile || yarn install
           else
-            echo "::warning::frontend/yarn.lock not found in repo — generating a fresh lockfile (consider committing it for reproducible builds)."
+            echo "::warning::frontend/yarn.lock not found in repo — generating a fresh lockfile."
             yarn install
           fi
 
       - name: Build web bundle
         working-directory: frontend
         env:
-          # Production API base — testers' APK talks to the live deploy.
-          # Override this to point at staging/preview if you fork the
-          # workflow for testing branches.
           REACT_APP_BACKEND_URL: https://clanchat.app
-          # NOTE: Giphy API key used to be injected here as
-          # REACT_APP_GIPHY_API_KEY. It's now proxied through the backend
-          # (/api/giphy/search) so nothing sensitive ships in the APK.
-          # Keep the backend GIPHY_API_KEY env var in sync on the server.
-          CI: "false"  # CRA treats warnings as errors when CI=true; we don't want that to fail the APK
+          CI: "false"
         run: yarn build
 
       - name: Add Capacitor Android platform
@@ -83,27 +61,18 @@ jobs:
       - name: Wire Firebase Cloud Messaging
         working-directory: frontend
         run: |
-          # 1) Drop google-services.json into android/app/ where the Gradle
-          #    plugin expects to find it. Without this file the APK can't
-          #    register for FCM and push notifications are dead-on-arrival.
           if [ ! -f android-resources/google-services.json ]; then
             echo "::warning::android-resources/google-services.json missing — push notifications will not work in this build."
           else
             cp android-resources/google-services.json android/app/google-services.json
             echo "Copied google-services.json into android/app/"
           fi
-          # 2) Apply the Google services Gradle plugin. We patch the two
-          #    files Capacitor generates: the project-level build.gradle
-          #    (declares the plugin classpath) and the app-level build.gradle
-          #    (applies it). Idempotent — re-running the workflow doesn't
-          #    duplicate the entries.
           python3 - <<'PY'
           import pathlib, re
           proj = pathlib.Path("android/build.gradle")
           if proj.exists():
               src = proj.read_text()
               if "com.google.gms:google-services" not in src:
-                  # Add the classpath line inside the buildscript dependencies block.
                   src = re.sub(
                       r"(dependencies\s*\{)",
                       r"\1\n        classpath 'com.google.gms:google-services:4.5.0'",
@@ -115,7 +84,6 @@ jobs:
           if app.exists():
               src = app.read_text()
               if "com.google.gms.google-services" not in src:
-                  # Apply line goes at the very bottom of the app build.gradle.
                   src = src.rstrip() + "\napply plugin: 'com.google.gms.google-services'\n"
                   app.write_text(src)
                   print("app build.gradle patched with google-services apply line")
@@ -124,10 +92,6 @@ jobs:
       - name: Inject Android media + push permissions
         working-directory: frontend/android/app/src/main
         run: |
-          # Add READ_MEDIA_IMAGES + READ_MEDIA_VIDEO (Android 13+) and the
-          # legacy READ_EXTERNAL_STORAGE for older devices, scoped to
-          # <33 via maxSdkVersion. This lets users pick photos/videos for
-          # posts and DMs after granting consent.
           python3 - <<'PY'
           import pathlib
           p = pathlib.Path("AndroidManifest.xml")
@@ -137,15 +101,9 @@ jobs:
               '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
               '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
               '<uses-permission android:name="android.permission.CAMERA" />',
-              # LiveKit voice/video calls need RECORD_AUDIO (mic). Network state
-              # is needed so the SDK can negotiate ICE servers correctly.
               '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
               '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
               '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />',
-              # FCM push notifications. POST_NOTIFICATIONS is the runtime
-              # permission Android 13+ requires for showing a notification
-              # overlay. WAKE_LOCK lets the FCM service wake the device for
-              # incoming-call rings even when idle.
               '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
               '<uses-permission android:name="android.permission.WAKE_LOCK" />',
               '<uses-permission android:name="android.permission.VIBRATE" />',
@@ -163,12 +121,6 @@ jobs:
       - name: Inject custom URL scheme intent filter (Google OAuth deep-link)
         working-directory: frontend/android/app/src/main
         run: |
-          # Register the `clanchat://` custom scheme so Google/Supabase
-          # OAuth can bounce back into the APK after Chrome Custom Tabs
-          # finishes. The redirect URL used by supabase.js is
-          # `clanchat://auth-callback` — Android sees this scheme, opens
-          # the app, and the @capacitor/app appUrlOpen listener grabs
-          # the hash/query to complete the session.
           python3 - <<'PY'
           import pathlib, re
           p = pathlib.Path("AndroidManifest.xml")
@@ -184,8 +136,6 @@ jobs:
                   '                <data android:scheme="clanchat" />\n'
                   '            </intent-filter>\n'
               )
-              # Insert into the main .MainActivity <activity> block, right
-              # before its closing </activity>.
               new_x, count = re.subn(
                   r'(<activity[^>]*android:name="\.MainActivity"[\s\S]*?)</activity>',
                   lambda m: m.group(1) + filter_xml + '        </activity>',
@@ -202,17 +152,11 @@ jobs:
       - name: Install custom CallAudio Capacitor plugin
         working-directory: frontend
         run: |
-          # Drop our custom Java plugin into the Android project tree.
           PLUGIN_DIR=android/app/src/main/java/app/clanchat/mobile
           mkdir -p "$PLUGIN_DIR"
           cp android-resources/call-audio/CallAudioPlugin.java "$PLUGIN_DIR/CallAudioPlugin.java"
           echo "Copied CallAudioPlugin.java to $PLUGIN_DIR"
 
-          # Overwrite MainActivity with a known-good version that registers
-          # our plugin. This replaces the previous regex-patching approach
-          # which was silently failing on some Capacitor template layouts.
-          # If Capacitor's default MainActivity ever grows real logic we
-          # care about, splice it in here — for now the default is empty.
           cat > "$PLUGIN_DIR/MainActivity.java" <<'JAVA'
           package app.clanchat.mobile;
 
@@ -222,15 +166,11 @@ jobs:
           public class MainActivity extends BridgeActivity {
               @Override
               public void onCreate(Bundle savedInstanceState) {
-                  // Register the custom CallAudio plugin BEFORE super.onCreate
-                  // so the JS bridge sees it as soon as the WebView boots.
                   registerPlugin(CallAudioPlugin.class);
                   super.onCreate(savedInstanceState);
               }
           }
           JAVA
-          # `cat <<HEREDOC` preserves indentation which Java compilers hate,
-          # so strip the leading 10 spaces we added for YAML readability.
           sed -i 's/^          //' "$PLUGIN_DIR/MainActivity.java"
           echo "== MainActivity.java =="
           cat "$PLUGIN_DIR/MainActivity.java"
@@ -238,10 +178,8 @@ jobs:
       - name: Copy launcher icons
         working-directory: frontend
         run: |
-          # Skip silently when the source folder hasn't been committed yet —
-          # Capacitor's default icons will be used.
           if [ ! -d android-resources ]; then
-            echo "::warning::frontend/android-resources/ not found — using default Capacitor launcher icons."
+            echo "::warning::frontend/android-resources/ not found — using default icons."
             exit 0
           fi
           for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
@@ -255,33 +193,30 @@ jobs:
             fi
           done
 
-      - name: Force compatible Google Play Services versions
+      - name: Force compatible Play Services & Browser versions
         working-directory: frontend
         run: |
-          # Capacitor 6 + Firebase Messaging + Google OAuth end up pulling in
-          # mismatched com.google.android.gms:play-services-* AAR metadata,
-          # which Gradle 8 now rejects with "2 AAR metadata issues". Pin the
-          # transitive versions to a set that is known to co-exist. Idempotent.
           python3 - <<'PY'
           import pathlib
-          app = pathlib.Path("android/app/build.gradle")
-          src = app.read_text()
-          marker = "// clanchat: pinned play-services versions"
-          if marker in src:
-              print("play-services pin already present")
-          else:
-              block = (
-                  "\n" + marker + "\n"
-                  "configurations.all {\n"
-                  "    resolutionStrategy {\n"
-                  "        force 'com.google.android.gms:play-services-base:18.5.0'\n"
-                  "        force 'com.google.android.gms:play-services-tasks:18.2.0'\n"
-                  "        force 'com.google.android.gms:play-services-auth:21.2.0'\n"
-                  "    }\n"
-                  "}\n"
-              )
-              app.write_text(src.rstrip() + "\n" + block)
-              print("app build.gradle patched with play-services resolutionStrategy")
+          proj = pathlib.Path("android/build.gradle")
+          if proj.exists():
+              src = proj.read_text()
+              if "androidx.browser:browser:1.8.0" not in src:
+                  resolution_block = """
+          allprojects {
+              configurations.all {
+                  resolutionStrategy {
+                      force 'androidx.browser:browser:1.8.0'
+                      force 'com.google.android.gms:play-services-base:18.5.0'
+                      force 'com.google.android.gms:play-services-tasks:18.2.0'
+                      force 'com.google.android.gms:play-services-auth:21.2.0'
+                  }
+              }
+          }
+          """
+                  src += resolution_block
+                  proj.write_text(src)
+                  print("Project root build.gradle patched with forced dependency versions")
           PY
 
       - name: Make gradlew executable
@@ -308,21 +243,6 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # Firebase App Distribution — push the fresh APK to registered
-      # testers. This step is a no-op unless the two required secrets
-      # are present, so it won't break external forks that don't have
-      # Firebase configured.
-      #
-      # Required GitHub secrets (Settings → Secrets and variables → Actions):
-      #   FIREBASE_APP_ID_ANDROID   — 1:286762294730:android:d187cdf44ff9f6d9430333
-      #   FIREBASE_SERVICE_ACCOUNT_JSON — full contents of a Firebase
-      #     service account JSON with the "Firebase App Distribution Admin"
-      #     role (generate at Firebase Console → Project Settings →
-      #     Service accounts → Generate new private key).
-      #
-      # Optional secret:
-      #   FIREBASE_APPDIST_TESTER_GROUPS — comma-separated group aliases
-      #     (default: "internal")
       - name: Upload APK to Firebase App Distribution
         if: ${{ env.FIREBASE_APP_ID_ANDROID != '' && env.FIREBASE_SERVICE_ACCOUNT_JSON != '' }}
         env:
@@ -339,3 +259,4 @@ jobs:
             --release-notes "CI build ${{ github.sha }} on ${{ github.ref_name }}" \
             --groups "${FIREBASE_APPDIST_TESTER_GROUPS:-internal}"
           rm -f /tmp/firebase-sa.json
+
