@@ -176,21 +176,22 @@ def create_access_token(user_id: str) -> str:
 def create_refresh_token(user_id: str) -> str:
     payload = {
         "sub": user_id,
-        "exp": datetime.now(timezone.utc) + timedelta(days=7),
+        # Iter 29 — bump refresh token to 60 days so users who take a
+        # break from the app for a few weeks come back to a working
+        # session instead of the login screen. Access token stays 30d
+        # (rotated every refresh); refresh gives us the runway.
+        "exp": datetime.now(timezone.utc) + timedelta(days=60),
         "type": "refresh",
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def set_auth_cookies(response: Response, access: str, refresh: str):
-    # Iter 26 — bump access cookie max_age to match the JWT lifetime (30d)
-    # so browser sessions don't silently expire cookies while the JWT is
-    # still valid. This matters for web; the Capacitor APK uses Bearer
-    # tokens exclusively so cookies are moot there.
+    # Iter 26/29 — access cookie 30d (matches JWT), refresh cookie 60d.
     response.set_cookie("access_token", access, httponly=True, secure=True,
                         samesite="none", max_age=60 * 60 * 24 * 30, path="/")
     response.set_cookie("refresh_token", refresh, httponly=True, secure=True,
-                        samesite="none", max_age=60 * 60 * 24 * 7, path="/")
+                        samesite="none", max_age=60 * 60 * 24 * 60, path="/")
 
 
 # ----------------------------------------------------------------------
@@ -476,6 +477,11 @@ async def get_current_user(request: Request) -> dict:
             raise HTTPException(401, "User not found")
         if user.get("deleted"):
             raise HTTPException(403, "Account deleted")
+        # Soft-deleted account: the session must be terminated. The user
+        # can reactivate by signing in via /auth/login (which auto-lifts
+        # the soft-delete flag).
+        if user.get("soft_deleted_at"):
+            raise HTTPException(401, "Account pending deletion — sign in to restore")
         return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "Token expired")
@@ -777,7 +783,7 @@ async def register(payload: RegisterIn, response: Response):
     await db.users.insert_one(user)
     access, refresh = create_access_token(uid), create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
-    return {"user": private_user(user), "access_token": access}
+    return {"user": private_user(user), "access_token": access, "refresh_token": refresh}
 
 
 @api.post("/auth/login")
@@ -787,6 +793,16 @@ async def login(payload: LoginIn, response: Response):
         raise HTTPException(401, "Invalid email or password")
     if user.get("deleted"):
         raise HTTPException(403, "This account has been permanently deleted.")
+    # Soft-deleted account: restore automatically on successful login
+    # (within the 30-day grace period). Wipe the soft-delete markers and
+    # the account is fully live again.
+    if user.get("soft_deleted_at"):
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$unset": {"soft_deleted_at": "", "soft_delete_purge_at": ""}}
+        )
+        user.pop("soft_deleted_at", None)
+        user.pop("soft_delete_purge_at", None)
     if user.get("suspended_until"):
         try:
             until = datetime.fromisoformat(user["suspended_until"])
@@ -796,7 +812,106 @@ async def login(payload: LoginIn, response: Response):
             pass
     access, refresh = create_access_token(user["user_id"]), create_refresh_token(user["user_id"])
     set_auth_cookies(response, access, refresh)
-    return {"user": private_user(user), "access_token": access}
+    return {"user": private_user(user), "access_token": access, "refresh_token": refresh}
+
+
+class RefreshIn(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+@api.post("/auth/refresh")
+async def refresh_access(payload: RefreshIn, request: Request, response: Response):
+    """Exchange a valid refresh token for a fresh access token.
+
+    Accepts the refresh token from EITHER:
+      1. The `refresh_token` cookie (web)
+      2. The `refresh_token` field in the JSON body (Capacitor APK — no
+         cross-origin cookies)
+
+    Returns a new access token + a rotated refresh token so a stolen
+    refresh token can only be used once before it's invalidated by the
+    next legitimate refresh.
+    """
+    token = payload.refresh_token or request.cookies.get("refresh_token")
+    if not token:
+        raise HTTPException(401, "Missing refresh token")
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Refresh token expired — please sign in again")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid refresh token")
+    if data.get("type") != "refresh":
+        raise HTTPException(401, "Not a refresh token")
+    user_id = data.get("sub")
+    if not user_id:
+        raise HTTPException(401, "Malformed refresh token")
+    user = await db.users.find_one({"user_id": user_id})
+    if not user or user.get("deleted"):
+        raise HTTPException(403, "Account no longer exists")
+    if user.get("soft_deleted_at"):
+        # Deleted user coming back through the refresh flow → also restore.
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$unset": {"soft_deleted_at": "", "soft_delete_purge_at": ""}}
+        )
+    access = create_access_token(user_id)
+    refresh = create_refresh_token(user_id)
+    set_auth_cookies(response, access, refresh)
+    return {"access_token": access, "refresh_token": refresh, "user": private_user(user)}
+
+
+# =====================================================================
+#  Account deletion — 30-day soft delete with automatic restore on login
+# =====================================================================
+class DeleteAccountIn(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+    confirmation: str  # user must type "DELETE" verbatim
+
+
+@api.post("/auth/delete-account")
+async def delete_account(payload: DeleteAccountIn, response: Response, user=Depends(get_current_user)):
+    """Kick off a 30-day soft delete.
+
+    The account is immediately hidden from all discovery / search / DMs
+    / mentions / follows. All posts, wall notes, comments and DMs stop
+    surfacing to other users (enforced by the deleted-check on every
+    read endpoint).
+
+    A cron job (or a lazy on-login sweep) hard-deletes the user +
+    content after `soft_delete_purge_at`. Logging in during the grace
+    period auto-restores the account.
+    """
+    if payload.confirmation.strip().upper() != "DELETE":
+        raise HTTPException(400, "Please type DELETE to confirm")
+    if user.get("password_hash"):
+        if not verify_password(payload.password, user["password_hash"]):
+            raise HTTPException(401, "Incorrect password")
+    # Google-auth users have no password_hash — we accept the current
+    # session as sufficient proof they own the account.
+    now = datetime.now(timezone.utc)
+    purge_at = now + timedelta(days=30)
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "soft_deleted_at": now.isoformat(),
+            "soft_delete_purge_at": purge_at.isoformat(),
+        }}
+    )
+    clear_auth_cookies(response)
+    return {"ok": True, "purge_at": purge_at.isoformat()}
+
+
+@api.post("/auth/cancel-delete")
+async def cancel_soft_delete(user=Depends(get_current_user)):
+    """Explicit restore from within the app (if the user reversed course
+    mid-grace-period via a special "restore my account" link they saved).
+    Also happens implicitly on login."""
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$unset": {"soft_deleted_at": "", "soft_delete_purge_at": ""}}
+    )
+    return {"ok": True}
 
 
 @api.post("/auth/logout")

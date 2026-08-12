@@ -122,13 +122,13 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
-    if (data.access_token) await rememberToken(data.access_token);
+    if (data.access_token) await rememberToken(data.access_token, data.refresh_token);
     setUser(data.user);
     return data.user;
   };
   const register = async (payload) => {
     const { data } = await api.post("/auth/register", payload);
-    if (data.access_token) await rememberToken(data.access_token);
+    if (data.access_token) await rememberToken(data.access_token, data.refresh_token);
     setUser(data.user);
     return data.user;
   };
@@ -167,7 +167,7 @@ export function AuthProvider({ children }) {
       access_token, dob, handle,
     });
     if (data.needs_profile) return data; // caller must collect DOB/handle
-    if (data.access_token) await rememberToken(data.access_token);
+    if (data.access_token) await rememberToken(data.access_token, data.refresh_token);
     setUser(data.user);
     return data;
   }, []);

@@ -12,6 +12,7 @@ export const API = `${BACKEND_URL}/api`;
 // also dual-write to localStorage so refreshing the tab doesn't bounce the
 // user — cookies still work, the bearer is just a belt-and-braces fallback.
 const ACCESS_KEY = "clanchat_access_token";
+const REFRESH_KEY = "clanchat_refresh_token";
 const isNative = () => { try { return Capacitor.isNativePlatform(); } catch { return false; } };
 
 export async function getToken() {
@@ -31,6 +32,26 @@ export async function getToken() {
   try { return localStorage.getItem(ACCESS_KEY); } catch { return null; }
 }
 
+async function getRefreshToken() {
+  if (isNative()) {
+    try {
+      const { value } = await Preferences.get({ key: REFRESH_KEY });
+      if (value) return value;
+    } catch { /* fall through */ }
+  }
+  try { return localStorage.getItem(REFRESH_KEY); } catch { return null; }
+}
+
+async function setRefreshToken(token) {
+  try { if (isNative()) await Preferences.set({ key: REFRESH_KEY, value: token }); } catch { /* ignore */ }
+  try { localStorage.setItem(REFRESH_KEY, token); } catch { /* ignore */ }
+}
+
+async function clearRefreshToken() {
+  try { if (isNative()) await Preferences.remove({ key: REFRESH_KEY }); } catch { /* ignore */ }
+  try { localStorage.removeItem(REFRESH_KEY); } catch { /* ignore */ }
+}
+
 export async function setToken(token) {
   if (!token) return clearToken();
   try {
@@ -42,6 +63,7 @@ export async function setToken(token) {
 export async function clearToken() {
   try { if (isNative()) await Preferences.remove({ key: ACCESS_KEY }); } catch { /* ignore */ }
   try { localStorage.removeItem(ACCESS_KEY); } catch { /* ignore */ }
+  await clearRefreshToken();
 }
 
 // ─── Axios instance ───────────────────────────────────────────────────────
@@ -64,10 +86,11 @@ async function primeTokenCache() {
   // the rest of the session.
   _tokenLoaded = !!val;
 }
-export async function rememberToken(token) {
+export async function rememberToken(token, refreshToken = null) {
   _tokenCache = token || null;
   _tokenLoaded = true;
   await setToken(token);
+  if (refreshToken) await setRefreshToken(refreshToken);
 }
 export async function forgetToken() {
   _tokenCache = null;
@@ -85,6 +108,57 @@ api.interceptors.request.use(async (config) => {
   }
   return config;
 });
+
+// ─── Auto-refresh on 401 ─────────────────────────────────────────────────
+// Any 401 from the API triggers a single refresh attempt using the stored
+// refresh token. On success we replay the original request with the new
+// access token. On failure the caller sees the original 401 and can decide
+// what to do (usually AuthContext.checkAuth will kick to login).
+//
+// A single in-flight refresh is deduped — if 5 API calls hit 401 at once
+// (likely on wake-from-background), they all share the same refresh
+// promise so we only mint one new pair of tokens.
+let _refreshPromise = null;
+
+async function performRefresh() {
+  const refreshToken = await getRefreshToken();
+  if (!refreshToken) throw new Error("no refresh token");
+  // Use raw axios (bypass interceptors) so we don't recurse on 401.
+  const res = await axios.post(`${API}/auth/refresh`, { refresh_token: refreshToken }, {
+    withCredentials: true,
+  });
+  const newAccess = res.data?.access_token;
+  const newRefresh = res.data?.refresh_token;
+  if (!newAccess) throw new Error("refresh returned no token");
+  await rememberToken(newAccess, newRefresh);
+  return newAccess;
+}
+
+api.interceptors.response.use(
+  (r) => r,
+  async (err) => {
+    const original = err.config || {};
+    const status = err.response?.status;
+    // Never retry the refresh endpoint itself or requests already retried.
+    const url = String(original.url || "");
+    const isAuthRefresh = url.includes("/auth/refresh");
+    if (status !== 401 || original._retried || isAuthRefresh) {
+      throw err;
+    }
+    original._retried = true;
+    try {
+      if (!_refreshPromise) {
+        _refreshPromise = performRefresh().finally(() => { _refreshPromise = null; });
+      }
+      const newAccess = await _refreshPromise;
+      original.headers = original.headers || {};
+      original.headers.Authorization = `Bearer ${newAccess}`;
+      return api.request(original);
+    } catch (refreshErr) {
+      throw err; // surface the original 401 to the caller
+    }
+  }
+);
 
 export default api;
 

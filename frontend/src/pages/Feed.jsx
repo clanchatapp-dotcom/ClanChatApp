@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import api from "../lib/api";
+import api, { fileUrl } from "../lib/api";
 import PostCard from "../components/PostCard";
 import Lightbox from "../components/Lightbox";
 import { Link } from "react-router-dom";
@@ -178,9 +178,9 @@ export default function Feed() {
               className="aspect-square overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950 relative p-0 block cursor-zoom-in"
             >
               {g.isVideo ? (
-                <video src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${g.path}`} className="w-full h-full object-cover" />
+                <video src={fileUrl(g.path)} className="w-full h-full object-cover" />
               ) : (
-                <img src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${g.path}`} alt="" className="w-full h-full object-cover" />
+                <img src={fileUrl(g.path)} alt="" className="w-full h-full object-cover" />
               )}
               <div className="absolute bottom-2 left-2 text-[10px] uppercase tracking-[0.2em] bg-black/50 px-2 py-0.5 rounded pointer-events-none">
                 #{g.author?.handle}

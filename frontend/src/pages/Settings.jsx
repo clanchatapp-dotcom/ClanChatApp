@@ -3,7 +3,7 @@ import { useAuth } from "../context/AuthContext";
 import api, { formatApiError } from "../lib/api";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Sun, Moon, LogOut, ShieldCheck, AlertTriangle, KeyRound, Flag, MessageCircle } from "lucide-react";
+import { Sun, Moon, LogOut, ShieldCheck, AlertTriangle, KeyRound, Flag, MessageCircle, Trash2 } from "lucide-react";
 
 export default function Settings() {
   const { user, refresh, theme, setTheme, logout } = useAuth();
@@ -224,6 +224,93 @@ export default function Settings() {
         className="cc-btn-secondary w-full mt-4 inline-flex items-center justify-center gap-2 text-red-400">
         <LogOut size={16} /> Sign out
       </button>
+
+      <Section title="Danger zone">
+        <DeleteAccountCard />
+      </Section>
+    </div>
+  );
+}
+
+function DeleteAccountCard() {
+  const { user, logout } = useAuth();
+  const nav = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const needsPassword = user?.auth_provider !== "google";
+  const canSubmit = confirmation.trim().toUpperCase() === "DELETE" && (!needsPassword || password.length > 0);
+
+  const submit = async () => {
+    if (busy || !canSubmit) return;
+    setBusy(true);
+    try {
+      await api.post("/auth/delete-account", { password, confirmation });
+      // Wipe local session state — the token is already invalid server-side.
+      await logout().catch(() => {});
+      toast.success("Account scheduled for deletion. You have 30 days to restore by signing back in.");
+      nav("/", { replace: true });
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || err.message);
+    } finally { setBusy(false); }
+  };
+
+  if (!open) {
+    return (
+      <button
+        data-testid="open-delete-account"
+        onClick={() => setOpen(true)}
+        className="w-full text-sm text-center inline-flex items-center justify-center gap-2 border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-full px-4 py-3 transition"
+      >
+        <Trash2 size={14} /> Delete my account
+      </button>
+    );
+  }
+  return (
+    <div className="border border-red-500/30 rounded-2xl p-4 bg-red-500/[0.03]" data-testid="delete-account-form">
+      <div className="text-sm font-medium text-red-400 mb-2">Delete my account</div>
+      <p className="text-xs text-zinc-400 leading-relaxed mb-3">
+        This will hide your account and all your content for 30 days. During
+        that time you can restore everything just by signing back in. After
+        30 days it&apos;s permanently deleted — posts, wall notes, DMs, media,
+        the lot.
+      </p>
+      {needsPassword && (
+        <input
+          data-testid="delete-password"
+          type="password"
+          placeholder="Your password"
+          className="cc-input w-full mb-2"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="current-password"
+        />
+      )}
+      <input
+        data-testid="delete-confirmation"
+        placeholder="Type DELETE to confirm"
+        className="cc-input w-full mb-3"
+        value={confirmation}
+        onChange={(e) => setConfirmation(e.target.value)}
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={() => { setOpen(false); setPassword(""); setConfirmation(""); }}
+          disabled={busy}
+          className="flex-1 cc-btn-secondary text-sm"
+        >
+          Cancel
+        </button>
+        <button
+          data-testid="delete-confirm"
+          onClick={submit}
+          disabled={!canSubmit || busy}
+          className="flex-1 bg-red-500 hover:bg-red-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-white rounded-full py-2.5 text-sm font-medium transition"
+        >
+          {busy ? "Deleting…" : "Delete account"}
+        </button>
+      </div>
     </div>
   );
 }
