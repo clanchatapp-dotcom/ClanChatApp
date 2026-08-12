@@ -255,6 +255,35 @@ jobs:
             fi
           done
 
+      - name: Force compatible Google Play Services versions
+        working-directory: frontend
+        run: |
+          # Capacitor 6 + Firebase Messaging + Google OAuth end up pulling in
+          # mismatched com.google.android.gms:play-services-* AAR metadata,
+          # which Gradle 8 now rejects with "2 AAR metadata issues". Pin the
+          # transitive versions to a set that is known to co-exist. Idempotent.
+          python3 - <<'PY'
+          import pathlib
+          app = pathlib.Path("android/app/build.gradle")
+          src = app.read_text()
+          marker = "// clanchat: pinned play-services versions"
+          if marker in src:
+              print("play-services pin already present")
+          else:
+              block = (
+                  "\n" + marker + "\n"
+                  "configurations.all {\n"
+                  "    resolutionStrategy {\n"
+                  "        force 'com.google.android.gms:play-services-base:18.5.0'\n"
+                  "        force 'com.google.android.gms:play-services-tasks:18.2.0'\n"
+                  "        force 'com.google.android.gms:play-services-auth:21.2.0'\n"
+                  "    }\n"
+                  "}\n"
+              )
+              app.write_text(src.rstrip() + "\n" + block)
+              print("app build.gradle patched with play-services resolutionStrategy")
+          PY
+
       - name: Make gradlew executable
         working-directory: frontend/android
         run: chmod +x gradlew
