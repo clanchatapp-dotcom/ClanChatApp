@@ -86,6 +86,7 @@ export default function Login() {
         msg.includes("invalid login credentials") ||
         msg.includes("user not found") ||
         msg.includes("email not confirmed") ||
+        msg.includes("no supabase session") ||
         msg.includes("provider is not enabled");
       if (!shouldFallback) {
         setErr(sbErr.message || String(sbErr));

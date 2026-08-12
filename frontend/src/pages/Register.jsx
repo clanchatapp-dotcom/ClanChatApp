@@ -39,12 +39,23 @@ export default function Register() {
       // (production not yet redeployed → 404 on /api/auth/supabase-login
       // or /api/supabase/config), when config is missing, or when
       // provider isn't enabled yet.
+      //
+      // ALSO fall through when Supabase itself succeeded but returned
+      // no session (email-confirmation is enabled on the project — the
+      // Supabase user exists but they can't log in until they click a
+      // link in their email). Rather than blocking the user, we create
+      // the ClanChat account directly via the legacy endpoint so they
+      // can start using the app immediately. This was the "no-one can
+      // sign up" incident on production.
       const shouldFallback =
         status === 404 || status === 502 || status === 503 ||
         msg.includes("supabase config unavailable") ||
         msg.includes("network error") ||
         msg.includes("failed to fetch") ||
         msg.includes("provider is not enabled") ||
+        msg.includes("no supabase session") ||
+        msg.includes("email not confirmed") ||
+        msg.includes("email link is invalid") ||
         msg === "";
       if (!shouldFallback) {
         setErr(sbErr.message || String(sbErr));
