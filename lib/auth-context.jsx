@@ -123,6 +123,44 @@ export function AuthProvider({ children }) {
     return exchangeSupabaseToken({ access_token: g.access_token, provider: 'google' })
   }, [config.configured, exchangeSupabaseToken])
 
+  // ---- Emergent-managed Google -------------------------------------------
+  const signInWithEmergent = useCallback(() => {
+    const callback = new URL('/auth/emergent/callback', window.location.origin)
+    const authUrl = new URL('https://auth.emergentagent.com/')
+    authUrl.searchParams.set('redirect', callback.toString())
+    window.location.assign(authUrl.toString())
+  }, [])
+
+  // Called by the callback page with the session_id from the URL fragment.
+  const handleEmergentSession = useCallback(async (session_id) => {
+    const res = await fetch('/api/auth/emergent/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const err = new Error(data.message || data.error || 'Sign-in failed')
+      err.status = res.status
+      err.data = data
+      throw err
+    }
+    if (data.needs_profile) {
+      setPendingProfile({
+        ...data,
+        provider: 'emergent',
+        profile_ticket: data.profile_ticket,
+      })
+      return data
+    }
+    if (data.token) {
+      saveToken(data.token)
+      setUser(data.user)
+      setPendingProfile(null)
+    }
+    return data
+  }, [])
+
   // Page 1 email/password "Continue" -> go to profile step (no account yet)
   const registerWithPassword = useCallback(({ email, password, dob }) => {
     setPendingProfile({
@@ -160,6 +198,7 @@ export function AuthProvider({ children }) {
       provider: p.provider || 'google',
       access_token: p.access_token,
       password: p.password,
+      profile_ticket: p.profile_ticket,
       email,
       handle,
       display_name,
@@ -269,6 +308,8 @@ export function AuthProvider({ children }) {
     config,
     loading,
     signInWithGoogle,
+    signInWithEmergent,
+    handleEmergentSession,
     registerWithPassword,
     signInWithPassword,
     completeProfile,

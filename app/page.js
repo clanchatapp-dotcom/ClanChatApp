@@ -64,7 +64,7 @@ function Row({ k, v }) {
 }
 
 export default function App() {
-  const { user, loading, config, signInWithGoogle, registerWithPassword, signInWithPassword, logout } = useAuth()
+  const { user, loading, config, signInWithGoogle, signInWithEmergent, registerWithPassword, signInWithPassword, logout } = useAuth()
   const [mode, setMode] = useState('signup') // 'signup' | 'signin'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -90,10 +90,10 @@ export default function App() {
   const handleGoogle = async () => {
     setBusy(true)
     try {
-      await signInWithGoogle()
+      // Emergent-managed Google sign-in (redirects to auth.emergentagent.com).
+      signInWithEmergent()
     } catch (e) {
       toast.error(e.message || 'Google sign-in failed')
-    } finally {
       setBusy(false)
     }
   }

@@ -183,6 +183,74 @@ async function handleRoute(request, { params }) {
       return json({ access_token: `mock.${payload}`, email, name, mock: true })
     }
 
+    // -- Emergent-managed Google: exchange session_id for identity -----------
+    if (route === '/auth/emergent/exchange' && method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const sessionId = body.session_id
+      if (!sessionId || typeof sessionId !== 'string') {
+        return json({ error: 'session_id_required', message: 'Missing session_id.' }, 400)
+      }
+
+      // Server-to-server identity lookup. Try the documented endpoint first,
+      // then fall back to the widely-used Emergent session-data endpoint.
+      let identity = null
+      try {
+        const up = await fetch('https://auth.emergentagent.com/api/auth/session', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId }),
+          cache: 'no-store',
+        })
+        if (up.ok) identity = await up.json()
+      } catch (e) {}
+      if (!identity) {
+        try {
+          const up2 = await fetch('https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data', {
+            method: 'GET',
+            headers: { 'X-Session-ID': sessionId },
+            cache: 'no-store',
+          })
+          if (up2.ok) identity = await up2.json()
+        } catch (e) {}
+      }
+      if (!identity) {
+        return json({ error: 'invalid_session', message: 'Invalid or expired Emergent session.' }, 401)
+      }
+
+      const eu = identity.user || identity
+      const emEmail = String(eu.email || '').trim().toLowerCase()
+      if (!emEmail) {
+        return json({ error: 'no_email', message: 'Emergent returned no email.' }, 502)
+      }
+
+      // Returning user -> straight in
+      const existing = await users.findOne({ email: emEmail })
+      if (existing) {
+        const token = signJWT({ sub: existing.id, email: existing.email, handle: existing.handle })
+        return json({ token, user: cleanUser(existing) })
+      }
+
+      // New user -> mint a short-lived profile ticket and send to /complete-profile
+      const ticket = signJWT(
+        {
+          purpose: 'profile',
+          provider: 'emergent',
+          email: emEmail,
+          name: eu.name || '',
+          picture: eu.picture || null,
+          emergent_user_id: eu.user_id || eu.id || null,
+        },
+        900,
+      )
+      return json({
+        needs_profile: true,
+        provider: 'emergent',
+        supabase_email: emEmail,
+        supabase_name: eu.name || '',
+        profile_ticket: ticket,
+      })
+    }
+
     // -- Supabase login / profile completion ---------------------------------
     if (route === '/auth/supabase-login' && method === 'POST') {
       const body = await request.json().catch(() => ({}))
@@ -227,9 +295,17 @@ async function handleRoute(request, { params }) {
       }
 
       const authProvider = provider === 'password' ? 'password' : 'google'
+      let emergentMeta = {}
 
-      // For google we require a verified session; for password we require a password
-      if (authProvider === 'google') {
+      // For google we require a verified session; password requires a password;
+      // emergent requires a valid one-time profile ticket minted at /auth/emergent/exchange.
+      if (provider === 'emergent') {
+        const ticket = verifyJWT(body.profile_ticket)
+        if (!ticket || ticket.purpose !== 'profile') {
+          return json({ error: 'invalid_ticket', message: 'Your sign-in expired. Please sign up again.' }, 401)
+        }
+        emergentMeta = { emergent_user_id: ticket.emergent_user_id || null, picture: ticket.picture || null }
+      } else if (authProvider === 'google') {
         const identity = await verifySupabaseToken(access_token)
         if (!identity || !identity.email) {
           return json({ error: 'invalid_token', message: 'Google session expired. Please sign up again.' }, 401)
@@ -257,8 +333,10 @@ async function handleRoute(request, { params }) {
         age,
         is_minor: age < 18,
         auth_provider: authProvider,
+        auth_source: provider === 'emergent' ? 'emergent_google' : provider,
         password_hash: authProvider === 'password' ? hashPassword(password) : null,
         created_at: new Date(),
+        ...emergentMeta,
       }
       await users.insertOne(user)
       const token = signJWT({ sub: user.id, email: user.email, handle: user.handle })
