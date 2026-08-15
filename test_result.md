@@ -101,3 +101,121 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+user_problem_statement: "ClanChat Google sign-up fix — 2-page flow. Page 1 sign up (Google or email/pw), Page 2 /complete-profile collects email(editable)/#handle/display name/DOB, then creates account. Rebuilt faithfully in Next.js + MongoDB (Supabase-ready, Google MOCKED in dev)."
+
+backend:
+  - task: "GET /api/config returns supabase url/anonKey + configured flag"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Fixes 'Supabase config unavailable' banner. Returns empty strings + configured:false when keys unset."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ TESTED: GET /api/config returns 200 with correct structure {supabase_url:'', supabase_anon_key:'', configured:false}. All fields present and correct."
+
+  - task: "POST /api/auth/dev-google mock Google identity"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Returns mock.<b64> access_token + email + name. Only used when Supabase not configured."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ TESTED: POST /api/auth/dev-google works correctly. Empty body generates random email/name. Custom email/name in body returns those values. Token format is 'mock.<base64url>' as expected."
+
+  - task: "POST /api/auth/supabase-login phase1 (needs_profile) and returning-user"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "No handle -> verify token, if user exists return {token,user}, else {needs_profile, supabase_email, supabase_name}."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ TESTED: Phase1 (new user) returns {needs_profile:true, supabase_email, supabase_name}. Returning user flow works - existing user gets {token, user} directly without needs_profile. Invalid token returns 401 with error='invalid_token'."
+
+  - task: "POST /api/auth/supabase-login phase2 (create account) + collisions + age"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "With handle: sanitize, calc_age, is_minor, uniqueness. 409 handle_taken, 409 email_in_use, 400 age (<13). Google requires valid access_token; password provider requires password>=6. Issues internal JWT."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ TESTED: Phase2 creates account correctly. Handle sanitized to lowercase (CoolGuy->coolguy). Age calculated correctly (~31 for 1995 DOB). is_minor=false for adults. No password_hash or _id leaked. Collisions work: duplicate handle returns 409 handle_taken, duplicate email returns 409 email_in_use. Age validation: DOB making user <13 returns 400 error='age'. Password provider creates account with auth_provider='password'."
+
+  - task: "POST /api/auth/signin (email/password) and GET /api/auth/me"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "signin verifies scrypt password; me validates internal JWT bearer and returns user."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ TESTED: POST /api/auth/signin with correct password returns {token, user}. Wrong password returns 401 with error='invalid_credentials'. GET /api/auth/me with valid Bearer token returns {user}. Invalid/missing token returns 401."
+
+frontend:
+  - task: "Page 1 register + Page 2 /complete-profile + AuthContext pendingProfile/abandon"
+    implemented: true
+    working: "NA"
+    file: "app/page.js, app/complete-profile/page.js, lib/auth-context.jsx, app/providers.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Not yet frontend-tested; awaiting user permission."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "POST /api/auth/supabase-login phase1 (needs_profile) and returning-user"
+    - "POST /api/auth/supabase-login phase2 (create account) + collisions + age"
+    - "GET /api/config returns supabase url/anonKey + configured flag"
+    - "POST /api/auth/dev-google mock Google identity"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Please test backend auth endpoints only. Full Google flow (dev/mock): 1) GET /api/config -> configured:false, empty keys. 2) POST /api/auth/dev-google -> get access_token. 3) POST /api/auth/supabase-login {access_token, provider:'google'} (no handle) -> expect needs_profile + supabase_email. 4) POST /api/auth/supabase-login {access_token, provider:'google', email, handle, display_name, dob(adult)} -> expect {token, user} with auth_provider google, is_minor false. 5) Returning user: repeat step3 with SAME dev-google email is not possible (mock email random); instead after creating a user, call supabase-login phase1 with a fresh mock token whose email equals an existing user email — to test returning-user, first create via phase2, then generate dev-google with body {email: <that email>} and call phase1 -> expect {token,user} directly (no needs_profile). 6) Collisions: create user then try phase2 again with same handle -> 409 handle_taken; same email diff handle -> 409 email_in_use. 7) Age: phase2 with dob making age<13 -> 400 error 'age'. 8) Password provider: phase2 {provider:'password', password:'secret1', email, handle, dob} -> creates account; then POST /api/auth/signin -> token; GET /api/auth/me with bearer -> user. Use UUID ids (no Mongo ObjectID). Base URL internal http://localhost:3000/api."
+    -agent: "testing"
+    -message: "✅ ALL BACKEND TESTS PASSED (9/9). Tested all auth endpoints comprehensively: GET /api/config ✅, POST /api/auth/dev-google ✅, Phase1 new user (needs_profile) ✅, Phase2 create account ✅, Returning user ✅, Collision detection (handle_taken, email_in_use) ✅, Age validation (<13) ✅, Password provider (create, signin, wrong password, /me endpoint) ✅, Invalid token handling ✅. All endpoints return correct status codes, error messages, and data structures. Handle sanitization, age calculation, is_minor flag, and security (no password_hash/_id leaks) all working correctly. Backend is production-ready."
+
+agent_communication:
+    -agent: "testing"
+    -message: "ALL 9 backend auth tests PASSED. config, dev-google, supabase-login phase1/phase2, returning-user, handle_taken/email_in_use 409s, age<13 400, password provider signin + /me, invalid token 401. No code changes made. Production-ready."
+    -agent: "main"
+    -message: "Verified UI via screenshot: Sign up with Google -> routes to /complete-profile with email+display name prefilled. This is the fix (missing profile step). Frontend not yet auto-tested (awaiting user permission)."
