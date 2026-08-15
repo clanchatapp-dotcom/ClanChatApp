@@ -6,6 +6,21 @@ import { getSupabase } from '@/lib/supabase-client'
 const TOKEN_KEY = 'clanchat_token'
 const AuthContext = createContext(null)
 
+// Detect Capacitor native runtime (APK/iOS). Safe on web (returns false).
+function isNativePlatform() {
+  try {
+    if (typeof window === 'undefined' || !window.Capacitor) return false
+    return window.Capacitor.isNativePlatform
+      ? window.Capacitor.isNativePlatform()
+      : !!window.Capacitor.isNative
+  } catch (e) {
+    return false
+  }
+}
+
+// The custom scheme the APK registers to receive the OAuth return.
+const NATIVE_REDIRECT = 'clanchat://auth-callback'
+
 export function useAuth() {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error('useAuth must be used within AuthProvider')
@@ -76,13 +91,29 @@ export function AuthProvider({ children }) {
   // ---- public actions -----------------------------------------------------
   const signInWithGoogle = useCallback(async () => {
     if (config.configured && supabaseRef.current) {
-      await supabaseRef.current.auth.signInWithOAuth({
+      const supabase = supabaseRef.current
+      const isNative = isNativePlatform()
+      // WEB: return to the site origin. NATIVE: return to the deep link so the
+      // APK can re-enter itself instead of loading a web URL that 404s.
+      const redirectTo = isNative ? NATIVE_REDIRECT : window.location.origin
+      const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo, skipBrowserRedirect: isNative },
       })
+      if (error) throw error
+      if (isNative && data?.url) {
+        // Open Google in a Chrome Custom Tab. Requires @capacitor/browser in the
+        // native project; Google blocks OAuth inside a plain WebView.
+        const Browser = window.Capacitor?.Plugins?.Browser
+        if (Browser?.open) {
+          await Browser.open({ url: data.url })
+        } else {
+          window.open(data.url, '_system')
+        }
+      }
       return { redirecting: true }
     }
-    // MOCKED dev path (no Supabase keys yet)
+    // MOCKED dev path (no Supabase keys set)
     const r = await fetch('/api/auth/dev-google', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -155,6 +186,7 @@ export function AuthProvider({ children }) {
   // ---- boot / hydrate -----------------------------------------------------
   useEffect(() => {
     let unsub = null
+    let appUrlUnsub = null
     ;(async () => {
       // 1) load public config
       let cfg = { configured: false, supabase_url: '', supabase_anon_key: '' }
@@ -200,11 +232,34 @@ export function AuthProvider({ children }) {
           }
         })
         unsub = sub?.subscription
+
+        // 5) NATIVE: handle the deep-link return clanchat://auth-callback?code=...
+        // On native, detectSessionInUrl can't process a custom scheme, so we
+        // exchange the code manually; the SIGNED_IN listener above then runs.
+        if (isNativePlatform() && window.Capacitor?.Plugins?.App?.addListener) {
+          try {
+            const appListener = await window.Capacitor.Plugins.App.addListener('appUrlOpen', async ({ url }) => {
+              try {
+                if (!url || url.indexOf(NATIVE_REDIRECT) !== 0) return
+                try { await window.Capacitor?.Plugins?.Browser?.close?.() } catch (e) {}
+                const params = new URLSearchParams((url.split('?')[1] || ''))
+                const code = params.get('code')
+                if (code && !readToken()) {
+                  await supabase.auth.exchangeCodeForSession(code)
+                }
+              } catch (e) {}
+            })
+            appUrlUnsub = appListener
+          } catch (e) {}
+        }
       }
 
       setLoading(false)
     })()
-    return () => { try { unsub?.unsubscribe() } catch (e) {} }
+    return () => {
+      try { unsub?.unsubscribe() } catch (e) {}
+      try { appUrlUnsub?.remove?.() } catch (e) {}
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

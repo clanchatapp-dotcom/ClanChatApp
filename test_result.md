@@ -223,3 +223,29 @@ agent_communication:
 agent_communication:
     -agent: "main"
     -message: "Supabase real Google OAuth configured (SUPABASE_URL + sb_publishable_ key in .env). /api/config -> configured:true. dev-google mock disabled (404). Verified via browser: 'Sign up with Google' redirects to real Google consent (client_id 24500940599, redirect_uri supabase /auth/v1/callback, redirect_to app origin). Final login step requires manual Google credentials (cannot automate). Backend token validation uses GET SUPABASE_URL/auth/v1/user with apikey=publishable + Bearer accessToken per verified playbook."
+
+frontend:
+  - task: "Native-aware Google OAuth (deep link clanchat://auth-callback) + web regression"
+    implemented: true
+    working: true
+    file: "lib/auth-context.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Added isNativePlatform(); on native redirectTo=clanchat://auth-callback + skipBrowserRedirect + open via Capacitor Browser; appUrlOpen listener exchangeCodeForSession. Web path unchanged (redirectTo=origin). Need regression test that WEB Google button still redirects to accounts.google.com and email/password + /complete-profile still work. Native APK cannot be tested in this container."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ REGRESSION TEST PASSED (6/6 scenarios). WEB app unaffected by native code. 1) Register page renders correctly with NO dev banner (Supabase configured). 2) 'Sign up with Google' redirects to accounts.google.com with correct client_id and supabase.co redirect_uri. 3) Email/password signup navigates to /complete-profile with email prefilled and editable. 4) Account creation works, displays 'You're in.' screen with all user data (display name, handle, email, provider=password). 5) Collision detection works (handle_taken error), age validation works (<13 error). 6) Abandon/reset flow works (Back button returns to clean state). NO Capacitor-related console errors. NO console errors. Native APK not testable in this environment."
+
+agent_communication:
+    -agent: "main"
+    -message: "Please REGRESSION-test the WEB app only (native APK not testable here). 1) Load / -> 'Join the clubhouse' page, no dev banner (Supabase configured). 2) Click 'Sign up with Google' -> browser navigates to accounts.google.com consent (real OAuth). Do NOT attempt to complete Google login. 3) Back on /, test email/password path: fill Email + Password(>=6) + DOB(adult) -> Continue -> must route to /complete-profile with email prefilled. 4) On /complete-profile: enter unique #handle + display name + DOB -> Create account -> should land on logged-in 'You're in' screen. 5) Test inline errors: reuse same handle -> 'handle already taken'; age<13 dob -> age error. Confirm no console crashes from the new native code on web."
+    -agent: "testing"
+    -message: "✅ ALL WEB REGRESSION TESTS PASSED. Native-aware code does NOT break WEB flow. Tested: register page (no dev banner), Google OAuth redirect (accounts.google.com with correct params), email/password signup to /complete-profile (email prefilled & editable), account creation (logged-in screen shows correctly), collision errors (handle_taken), age validation (<13), abandon/reset (Back button). NO Capacitor console errors. NO console errors. WEB app is production-ready. Native APK cannot be tested in this container."
+
+agent_communication:
+    -agent: "testing"
+    -message: "WEB regression PASSED (6/6). Register page no dev banner; Google button redirects to accounts.google.com with correct client_id + supabase callback; email/password -> /complete-profile prefilled; account creation -> logged-in screen; handle_taken + age<13 inline errors; Back abandon reset works. NO Capacitor/console errors. Native APK not testable in container."
