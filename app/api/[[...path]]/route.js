@@ -109,8 +109,9 @@ function cleanUser(u) {
 // Verify a Supabase (or mock) OAuth access token -> { email, name, sub }
 async function verifySupabaseToken(accessToken) {
   if (!accessToken) return null
-  // MOCK dev tokens: "mock.<base64url(json)>"
-  if (accessToken.startsWith('mock.')) {
+  const supaConfigured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY)
+  // MOCK dev tokens: "mock.<base64url(json)>" — only honored when Supabase is NOT configured
+  if (!supaConfigured && accessToken.startsWith('mock.')) {
     try {
       const payload = JSON.parse(Buffer.from(accessToken.slice(5), 'base64url').toString())
       return { email: payload.email, name: payload.name || '', sub: payload.sub || payload.email }
@@ -171,6 +172,9 @@ async function handleRoute(request, { params }) {
 
     // -- DEV mock Google identity (used only when Supabase not configured) ---
     if (route === '/auth/dev-google' && method === 'POST') {
+      if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+        return json({ error: 'disabled', message: 'Dev Google mock is disabled; real Supabase is configured.' }, 404)
+      }
       const body = await request.json().catch(() => ({}))
       const rand = crypto.randomBytes(3).toString('hex')
       const email = (body.email || `googler_${rand}@gmail.com`).toLowerCase()

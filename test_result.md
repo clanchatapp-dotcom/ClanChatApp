@@ -219,3 +219,7 @@ agent_communication:
     -message: "ALL 9 backend auth tests PASSED. config, dev-google, supabase-login phase1/phase2, returning-user, handle_taken/email_in_use 409s, age<13 400, password provider signin + /me, invalid token 401. No code changes made. Production-ready."
     -agent: "main"
     -message: "Verified UI via screenshot: Sign up with Google -> routes to /complete-profile with email+display name prefilled. This is the fix (missing profile step). Frontend not yet auto-tested (awaiting user permission)."
+
+agent_communication:
+    -agent: "main"
+    -message: "Supabase real Google OAuth configured (SUPABASE_URL + sb_publishable_ key in .env). /api/config -> configured:true. dev-google mock disabled (404). Verified via browser: 'Sign up with Google' redirects to real Google consent (client_id 24500940599, redirect_uri supabase /auth/v1/callback, redirect_to app origin). Final login step requires manual Google credentials (cannot automate). Backend token validation uses GET SUPABASE_URL/auth/v1/user with apikey=publishable + Bearer accessToken per verified playbook."
