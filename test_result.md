@@ -287,8 +287,8 @@ backend:
 
 metadata:
   created_by: "main_agent"
-  version: "1.3"
-  test_sequence: 3
+  version: "1.4"
+  test_sequence: 4
   run_ui: false
 
 test_plan:
@@ -308,3 +308,35 @@ agent_communication:
     -message: "Emergent-managed Google backend: 7/7 PASSED. exchange {} -> 400; fake session -> 401 (graceful, not 500); phase2 emergent without/garbage ticket -> 401 invalid_ticket; password regression (create/signin/me) OK; google phase1 invalid -> 401; config configured:true."
     -agent: "main"
     -message: "Frontend verified via screenshot: primary 'Sign up with Google' -> auth.emergentagent.com -> Google consent 'to continue to emergentagent.com' (Emergent-managed). Callback route /auth/emergent/callback reads #session_id and exchanges. Real login completion needs live Google creds (cannot automate). No API keys required for this integration."
+
+backend:
+  - task: "BUGFIX: /api/auth/signin returns oauth_account (409) for Google accounts instead of misleading invalid_credentials"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Root cause of 'invalid username/password': user's account was created via Google (auth_provider!=password, no password_hash). Now signin detects OAuth accounts and returns 409 {error:'oauth_account', provider} so frontend guides user to Google button. Seeded test account googleonly@example.com (auth_provider google, no password) via scripts/seed_google_user.js."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ TESTED (4/4 PASSED): 1) POST /api/auth/signin with googleonly@example.com (Google account) + any password -> 409 with error='oauth_account', provider='google', message='This account was created with Google. Please sign in with Google.' ✅. 2) Create password account (realpw@example.com) with POST /api/auth/supabase-login -> 200 {token,user auth_provider='password'}, then POST /api/auth/signin with correct credentials -> 200 {token,user} ✅. 3) POST /api/auth/signin with correct email but wrong password -> 401 with error='invalid_credentials' ✅. 4) POST /api/auth/signin with non-existent email -> 401 with error='invalid_credentials' ✅. Bugfix working correctly - OAuth accounts now return helpful 409 instead of misleading 401."
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Verify signin bugfix. A Google-only account was pre-seeded: email 'googleonly@example.com' (auth_provider 'google', password_hash null). Tests: 1) POST /api/auth/signin {email:'googleonly@example.com', password:'whatever'} -> expect 409, error 'oauth_account', provider 'google', message referencing Google. 2) Create a password account: POST /api/auth/supabase-login {provider:'password', password:'secret1', email:'realpw@example.com', handle:'realpw', dob:'1990-01-01'} -> 200. Then POST /api/auth/signin {email:'realpw@example.com', password:'secret1'} -> 200 {token,user}. 3) POST /api/auth/signin {email:'realpw@example.com', password:'wrong'} -> 401 invalid_credentials. 4) POST /api/auth/signin {email:'doesnotexist@example.com', password:'x'} -> 401 invalid_credentials. Base http://localhost:3000/api."
+    -agent: "testing"
+    -message: "✅ ALL 4 SIGNIN BUGFIX TESTS PASSED. 1) Google account (googleonly@example.com) signin attempt -> 409 with error='oauth_account', provider='google', message='This account was created with Google. Please sign in with Google.' ✅. 2) Password account creation and signin -> 200 {token,user} with auth_provider='password' ✅. 3) Wrong password -> 401 with error='invalid_credentials' ✅. 4) Non-existent email -> 401 with error='invalid_credentials' ✅. Bugfix working correctly - OAuth accounts now return helpful 409 instead of misleading 401. No code changes made during testing."
+
+agent_communication:
+    -agent: "testing"
+    -message: "BUGFIX verified 4/4. Google account signin -> 409 oauth_account provider google with Google-guidance message. Password account create+signin 200. Wrong password 401 invalid_credentials. Unknown email 401 invalid_credentials."

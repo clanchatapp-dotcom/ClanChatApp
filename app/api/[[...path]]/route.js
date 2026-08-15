@@ -348,7 +348,17 @@ async function handleRoute(request, { params }) {
       const body = await request.json().catch(() => ({}))
       const email = String(body.email || '').trim().toLowerCase()
       const user = await users.findOne({ email })
-      if (!user || user.auth_provider !== 'password' || !verifyPassword(body.password || '', user.password_hash)) {
+      // Account exists but was created via an OAuth provider (Google/Emergent):
+      // it has no password, so guide the user to the Google button instead of
+      // a misleading "invalid credentials".
+      if (user && user.auth_provider !== 'password') {
+        return json({
+          error: 'oauth_account',
+          provider: user.auth_provider,
+          message: 'This account was created with Google. Please sign in with Google.',
+        }, 409)
+      }
+      if (!user || !verifyPassword(body.password || '', user.password_hash)) {
         return json({ error: 'invalid_credentials', message: 'Invalid email or password.' }, 401)
       }
       const token = signJWT({ sub: user.id, email: user.email, handle: user.handle })

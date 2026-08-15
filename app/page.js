@@ -111,7 +111,11 @@ export default function App() {
     try {
       await signInWithPassword({ email, password })
     } catch (e) {
-      toast.error(e.message || 'Sign in failed')
+      if (e?.data?.error === 'oauth_account') {
+        toast.error('This account was created with Google. Tap "Sign in with Google" above.', { duration: 6000 })
+      } else {
+        toast.error(e.message || 'Sign in failed')
+      }
     } finally {
       setBusy(false)
     }
