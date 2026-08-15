@@ -340,3 +340,37 @@ agent_communication:
 agent_communication:
     -agent: "testing"
     -message: "BUGFIX verified 4/4. Google account signin -> 409 oauth_account provider google with Google-guidance message. Password account create+signin 200. Wrong password 401 invalid_credentials. Unknown email 401 invalid_credentials."
+
+backend:
+  - task: "POST /api/auth/lookup (account-type detection for wrong-sign-in-method helper)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Returns {exists, auth_provider} for an email. Powers inline helper that points Google accounts to the Google button."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ TESTED (5/5 PASSED): 1) POST /api/auth/lookup with googleonly@example.com (Google account) -> 200 with exists=true, auth_provider='google' ✅. 2) Created password account lookuppw@example.com, then POST /api/auth/lookup -> 200 with exists=true, auth_provider='password' ✅. 3) POST /api/auth/lookup with nobody-xyz@example.com (non-existent) -> 200 with exists=false, auth_provider=null ✅. 4) POST /api/auth/lookup with 'notanemail' (invalid email) -> 200 with exists=false, auth_provider=null ✅. 5) REGRESSION: POST /api/auth/signin with googleonly@example.com (Google account) + any password -> 409 with error='oauth_account', provider='google' ✅. Lookup endpoint working correctly for all scenarios."
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Test /api/auth/lookup. Pre-seeded google account googleonly@example.com exists (auth_provider google). 1) POST /api/auth/lookup {email:'googleonly@example.com'} -> {exists:true, auth_provider:'google'}. 2) Create password acct realpw@example.com (may already exist from earlier tests) then POST /api/auth/lookup {email:'realpw@example.com'} -> {exists:true, auth_provider:'password'}. 3) POST {email:'nobody@x.com'} -> {exists:false, auth_provider:null}. 4) POST {email:'notanemail'} -> {exists:false, auth_provider:null}. Base http://localhost:3000/api."
+    -agent: "testing"
+    -message: "✅ ALL 5 LOOKUP ENDPOINT TESTS PASSED. 1) Lookup Google account (googleonly@example.com) -> 200 with exists=true, auth_provider='google' ✅. 2) Created password account (lookuppw@example.com), then lookup -> 200 with exists=true, auth_provider='password' ✅. 3) Lookup non-existent account (nobody-xyz@example.com) -> 200 with exists=false, auth_provider=null ✅. 4) Lookup invalid email (notanemail) -> 200 with exists=false, auth_provider=null ✅. 5) REGRESSION: Signin with Google account (googleonly@example.com) + password -> 409 with error='oauth_account', provider='google' ✅. Lookup endpoint working correctly for all scenarios. No code changes made during testing."
+
+agent_communication:
+    -agent: "testing"
+    -message: "/api/auth/lookup 5/5 PASSED: google->{exists,auth_provider:google}, password->password, unknown->{exists:false}, invalid email->{exists:false}, signin google regression 409 oauth_account."
+    -agent: "main"
+    -message: "Frontend verified via screenshot: Sign in mode + Google email on blur shows orange helper 'This account uses Google sign-in' + white 'Continue with Google' button. Also handles: unknown email -> 'Create one', existing email in signup -> 'Sign in instead', plus 'Wrong sign-in method?' link."

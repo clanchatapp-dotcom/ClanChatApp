@@ -343,6 +343,17 @@ async function handleRoute(request, { params }) {
       return json({ token, user: cleanUser(user) })
     }
 
+    // -- Account type lookup (powers the "wrong sign-in method?" helper) -----
+    if (route === '/auth/lookup' && method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const email = String(body.email || '').trim().toLowerCase()
+      if (!email || !email.includes('@')) {
+        return json({ exists: false, auth_provider: null })
+      }
+      const user = await users.findOne({ email })
+      return json({ exists: Boolean(user), auth_provider: user ? user.auth_provider : null })
+    }
+
     // -- Email/password sign-in ----------------------------------------------
     if (route === '/auth/signin' && method === 'POST') {
       const body = await request.json().catch(() => ({}))

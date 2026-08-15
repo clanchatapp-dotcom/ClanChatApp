@@ -70,6 +70,30 @@ export default function App() {
   const [password, setPassword] = useState('')
   const [dob, setDob] = useState('')
   const [busy, setBusy] = useState(false)
+  const [authHint, setAuthHint] = useState(null) // {type:'google'|'password'|'none'}
+
+  // Detect what sign-in method an email belongs to, to point users at the
+  // right button ("wrong sign-in method?" helper).
+  const checkAccount = async (value) => {
+    const addr = (value ?? email).trim().toLowerCase()
+    if (!addr.includes('@')) {
+      setAuthHint(null)
+      return
+    }
+    try {
+      const r = await fetch('/api/auth/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: addr }),
+      })
+      const d = await r.json()
+      if (!d.exists) setAuthHint({ type: 'none' })
+      else if (d.auth_provider === 'password') setAuthHint({ type: 'password' })
+      else setAuthHint({ type: 'google' })
+    } catch (e) {
+      setAuthHint(null)
+    }
+  }
 
   if (loading) {
     return (
@@ -112,7 +136,7 @@ export default function App() {
       await signInWithPassword({ email, password })
     } catch (e) {
       if (e?.data?.error === 'oauth_account') {
-        toast.error('This account was created with Google. Tap "Sign in with Google" above.', { duration: 6000 })
+        setAuthHint({ type: 'google' })
       } else {
         toast.error(e.message || 'Sign in failed')
       }
@@ -152,7 +176,13 @@ export default function App() {
         </div>
 
         <div className="space-y-4">
-          <Field type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <Field
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => { setEmail(e.target.value); setAuthHint(null) }}
+            onBlur={(e) => checkAccount(e.target.value)}
+          />
           <Field type="password" placeholder="Password (min 6)" value={password} onChange={(e) => setPassword(e.target.value)} />
           {mode === 'signup' && (
             <div className="pt-2">
@@ -170,6 +200,39 @@ export default function App() {
           )}
         </div>
 
+        {authHint?.type === 'google' && (
+          <div className="mt-5 rounded-2xl border border-orange-500/40 bg-orange-500/10 p-4">
+            <p className="text-sm text-orange-200">
+              This account uses <span className="font-semibold">Google sign-in</span> — it has no password.
+            </p>
+            <button
+              onClick={handleGoogle}
+              disabled={busy}
+              className="mt-3 w-full rounded-full bg-white text-black hover:bg-neutral-200 transition-colors py-3 flex items-center justify-center gap-2 font-semibold disabled:opacity-60"
+            >
+              <GoogleIcon /> Continue with Google
+            </button>
+          </div>
+        )}
+
+        {authHint?.type === 'none' && mode === 'signin' && (
+          <p className="mt-4 text-sm text-neutral-500">
+            No account found for this email.{' '}
+            <button onClick={() => setMode('signup')} className="text-orange-500 font-semibold hover:underline">
+              Create one
+            </button>
+          </p>
+        )}
+
+        {authHint?.type === 'password' && mode === 'signup' && (
+          <p className="mt-4 text-sm text-neutral-500">
+            You already have an account with this email.{' '}
+            <button onClick={() => setMode('signin')} className="text-orange-500 font-semibold hover:underline">
+              Sign in instead
+            </button>
+          </p>
+        )}
+
         <button
           onClick={handleContinue}
           disabled={busy}
@@ -179,10 +242,19 @@ export default function App() {
           {mode === 'signup' ? 'Continue' : 'Sign in'}
         </button>
 
+        {mode === 'signin' && !authHint && (
+          <button
+            onClick={() => checkAccount(email)}
+            className="mt-4 w-full text-center text-sm text-neutral-500 hover:text-neutral-300"
+          >
+            Wrong sign-in method?
+          </button>
+        )}
+
         <p className="mt-8 text-center text-neutral-500">
           {mode === 'signup' ? 'Already in? ' : 'New here? '}
           <button
-            onClick={() => setMode(mode === 'signup' ? 'signin' : 'signup')}
+            onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setAuthHint(null) }}
             className="text-orange-500 font-semibold hover:underline"
           >
             {mode === 'signup' ? 'Sign in' : 'Sign up'}
