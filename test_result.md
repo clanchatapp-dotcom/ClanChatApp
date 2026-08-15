@@ -249,3 +249,7 @@ agent_communication:
 agent_communication:
     -agent: "testing"
     -message: "WEB regression PASSED (6/6). Register page no dev banner; Google button redirects to accounts.google.com with correct client_id + supabase callback; email/password -> /complete-profile prefilled; account creation -> logged-in screen; handle_taken + age<13 inline errors; Back abandon reset works. NO Capacitor/console errors. Native APK not testable in container."
+
+agent_communication:
+    -agent: "main"
+    -message: "Pulled real repo (clanchatapp-dotcom/ClanChatApp) = this same Next.js workspace; NO android/ or capacitor.config or AndroidManifest in repo (APK native shell is Emergent-build-managed). Applied web-side: added @capacitor/browser@8.0.4, @capacitor/app@8.1.1, @capacitor/core@8.5.0 to package.json; auth-context native deep-link wiring in place (redirectTo clanchat://auth-callback, Custom Tab open, appUrlOpen -> exchangeCodeForSession). Web smoke-tested: page renders, Google button redirects to accounts.google.com, no console crash from new deps. REMAINING (native, cannot do from repo): AndroidManifest intent-filter for clanchat scheme + cap sync into APK -> Emergent mobile build/Support. See MOBILE_NATIVE_SETUP.md."
