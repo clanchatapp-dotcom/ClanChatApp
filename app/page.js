@@ -1,11 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
-import { Loader2, LogOut, ShieldCheck } from 'lucide-react'
+import { Loader2, LogOut, ShieldCheck, KeyRound } from 'lucide-react'
 
 function GoogleIcon() {
   return (
@@ -65,15 +65,28 @@ function Row({ k, v }) {
 
 export default function App() {
   const { user, loading, config, signInWithGoogle, signInWithEmergent, registerWithPassword, signInWithPassword, logout } = useAuth()
-  const [mode, setMode] = useState('signup') // 'signup' | 'signin'
+  const [mode, setMode] = useState('signin') // Changed default from 'signup' to 'signin'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [dob, setDob] = useState('')
   const [busy, setBusy] = useState(false)
   const [authHint, setAuthHint] = useState(null) // {type:'google'|'password'|'none'}
+  const [recoveryToken, setRecoveryToken] = useState(null)
+  const [newPassword, setNewPassword] = useState('')
 
-  // Detect what sign-in method an email belongs to, to point users at the
-  // right button ("wrong sign-in method?" helper).
+  // Check URL hash for Supabase password recovery access tokens
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const params = new URLSearchParams(window.location.hash.replace('#', '?'))
+      const accessToken = params.get('access_token')
+      const type = params.get('type')
+      if (accessToken && type === 'recovery') {
+        setRecoveryToken(accessToken)
+        setMode('reset_password')
+      }
+    }
+  }, [])
+
   const checkAccount = async (value) => {
     const addr = (value ?? email).trim().toLowerCase()
     if (!addr.includes('@')) {
@@ -114,7 +127,6 @@ export default function App() {
   const handleGoogle = async () => {
     setBusy(true)
     try {
-      // Emergent-managed Google sign-in (redirects to auth.emergentagent.com).
       signInWithEmergent()
     } catch (e) {
       toast.error(e.message || 'Google sign-in failed')
@@ -122,15 +134,43 @@ export default function App() {
     }
   }
 
+  const handleResetPassword = async () => {
+    if (newPassword.length < 6) return toast.error('Password must be at least 6 characters')
+    setBusy(true)
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/user`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${recoveryToken}`
+        },
+        body: JSON.stringify({ password: newPassword })
+      })
+      if (!res.ok) throw new Error('Failed to update password')
+      toast.success('Password updated successfully! Please log in.')
+      setMode('signin')
+      setRecoveryToken(null)
+      window.location.hash = ''
+    } catch (e) {
+      toast.error(e.message || 'Password update failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const handleContinue = async () => {
+    if (mode === 'reset_password') return handleResetPassword()
     if (!email.includes('@')) return toast.error('Enter a valid email')
+    
     if (mode === 'signup') {
       if (password.length < 6) return toast.error('Password must be at least 6 characters')
       if (!dob) return toast.error('Please enter your date of birth')
-      registerWithPassword({ email, password, dob }) // -> router guard sends to /complete-profile
+      registerWithPassword({ email, password, dob })
       return
     }
-    // signin
+
+    // Sign in mode
     setBusy(true)
     try {
       await signInWithPassword({ email, password })
@@ -156,47 +196,64 @@ export default function App() {
         )}
 
         <h1 className="text-5xl font-bold leading-tight">
-          {mode === 'signup' ? 'Join the clubhouse' : 'Welcome back'}
+          {mode === 'reset_password' ? 'Set New Password' : mode === 'signup' ? 'Join the clubhouse' : 'Welcome back'}
         </h1>
-        <p className="mt-3 text-lg text-neutral-500">Privacy by design. Zero algorithm.</p>
+        <p className="mt-3 text-lg text-neutral-500">
+          {mode === 'reset_password' ? 'Enter your new account password below.' : 'Privacy by design. Zero algorithm.'}
+        </p>
 
-        <button
-          onClick={handleGoogle}
-          disabled={busy}
-          className="mt-8 w-full rounded-full bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 transition-colors py-4 flex items-center justify-center gap-3 text-lg font-medium disabled:opacity-60"
-        >
-          <GoogleIcon />
-          {mode === 'signup' ? 'Sign up with Google' : 'Sign in with Google'}
-        </button>
+        {mode !== 'reset_password' && (
+          <>
+            <button
+              onClick={handleGoogle}
+              disabled={busy}
+              className="mt-8 w-full rounded-full bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 transition-colors py-4 flex items-center justify-center gap-3 text-lg font-medium disabled:opacity-60"
+            >
+              <GoogleIcon />
+              {mode === 'signup' ? 'Sign up with Google' : 'Sign in with Google'}
+            </button>
 
-        <div className="my-7 flex items-center gap-4">
-          <div className="h-px flex-1 bg-neutral-800" />
-          <span className="text-xs uppercase tracking-widest text-neutral-600">or</span>
-          <div className="h-px flex-1 bg-neutral-800" />
-        </div>
+            <div className="my-7 flex items-center gap-4">
+              <div className="h-px flex-1 bg-neutral-800" />
+              <span className="text-xs uppercase tracking-widest text-neutral-600">or</span>
+              <div className="h-px flex-1 bg-neutral-800" />
+            </div>
+          </>
+        )}
 
         <div className="space-y-4">
-          <Field
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => { setEmail(e.target.value); setAuthHint(null) }}
-            onBlur={(e) => checkAccount(e.target.value)}
-          />
-          <Field type="password" placeholder="Password (min 6)" value={password} onChange={(e) => setPassword(e.target.value)} />
-          {mode === 'signup' && (
-            <div className="pt-2">
-              <label className="text-xs uppercase tracking-widest text-neutral-500">Date of birth</label>
-              <input
-                type="date"
-                value={dob}
-                onChange={(e) => setDob(e.target.value)}
-                className="mt-2 w-full rounded-2xl bg-neutral-900 border border-neutral-800 px-5 py-4 text-base text-white outline-none focus:border-neutral-600 [color-scheme:dark]"
+          {mode === 'reset_password' ? (
+            <Field
+              type="password"
+              placeholder="New Password (min 6)"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+            />
+          ) : (
+            <>
+              <Field
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => { setEmail(e.target.value); setAuthHint(null) }}
+                onBlur={(e) => checkAccount(e.target.value)}
               />
-              <p className="mt-3 text-sm text-neutral-500">
-                Self-declared. Minor protection rules apply for under-18 accounts.
-              </p>
-            </div>
+              <Field type="password" placeholder="Password (min 6)" value={password} onChange={(e) => setPassword(e.target.value)} />
+              {mode === 'signup' && (
+                <div className="pt-2">
+                  <label className="text-xs uppercase tracking-widest text-neutral-500">Date of birth</label>
+                  <input
+                    type="date"
+                    value={dob}
+                    onChange={(e) => setDob(e.target.value)}
+                    className="mt-2 w-full rounded-2xl bg-neutral-900 border border-neutral-800 px-5 py-4 text-base text-white outline-none focus:border-neutral-600 [color-scheme:dark]"
+                  />
+                  <p className="mt-3 text-sm text-neutral-500">
+                    Self-declared. Minor protection rules apply for under-18 accounts.
+                  </p>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -239,7 +296,7 @@ export default function App() {
           className="mt-7 w-full rounded-full bg-orange-500 hover:bg-orange-600 transition-colors py-4 text-lg font-bold text-black disabled:opacity-60 flex items-center justify-center gap-2"
         >
           {busy && <Loader2 className="w-5 h-5 animate-spin" />}
-          {mode === 'signup' ? 'Continue' : 'Sign in'}
+          {mode === 'reset_password' ? 'Save New Password' : mode === 'signup' ? 'Continue' : 'Sign in'}
         </button>
 
         {mode === 'signin' && !authHint && (
@@ -251,15 +308,17 @@ export default function App() {
           </button>
         )}
 
-        <p className="mt-8 text-center text-neutral-500">
-          {mode === 'signup' ? 'Already in? ' : 'New here? '}
-          <button
-            onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setAuthHint(null) }}
-            className="text-orange-500 font-semibold hover:underline"
-          >
-            {mode === 'signup' ? 'Sign in' : 'Sign up'}
-          </button>
-        </p>
+        {mode !== 'reset_password' && (
+          <p className="mt-8 text-center text-neutral-500">
+            {mode === 'signup' ? 'Already in? ' : 'New here? '}
+            <button
+              onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setAuthHint(null) }}
+              className="text-orange-500 font-semibold hover:underline"
+            >
+              {mode === 'signup' ? 'Sign in' : 'Sign up'}
+            </button>
+          </p>
+        )}
       </div>
     </div>
   )
