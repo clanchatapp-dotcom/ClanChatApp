@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import api, { rememberToken, forgetToken, getToken } from "../lib/api";
 import {
@@ -15,10 +15,7 @@ import {
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  // Hydrate from localStorage on first render so cold starts don't flash
-  // the login page while /auth/me is in-flight. Any transient network hiccup
-  // that would otherwise blank the app now sees the last-known user and
-  // /auth/me confirms or clears it. Only cleared on a real 401/403 or logout.
+  // Hydrate from localStorage on first render so cold starts don't flash login page.
   const [user, setUser] = useState(() => {
     try {
       const raw = localStorage.getItem("cc_last_user");
@@ -26,14 +23,9 @@ export function AuthProvider({ children }) {
     } catch { return undefined; }
   });
   const [theme, setTheme] = useState(() => localStorage.getItem("cc_theme") || "dark");
-  // When a brand-new Supabase (Google/email) user authenticates but has no
-  // ClanChat profile yet, the backend replies { needs_profile: true, ... }.
-  // We stash that here so a global "Complete profile" screen can collect the
-  // required # handle + DOB, then finish the exchange. Without this, Google
-  // sign-in would authenticate against Supabase but never create the account.
   const [pendingProfile, setPendingProfile] = useState(null);
 
-  // Persist the user snapshot so the next cold start hydrates instantly.
+  // Persist user snapshot for cold starts
   useEffect(() => {
     try {
       if (user) localStorage.setItem("cc_last_user", JSON.stringify(user));
@@ -42,19 +34,16 @@ export function AuthProvider({ children }) {
   }, [user]);
 
   const checkAuth = useCallback(async () => {
-    if (window.location.hash?.includes("session_id=")) {
-      // Let AuthCallback handle
+    // FIX: Pause /auth/me if returning from Google OAuth redirect so checkAuth
+    // doesn't wipe the user state before exchangeSupabaseToken handles the callback.
+    if (
+      window.location.hash?.includes("session_id=") ||
+      window.location.hash?.includes("access_token=") ||
+      window.location.search?.includes("code=")
+    ) {
       return;
     }
-    // Iter 26 fix — the APK was logging users out after a few minutes of
-    // inactivity because Capacitor Preferences occasionally returns
-    // `{value:null}` right after a WebView resume, the request went out
-    // without a Bearer header, `/auth/me` returned 401, and this handler
-    // wiped the token. To avoid that:
-    //   1. Retry /auth/me ONCE with a small delay if the first attempt
-    //      returns 401 AND we still have a persisted token — that gives
-    //      the Preferences plugin time to warm up.
-    //   2. Only forgetToken() on a definitive 401 after both attempts.
+
     const attempt = () => api.get("/auth/me").then(r => r.data);
     let data = null;
     let firstErr = null;
@@ -63,8 +52,6 @@ export function AuthProvider({ children }) {
     } catch (err) {
       firstErr = err;
       const status = err?.response?.status;
-      // Retry on 401 only if we still have a persisted token — otherwise
-      // this really is an unauthenticated session and we shouldn't spam.
       if (status === 401) {
         const persisted = await getToken();
         if (persisted) {
@@ -85,26 +72,13 @@ export function AuthProvider({ children }) {
       await forgetToken();
       setUser(null);
     } else {
-      // Network error / 5xx / CORS blip / brief offline after Android
-      // resume: keep whatever user state we already have. Don't wipe
-      // token — the next mount will try again.
       setUser((prev) => (prev === undefined ? null : prev));
     }
   }, []);
 
-  // Iter 30 — Google OAuth on the Capacitor APK.
-  // OAuth opens in Chrome Custom Tabs and redirects to
-  // `clanchat://auth-callback#access_token=…&refresh_token=…`. Android
-  // routes that URL to the app via the intent filter; we grab it here,
-  // hand the tokens to Supabase, then exchange for a ClanChat JWT.
-  // (See useEffect below `exchangeSupabaseToken` — moved to avoid TDZ.)
-
   useEffect(() => { checkAuth(); }, [checkAuth]);
 
-  // Iter 26 — Android/Capacitor: when the app returns from background,
-  // re-run checkAuth so we sync any state that might have drifted while
-  // the WebView was paused (e.g. token was rotated by another device,
-  // or the OS killed a stale request mid-flight). Web is a no-op.
+  // Handle app resume for Native Capacitor
   useEffect(() => {
     let handleRef;
     let cancelled = false;
@@ -115,7 +89,6 @@ export function AuthProvider({ children }) {
         const { App } = await import("@capacitor/app");
         handleRef = await App.addListener("appStateChange", ({ isActive }) => {
           if (isActive && !cancelled) {
-            // Small debounce so we don't fight the WebView unpause.
             setTimeout(() => { checkAuth(); }, 300);
           }
         });
@@ -147,11 +120,6 @@ export function AuthProvider({ children }) {
     return data.user;
   };
   const logout = async () => {
-    // Clear local auth state IMMEDIATELY so the UI responds instantly and
-    // sign-out can never hang. Previously we awaited the server logout AND
-    // supabaseSignOut() (both network calls) before clearing state — on
-    // mobile / slow networks those stalled, so the Sign out button appeared
-    // to "do nothing". The remote cleanups are best-effort, fire-and-forget.
     await forgetToken();
     try { localStorage.removeItem("cc_last_user"); } catch { /* ignore */ }
     setPendingProfile(null);
@@ -165,19 +133,6 @@ export function AuthProvider({ children }) {
     return data;
   };
 
-  // ------------------------------------------------------------------
-  // Supabase-powered sign-in helpers.
-  //
-  // Flow: authenticate against Supabase → grab the fresh access token →
-  // exchange it for a ClanChat JWT via /api/auth/supabase-login → set
-  // the user on the context. The internal JWT is still what the rest
-  // of the app uses for API calls, so we don't touch the axios
-  // interceptor or the ~200 backend Depends(get_current_user) sites.
-  //
-  // For brand-new Supabase users the backend replies with
-  // { needs_profile: true, supabase_email, supabase_name } so the caller
-  // can prompt for DOB + handle and re-submit with those fields.
-  // ------------------------------------------------------------------
   const exchangeSupabaseToken = useCallback(async ({ dob, handle } = {}) => {
     const access_token = await sbGetAccessToken();
     if (!access_token) throw new Error("No Supabase session");
@@ -185,13 +140,11 @@ export function AuthProvider({ children }) {
       access_token, dob, handle,
     });
     if (data.needs_profile) {
-      // Surface the "complete profile" screen. Keep the email/name so the
-      // UI can greet the user by name while they pick a handle + DOB.
       setPendingProfile({
         email: data.supabase_email || "",
         name: data.supabase_name || "",
       });
-      return data; // caller must collect DOB/handle
+      return data;
     }
     if (data.access_token) await rememberToken(data.access_token, data.refresh_token);
     setPendingProfile(null);
@@ -199,7 +152,12 @@ export function AuthProvider({ children }) {
     return data;
   }, []);
 
-  // Called by the CompleteProfile screen once the user supplies handle + DOB.
+  // FIX: Stable ref to prevent onSupabaseAuth from re-subscribing in an infinite loop
+  const exchangeRef = useRef(exchangeSupabaseToken);
+  useEffect(() => {
+    exchangeRef.current = exchangeSupabaseToken;
+  }, [exchangeSupabaseToken]);
+
   const completeSupabaseProfile = useCallback(async (dob, handle) => {
     return exchangeSupabaseToken({ dob, handle });
   }, [exchangeSupabaseToken]);
@@ -215,9 +173,6 @@ export function AuthProvider({ children }) {
   }, [exchangeSupabaseToken]);
 
   const loginWithSupabaseGoogle = useCallback(async () => {
-    // OAuth redirect kicks the browser to Google. On return the Supabase
-    // SDK auto-hydrates the session and the useEffect below picks up
-    // SIGNED_IN and exchanges the token.
     await sbSignInGoogle();
     return null;
   }, []);
@@ -226,34 +181,27 @@ export function AuthProvider({ children }) {
     return sbSendPasswordReset(email);
   }, []);
 
-  // On mount, hydrate any pending Supabase session (fresh OAuth redirect
-  // or a returning user with persisted localStorage session) and swap it
-  // for a ClanChat JWT. Also listen for SIGNED_IN / TOKEN_REFRESHED so
-  // long sessions silently re-mint the internal JWT.
+  // Hydrate Supabase session on mount & listen for auth changes
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const sess = await sbGetSession();
         if (sess && !cancelled) {
-          try { await exchangeSupabaseToken(); } catch (e) { console.warn("sb initial exchange failed", e); }
+          try { await exchangeRef.current(); } catch (e) { console.warn("sb initial exchange failed", e); }
         }
       } catch { /* no session */ }
     })();
+
     const unsub = onSupabaseAuth(async (session) => {
       if (!session) return;
-      try { await exchangeSupabaseToken(); } catch (e) { console.warn("sb auth-change exchange failed", e); }
+      try { await exchangeRef.current(); } catch (e) { console.warn("sb auth-change exchange failed", e); }
     });
-    return () => { cancelled = true; unsub(); };
-  }, [exchangeSupabaseToken]);
 
-  // Google OAuth deep-link handler for the Capacitor APK.
-  // OAuth opens in Chrome Custom Tabs and redirects to
-  // `clanchat://auth-callback?code=…` (PKCE). Android routes that URL back
-  // into the app via the intent filter; we grab the code, feed it into
-  // Supabase (exchangeCodeForSession), then swap it for a ClanChat JWT.
-  // Failures are surfaced on screen (toast) so a broken return is visible
-  // instead of a silent bounce back to the sign-up page.
+    return () => { cancelled = true; unsub(); };
+  }, []); // Run once on mount
+
+  // Google OAuth deep-link handler for Capacitor APK
   useEffect(() => {
     let handleRef;
     let cancelled = false;
@@ -265,8 +213,6 @@ export function AuthProvider({ children }) {
       try { await Browser?.close?.(); } catch { /* ignore */ }
       try {
         const supa = await (await import("../lib/supabase")).getSupabase();
-        // Params can arrive in the query (?code=…, PKCE) or, defensively,
-        // the fragment (#access_token=…). Parse both.
         const qIndex = url.indexOf("?");
         const hIndex = url.indexOf("#");
         const query = qIndex >= 0 ? url.slice(qIndex + 1).split("#")[0] : "";
@@ -290,7 +236,7 @@ export function AuthProvider({ children }) {
           toast.error("Google returned no sign-in code. Please try again.");
           return;
         }
-        await exchangeSupabaseToken();
+        await exchangeRef.current();
       } catch (e) {
         const msg = e?.response?.data?.detail || e?.message || String(e);
         toast.error(`Couldn't finish Google sign-in: ${typeof msg === "string" ? msg : "unknown error"}`);
@@ -303,9 +249,6 @@ export function AuthProvider({ children }) {
         const { Capacitor } = await import("@capacitor/core");
         if (!Capacitor?.isNativePlatform?.()) return;
         const { App } = await import("@capacitor/app");
-        // Cold-start: if Android killed the backgrounded app while Google was
-        // open, the appUrlOpen event fires before this listener exists — so
-        // also check the URL the app was launched with.
         try {
           const launch = await App.getLaunchUrl();
           if (launch?.url) handleUrl(launch.url);
@@ -318,7 +261,7 @@ export function AuthProvider({ children }) {
       cancelled = true;
       try { handleRef?.remove?.(); } catch { /* ignore */ }
     };
-  }, [exchangeSupabaseToken]);
+  }, []);
 
   return (
     <AuthContext.Provider value={{
