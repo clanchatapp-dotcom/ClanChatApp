@@ -5282,15 +5282,29 @@ async def get_push_prefs(user=Depends(get_current_user)):
 
 app.include_router(api)
 
+# CORS. Browsers FORBID the wildcard `Access-Control-Allow-Origin: *` on
+# credentialed (cookie-bearing) requests, so we must echo the *specific*
+# request origin. We therefore match known-good origins via regex rather than
+# serving "*". FRONTEND_URL may hold a comma-separated allow-list of exact
+# origins; a bare "*" there is ignored (it would break credentialed CORS).
+_frontend_env = os.environ.get("FRONTEND_URL", "")
+_explicit_origins = [o.strip() for o in _frontend_env.split(",") if o.strip() and o.strip() != "*"]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=[os.environ.get("FRONTEND_URL", "*")],
-    # Allow Emergent preview URLs and the Capacitor APK WebView origins.
-    # On Android the bundled APK serves from `https://localhost` (set by
-    # `androidScheme: "https"` in capacitor.config.js); the older capacitor
-    # scheme `capacitor://localhost` is kept for safety.
-    allow_origin_regex=r"https://.*\.preview\.emergentagent\.com|https://localhost(:\d+)?|capacitor://localhost",
+    allow_origins=_explicit_origins,
+    # Emergent preview URLs (*.preview.emergentagent.com), Emergent production
+    # hosts (*.emergent.host), the ClanChat custom domain (clanchat.app / www),
+    # local dev, and the Capacitor APK WebView origins. On Android the bundled
+    # APK serves from `https://localhost` (androidScheme "https" in
+    # capacitor.config.js); `capacitor://localhost` is kept for older builds.
+    allow_origin_regex=(
+        r"https://([a-z0-9-]+\.)*preview\.emergentagent\.com"
+        r"|https://([a-z0-9-]+\.)*emergent\.host"
+        r"|https://([a-z0-9-]+\.)*clanchat\.app"
+        r"|https://localhost(:\d+)?"
+        r"|capacitor://localhost"
+    ),
     allow_methods=["*"], allow_headers=["*"],
 )
 

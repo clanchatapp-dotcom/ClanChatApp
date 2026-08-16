@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 3 verifies Bearer-only auth (withCredentials:false) after the CORS + credentials fix. Backend: 14/14 pytest tests pass in test_auth_restoration.py (10 pre-existing + 4 new for /api/auth/me via Bearer, /api/auth/refresh via body, missing-token rejection). Frontend (preview, same-origin): admin@clanchat.app and bob@clanchat.app both log in and land on /feed; tokens are stored in localStorage under 'clanchat_access_token' + 'clanchat_refresh_token'; /api/auth/me returns 200 with role=admin using Authorization: Bearer + credentials:'omit' (no cookies); Admin nav renders and /admin loads with USERS/POSTS/PENDING REPORTS counters; POST /api/upload/signed-url with Bearer-only auth returns 200 with a Supabase upload_url; /register page renders. Zero CORS / withCredentials / access-control errors in the browser console.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin page", "issues": ["Pre-existing hydration warning: <span data-ve-dynamic> inside <option> in Admin.jsx L365 (reportsCategoryCounts). Unchanged from iteration_2, not a regression from the CORS/Bearer fix."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_restoration.py", "/app/test_reports/pytest/iteration_3.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "api.js: request interceptor correctly injects Authorization: Bearer from tokenCache; performRefresh posts refresh_token in body with withCredentials:false — verified against backend.",
+    "AuthContext: rememberToken() persists both access_token and refresh_token to localStorage — verified in browser storage.",
+    "Backend /api/auth/me still supports either access_token cookie OR Authorization: Bearer (per test_credentials.md notes) — Bearer path confirmed working with credentials:'omit'.",
+    "CORS: allow_origin_regex covers preview/emergent.host/clanchat.app/localhost/capacitor — cross-origin production behavior can only be validated post-redeploy against clanchat.app; preview is same-origin so this iteration cannot exercise the actual cross-origin path."
+  ],
+  "updated_files": ["/app/backend/tests/test_auth_restoration.py (added 4 tests: test_auth_me_via_bearer, test_auth_me_without_token_rejected, test_refresh_via_body, test_refresh_missing_token_rejected)"],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100%"},
+  "test_credentials": "admin@clanchat.app / admin123, bob@clanchat.app / Password123! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Deleted 1 leftover TEST registration user (test_user_34f70e6b@clanchat.app). Users remaining: admin, alice, bob, teen, thomasgallacher92@gmail.com. NOTE: thomasgallacher92@gmail.com is not in the required set (admin/alice/bob/teen) but was not created by this iteration — likely a real Google OAuth signup from earlier. Not deleting; flagging for main agent decision.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Bearer-only auth verified end-to-end in preview. Cross-origin production fix (CORS allow_origin_regex + withCredentials:false) cannot be validated here — must be re-tested after redeploy to clanchat.app and against the Android APK WebView. Regression suite: /app/backend/tests/test_auth_restoration.py (14 tests, all pass).",
+  "rca of the issue": "N/A — original CORS+credentials issue described in the request is already fixed in code; this iteration confirmed no preview regression."
+}

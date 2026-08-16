@@ -69,7 +69,15 @@ export async function clearToken() {
 // ─── Axios instance ───────────────────────────────────────────────────────
 const api = axios.create({
   baseURL: API,
-  withCredentials: true, // keep cookies working on the web build
+  // NOTE: withCredentials is intentionally FALSE. Auth is carried by the
+  // `Authorization: Bearer` header (token in localStorage / Capacitor
+  // Preferences), NOT cookies. Sending credentials would force the browser
+  // to reject cross-origin responses that carry `Access-Control-Allow-Origin: *`
+  // (which the Emergent ingress serves) — that broke login on the
+  // *.emergent.host URL and inside the Android APK (WebView origin
+  // https://localhost calling https://clanchat.app). Bearer auth works
+  // same-origin AND cross-origin, so we drop credentials entirely.
+  withCredentials: false,
 });
 
 // Cache the token in-memory after the first read so the request interceptor
@@ -125,7 +133,7 @@ async function performRefresh() {
   if (!refreshToken) throw new Error("no refresh token");
   // Use raw axios (bypass interceptors) so we don't recurse on 401.
   const res = await axios.post(`${API}/auth/refresh`, { refresh_token: refreshToken }, {
-    withCredentials: true,
+    withCredentials: false,
   });
   const newAccess = res.data?.access_token;
   const newRefresh = res.data?.refresh_token;

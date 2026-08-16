@@ -142,3 +142,50 @@ def test_feed_endpoint(s, admin_token):
         if r.status_code == 200:
             return
     pytest.skip("no feed endpoint discovered")
+
+
+# ---------------- Iteration 3: Bearer-only auth regression ----------------
+def test_auth_me_via_bearer(s, admin_token):
+    if not admin_token:
+        pytest.skip("no admin token")
+    # No cookies on this session
+    fresh = requests.Session()
+    r = fresh.get(f"{BASE_URL}/api/auth/me",
+                  headers={"Authorization": f"Bearer {admin_token}"},
+                  timeout=15)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d.get("email") == "admin@clanchat.app"
+
+
+def test_auth_me_without_token_rejected():
+    fresh = requests.Session()
+    r = fresh.get(f"{BASE_URL}/api/auth/me", timeout=15)
+    assert r.status_code in (401, 403)
+
+
+def test_refresh_via_body():
+    # login fresh to get refresh_token in body
+    fresh = requests.Session()
+    r = fresh.post(f"{BASE_URL}/api/auth/login",
+                   json={"email": "bob@clanchat.app", "password": "Password123!"},
+                   timeout=15)
+    assert r.status_code == 200
+    d = r.json()
+    refresh_token = d.get("refresh_token")
+    assert refresh_token, f"login did not return refresh_token: {d.keys()}"
+
+    # call refresh with body only (no cookies)
+    fresh2 = requests.Session()
+    rr = fresh2.post(f"{BASE_URL}/api/auth/refresh",
+                     json={"refresh_token": refresh_token},
+                     timeout=15)
+    assert rr.status_code == 200, rr.text
+    dd = rr.json()
+    assert dd.get("access_token"), f"refresh missing access_token: {dd}"
+
+
+def test_refresh_missing_token_rejected():
+    fresh = requests.Session()
+    r = fresh.post(f"{BASE_URL}/api/auth/refresh", json={}, timeout=15)
+    assert r.status_code in (400, 401, 422)

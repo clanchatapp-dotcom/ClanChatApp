@@ -49,6 +49,29 @@ setup; old MongoDB data is unrecoverable (fresh DB), OK to start fresh on data.
 
 ## Backlog / future
 - Split server.py into routers (auth/feed/admin/moderation).
+
+## PRODUCTION LOGIN BUG — diagnosed & fixed (this session)
+Symptom: login worked in preview but failed on the live deploy (spins / bounces / error).
+Root cause (from production console logs): the app sent **credentialed (cookie) requests**, and
+cross-origin production responses carry `Access-Control-Allow-Origin: *` (injected by the Emergent
+ingress). Browsers FORBID wildcard ACAO with credentials mode 'include', so every authenticated
+call was blocked — but ONLY cross-origin: the deployed frontend calls `https://clanchat.app/api`,
+so visiting via `*.emergent.host` (or the Android APK WebView at `https://localhost`) is
+cross-origin and blocked, while visiting via `clanchat.app` is same-origin and works.
+Verified: production backend + admin seed are fine (POST /api/auth/login returns 200 role=admin);
+logging in via https://clanchat.app reaches /feed successfully.
+
+Fix (needs REDEPLOY to reach production):
+- frontend/src/lib/api.js: axios `withCredentials:false` (+ refresh call). Auth is carried purely by
+  the `Authorization: Bearer` token (localStorage / Capacitor Preferences), which works same-origin
+  AND cross-origin, so wildcard ACAO no longer blocks it. Fixes emergent.host web + the APK.
+- backend/server.py: CORS now echoes specific origins via allow_origin_regex
+  (preview / *.emergent.host / clanchat.app / localhost / capacitor) instead of wildcard.
+Verified in preview: iteration_3 — backend 14/14, frontend 100%, zero CORS/credentials console errors.
+
+Regression suite: /app/backend/tests/test_auth_restoration.py (14 tests).
+
+## Backlog / future (cont.)
 - Optional: enable FCM push (FCM_SERVICE_ACCOUNT_JSON_B64) and LiveKit calls (LIVEKIT_*).
 - Optional: TENOR_API_KEY / GIPHY_API_KEY for the sticker/GIF picker.
 - Suppress the expected Supabase 400 console.error on legacy-fallback login (cosmetic).
