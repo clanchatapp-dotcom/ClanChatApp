@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { toast } from "sonner";
 import api, { rememberToken, forgetToken, getToken } from "../lib/api";
 import {
   sbSignInEmail,
@@ -246,48 +247,73 @@ export function AuthProvider({ children }) {
     return () => { cancelled = true; unsub(); };
   }, [exchangeSupabaseToken]);
 
-  // Iter 30 — Google OAuth deep-link handler for the Capacitor APK.
+  // Google OAuth deep-link handler for the Capacitor APK.
   // OAuth opens in Chrome Custom Tabs and redirects to
-  // `clanchat://auth-callback#access_token=…&refresh_token=…`. Android
-  // routes that URL back into the app via the intent filter; we grab
-  // it here, feed the tokens into Supabase, then exchange for a
-  // ClanChat JWT via the existing helper.
+  // `clanchat://auth-callback?code=…` (PKCE). Android routes that URL back
+  // into the app via the intent filter; we grab the code, feed it into
+  // Supabase (exchangeCodeForSession), then swap it for a ClanChat JWT.
+  // Failures are surfaced on screen (toast) so a broken return is visible
+  // instead of a silent bounce back to the sign-up page.
   useEffect(() => {
     let handleRef;
     let cancelled = false;
+
+    const handleUrl = async (url) => {
+      if (cancelled || !url || !url.startsWith("clanchat://")) return;
+      let Browser = null;
+      try { Browser = (await import("@capacitor/browser")).Browser; } catch { /* optional */ }
+      try { await Browser?.close?.(); } catch { /* ignore */ }
+      try {
+        const supa = await (await import("../lib/supabase")).getSupabase();
+        // Params can arrive in the query (?code=…, PKCE) or, defensively,
+        // the fragment (#access_token=…). Parse both.
+        const qIndex = url.indexOf("?");
+        const hIndex = url.indexOf("#");
+        const query = qIndex >= 0 ? url.slice(qIndex + 1).split("#")[0] : "";
+        const hash = hIndex >= 0 ? url.slice(hIndex + 1) : "";
+        const params = new URLSearchParams(query || hash);
+        const hashParams = new URLSearchParams(hash);
+        const err = params.get("error") || hashParams.get("error");
+        const errDesc = params.get("error_description") || hashParams.get("error_description");
+        if (err) {
+          toast.error(`Google sign-in failed: ${errDesc || err}`);
+          return;
+        }
+        const access = params.get("access_token") || hashParams.get("access_token");
+        const refresh = params.get("refresh_token") || hashParams.get("refresh_token");
+        const code = params.get("code");
+        if (code) {
+          await supa.auth.exchangeCodeForSession(code);
+        } else if (access && refresh) {
+          await supa.auth.setSession({ access_token: access, refresh_token: refresh });
+        } else {
+          toast.error("Google returned no sign-in code. Please try again.");
+          return;
+        }
+        await exchangeSupabaseToken();
+      } catch (e) {
+        const msg = e?.response?.data?.detail || e?.message || String(e);
+        toast.error(`Couldn't finish Google sign-in: ${typeof msg === "string" ? msg : "unknown error"}`);
+        console.warn("google deep-link auth failed", e);
+      }
+    };
+
     (async () => {
       try {
         const { Capacitor } = await import("@capacitor/core");
         if (!Capacitor?.isNativePlatform?.()) return;
         const { App } = await import("@capacitor/app");
-        let Browser = null;
-        try { Browser = (await import("@capacitor/browser")).Browser; } catch { /* optional */ }
-        handleRef = await App.addListener("appUrlOpen", async ({ url }) => {
-          if (cancelled || !url) return;
-          if (!url.startsWith("clanchat://")) return;
-          try { await Browser?.close?.(); } catch { /* ignore */ }
-          try {
-            const supa = await (await import("../lib/supabase")).getSupabase();
-            const [, query = ""] = url.split("?");
-            const [, hash = ""] = url.split("#");
-            const params = new URLSearchParams(hash || query);
-            const access = params.get("access_token");
-            const refresh = params.get("refresh_token");
-            const code = params.get("code");
-            if (access && refresh) {
-              await supa.auth.setSession({ access_token: access, refresh_token: refresh });
-            } else if (code) {
-              await supa.auth.exchangeCodeForSession(code);
-            } else {
-              return;
-            }
-            await exchangeSupabaseToken();
-          } catch (err) {
-            console.warn("google deep-link auth failed", err);
-          }
-        });
+        // Cold-start: if Android killed the backgrounded app while Google was
+        // open, the appUrlOpen event fires before this listener exists — so
+        // also check the URL the app was launched with.
+        try {
+          const launch = await App.getLaunchUrl();
+          if (launch?.url) handleUrl(launch.url);
+        } catch { /* ignore */ }
+        handleRef = await App.addListener("appUrlOpen", ({ url }) => handleUrl(url));
       } catch { /* plugin missing on web */ }
     })();
+
     return () => {
       cancelled = true;
       try { handleRef?.remove?.(); } catch { /* ignore */ }

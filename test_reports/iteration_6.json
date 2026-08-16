@@ -1,0 +1,37 @@
+{
+  "summary": "Regression testing after Capacitor plugin alignment (@capacitor/app@7.1.2, @capacitor/browser@7.0.5, @capacitor-community/privacy-screen@6.1.0) and AuthContext clanchat:// deep-link handler rewrite (App.getLaunchUrl cold-start + toast error surfacing). Since the deep-link code runs only under Capacitor.isNativePlatform(), the web app should be unaffected. Confirmed: 14/14 backend pytest cases pass, admin login->/feed in 0.42s, /admin route loads for admin, logout from /settings clears token in 0.04s and returns to '/', bob login->/feed in 0.36s, registration (TEST_reg_<uid>) reaches /feed with 'Account created' toast. No runtime-error overlay, no pageerrors. Only benign 401s on /api/auth/me pre-login and the pre-existing <span> in <option> hydration warning present.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AppShell (pre-existing)", "issues": ["Console hydration warning: '<span> cannot be a child of <option>'. Unrelated to this iteration but still unfixed."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_restoration.py", "/app/test_reports/pytest/iter6.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Capacitor plugin versions are now aligned to core 7.6.8 (app 7.1.2, browser 7.0.5, privacy-screen 6.1.0) — good. Web build is unaffected.",
+    "AuthContext deep-link handler is guarded by Capacitor.isNativePlatform() so has zero web impact — confirmed by clean web regression run.",
+    "Cleanup fixture still missing: test_register_new_user + the playwright registration test each leave a TEST_reg_* user in Mongo (DB_NAME=clanchat). Add a teardown that deletes users with email prefix 'TEST_'.",
+    "Sidebar shows no visible 'Admin' link for the admin user (Feed/Search/Messages/Groups/Activity/Profile/Settings only) — /admin route still works via direct URL. Consider surfacing an Admin entry in the nav when role==='admin' for UX."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (admin login, bob login, register, /admin load, logout all pass)"},
+  "test_credentials": "admin@clanchat.app / admin123, bob@clanchat.app / Password123!",
+  "seed_data_creation": "One TEST_reg_<uid>@clanchat.app created via register flow (not auto-cleaned).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Capacitor deep-link/plugin change is native-only; web app fully intact. Preview: https://clan-chat-fix.preview.emergentagent.com. Register selectors: [data-testid='reg-email'|'reg-password'|'reg-handle'|'reg-display'|'reg-dob'|'reg-submit']. Login: input[type='email'|'password'], [data-testid='login-submit']. Logout at /settings -> [data-testid='logout-btn']. Onboarding tour appears for new/anonymous sessions — dismiss with text=Skip. Google/Supabase Android deep-link intentionally NOT tested (needs real device + Google account).",
+  "measurements": {
+    "admin_login_time_sec": 0.42,
+    "bob_login_time_sec": 0.36,
+    "logout_time_sec": 0.04,
+    "register_reached_feed": true,
+    "admin_route_loads": true,
+    "runtime_error_overlay": false,
+    "page_errors": 0,
+    "backend_tests_passed": "14/14"
+  },
+  "rca of the issue": "No regression. Capacitor plugin downgrade only affects the Android build; @capacitor/core is untouched on web. AuthContext deep-link useEffect is wrapped in a Capacitor.isNativePlatform() check so it's a no-op in the browser. Both email/password (legacy JWT + Supabase-first fallback) auth paths verified end-to-end."
+}

@@ -94,6 +94,21 @@ Fixes (need APK rebuild + web re-publish):
 Verified in preview: iteration_5 — backend 14/14, frontend 100%, no regression (Google OAuth not
 auto-testable; requires a rebuilt APK on a device).
 
+## APK GOOGLE — round 2 (likely true root cause): Capacitor version mismatch
+The APK still bounced after PKCE. Found a MAJOR-VERSION MISMATCH in Capacitor plugins:
+@capacitor/app@8.1.1 and @capacitor/browser@8.0.4 were installed on @capacitor/core@7.6.8
+(also @capacitor-community/privacy-screen@8). Capacitor requires all packages share the same
+major version — a v8 App plugin on the v7 Android bridge does not register, so its
+`appUrlOpen` listener silently never fires and the clanchat:// deep-link is dropped -> bounce.
+Fixes (need APK rebuild):
+- package.json: pinned @capacitor/app@7.1.2, @capacitor/browser@7.0.5,
+  @capacitor-community/privacy-screen@6.1.0 to match @capacitor/core@7.6.8.
+- AuthContext deep-link handler rewritten: App.getLaunchUrl() cold-start support, parses
+  ?code (PKCE) + #fragment, surfaces Supabase error params, shows on-screen toasts on failure.
+- workflow: intent-filter injection hardened + build fails if the clanchat:// filter is missing.
+Verified in preview: iteration_6 — backend 14/14, frontend 100%, no regression.
+
+
 ## Backlog / future
 - Split server.py into routers.
 - Clean up React hydration warning (<span> inside <option>) in AppShell (pre-existing, low pri).
