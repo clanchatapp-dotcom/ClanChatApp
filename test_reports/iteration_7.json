@@ -1,0 +1,27 @@
+{
+  "summary": "Regression testing after api.js getToken()/getRefreshToken() were wrapped with withTimeout(Preferences.get(), 1200, {value:null}) with localStorage fallback. Change is guarded by isNative(); web path reads localStorage directly. Verified backend (14/14 pytest) and web frontend end-to-end: admin login -> /feed in 0.37s, /admin loads, /settings logout clears both access + refresh tokens and returns to '/', bob login -> /feed in 0.37s, registration flow already covered by backend test_register_new_user. Token refresh via body verified (test_refresh_via_body). No runtime-error overlay, no pageerrors, only the pre-existing <span>-in-<option> hydration warning on /admin.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/admin", "issues": ["Pre-existing hydration warning: '<span> cannot be a child of <option>' inside reports-category select (Admin.jsx line 365). Unchanged from iter 6."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_restoration.py", "/app/test_reports/pytest/iter7.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "api.js withTimeout implementation is correct: Promise.race with a fallback resolver ensures no unhandled rejection and never blocks longer than 1200ms. Rejection path also mapped to fallback via .catch(). Good.",
+    "primeTokenCache only marks _tokenLoaded=true when a token is actually retrieved (line 101). This is deliberate but means every unauthenticated API call re-invokes getToken() -> localStorage lookup (cheap on web, ~1200ms worst-case on cold-boot native). Acceptable.",
+    "getToken() is exported but getRefreshToken() is not — used only internally by performRefresh(). Fine.",
+    "Pre-existing: sidebar still lacks an 'Admin' entry for role==='admin' — only accessible via direct /admin URL. UX enhancement suggestion carried over from iter 6."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (admin+bob login, /admin, logout, refresh)"},
+  "test_credentials": "admin@clanchat.app / admin123, bob@clanchat.app / Password123!",
+  "seed_data_creation": "One TEST_user_<uid>@clanchat.app created via backend register test (not auto-cleaned).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "api.js native token read now bounded by 1200ms timeout with localStorage fallback. Web path unchanged (localStorage). Native Android APK path NOT exercisable in browser (Capacitor.isNativePlatform() is false on web). Preview URL: https://clan-chat-fix.preview.emergentagent.com.",
+  "rca of the issue": "Original spinner bug: on cold Android WebView, Capacitor Preferences.get() bridge could hang; request interceptor awaited getToken() before every request, so login POST was never dispatched. Fix races the plugin call against a 1200ms timeout and falls back to localStorage (dual-written by setToken/rememberToken). Web is unaffected because isNative() is false and the code reads localStorage directly. Regression suite confirms zero web impact."
+}

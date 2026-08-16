@@ -15,29 +15,35 @@ const ACCESS_KEY = "clanchat_access_token";
 const REFRESH_KEY = "clanchat_refresh_token";
 const isNative = () => { try { return Capacitor.isNativePlatform(); } catch { return false; } };
 
+// Never let a native plugin bridge call block auth. On a cold WebView the
+// Capacitor Preferences bridge can occasionally return a promise that never
+// resolves; since the request interceptor awaits the token read before every
+// API call, a hung Preferences.get() makes EVERY request (incl. login) spin
+// forever. We race it against a short timeout and fall back to localStorage
+// (which is also written on every rememberToken()).
+function withTimeout(promise, ms, fallback) {
+  return Promise.race([
+    Promise.resolve(promise).catch(() => fallback),
+    new Promise((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
 export async function getToken() {
-  // Try Capacitor Preferences first on native. If the plugin bridge is still
-  // warming up right after a WebView cold-start / OS resume, `Preferences.get`
-  // resolves with `{value: null}` even though the token is in SharedPreferences.
-  // In that case we MUST still fall through to localStorage — otherwise the
-  // request goes out with no Bearer header, hits 401, and the AuthContext
-  // logs the user out. That was the "kicked out after a few minutes of
-  // inactivity" bug (iter 26).
+  // Try Capacitor Preferences first on native, but never block on it. If the
+  // plugin bridge is still warming up right after a WebView cold-start / OS
+  // resume, we fall through to localStorage — otherwise the request goes out
+  // with no Bearer header (or never goes out at all) and the user can't log in.
   if (isNative()) {
-    try {
-      const { value } = await Preferences.get({ key: ACCESS_KEY });
-      if (value) return value;
-    } catch { /* fall through */ }
+    const res = await withTimeout(Preferences.get({ key: ACCESS_KEY }), 1200, { value: null });
+    if (res?.value) return res.value;
   }
   try { return localStorage.getItem(ACCESS_KEY); } catch { return null; }
 }
 
 async function getRefreshToken() {
   if (isNative()) {
-    try {
-      const { value } = await Preferences.get({ key: REFRESH_KEY });
-      if (value) return value;
-    } catch { /* fall through */ }
+    const res = await withTimeout(Preferences.get({ key: REFRESH_KEY }), 1200, { value: null });
+    if (res?.value) return res.value;
   }
   try { return localStorage.getItem(REFRESH_KEY); } catch { return null; }
 }
