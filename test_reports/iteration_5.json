@@ -1,0 +1,35 @@
+{
+  "summary": "Regression testing after Supabase flowType:'pkce' change (Android deep-link Google OAuth fix). Backend: all 14 pytest cases pass (login admin/bob, register, wrong-password, supabase config, supabase-login contract, signed-upload-url, admin reports, feed, /auth/me via bearer, refresh via body). Frontend: admin login->/feed in 0.34s with Admin nav present, /admin loads, logout from /settings clears token in 0.04s and returns to '/', bob login->/feed in 0.33s. No runtime error overlay. Google OAuth not tested per instructions.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Feed (React hydration warning, pre-existing)", "issues": ["Console warning: '<span> cannot be a child of <option>' — hydration warning from a <select><option> that wraps a <span>. Unrelated to this iteration's flowType change but worth cleaning up."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_restoration.py", "/app/test_reports/pytest/iter5.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "supabase.js flowType:'pkce' is a safe global switch. Note detectSessionInUrl remains true which is correct for web; for the Capacitor deep-link flow the app must explicitly call supabase.auth.exchangeCodeForSession(code) with the ?code=... extracted from the clanchat:// URL — confirm AuthContext deep-link handler does this (line ~255) and logs errors.",
+    "React hydration warning (<span> inside <option>) still present in AppShell — pre-existing, low priority, but suppress by moving the icon/text out of the raw <option>."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100%"},
+  "test_credentials": "admin@clanchat.app / admin123, bob@clanchat.app / Password123!",
+  "seed_data_creation": "One TEST_user_{uuid}@clanchat.app created by test_register_new_user (module-level pytest test). Not cleaned up automatically — DB accumulates one TEST_ user per run. Recommend a teardown fixture that deletes users whose email starts with 'TEST_'.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "flowType:'pkce' regression run — no impact on legacy email/password flows. Onboarding tour did not overlay on repeat logins (already dismissed for these seeded users). Preview: https://clan-chat-fix.preview.emergentagent.com. Login selectors: input[type='email'], input[type='password'], [data-testid='login-submit']. Logout: /settings -> [data-testid='logout-btn']. Google OAuth intentionally NOT tested (Android-only PKCE deep link).",
+  "measurements": {
+    "admin_login_time_sec": 0.34,
+    "bob_login_time_sec": 0.33,
+    "logout_time_sec": 0.04,
+    "admin_nav_visible": true,
+    "admin_route_loads": true,
+    "token_cleared_after_logout": true,
+    "runtime_error_overlay": false,
+    "backend_tests_passed": "14/14"
+  },
+  "rca of the issue": "No regression detected. flowType:'pkce' only changes how OAuth session tokens are returned (query ?code= vs #fragment). It does not affect signInWithPassword (email/password) or the legacy /api/auth/login JWT path, which the frontend now tries first. Both paths verified end-to-end."
+}

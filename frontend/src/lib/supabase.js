@@ -38,7 +38,15 @@ export async function getSupabase() {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: true, // needed for OAuth redirect flow
+        detectSessionInUrl: true, // needed for OAuth redirect flow (web)
+        // Force PKCE. The default (implicit) flow returns the session in the
+        // URL *fragment* (#access_token=…), which Android strips when Chrome
+        // Custom Tabs fires the `clanchat://` deep-link intent — so the APK
+        // received an empty callback and silently bounced back to sign-up.
+        // PKCE returns `?code=…` in the query string (preserved in the
+        // intent URI); the deep-link handler then calls exchangeCodeForSession.
+        // PKCE is also handled automatically on the web via detectSessionInUrl.
+        flowType: "pkce",
         storageKey: "cc.sb.session",
       },
     });

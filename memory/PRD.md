@@ -72,6 +72,31 @@ Verified in preview: iteration_3 — backend 14/14, frontend 100%, zero CORS/cre
 Regression suite: /app/backend/tests/test_auth_restoration.py (14 tests).
 
 ## Backlog / future (cont.)
+
+## ANDROID APK GOOGLE SIGN-IN BUG — diagnosed & fixed (this session)
+Symptom: in the Android APK, "Continue with Google" opened Google then silently bounced back to
+the sign-up page. Web Google works (a real Google user exists in Mongo). Verified all config is
+correct: Supabase Google provider enabled (Web client 24500940599-hisa969...), Callback URL
+https://fkhsijjwkrwbwjjaapbb.supabase.co/auth/v1/callback, redirect allow-list includes
+`clanchat://auth-callback` + web/localhost/capacitor entries; production /api/auth/supabase-login
+returns 200 with correct CORS from Origin https://localhost (the APK WebView origin); the
+deep-link handler + clanchat:// intent-filter injection exist.
+Root cause: the Supabase client used the default IMPLICIT OAuth flow → session returned in the URL
+*fragment* (#access_token=...). Android strips the fragment when Chrome Custom Tabs fires the
+`clanchat://` intent, so the app received an empty callback and bounced.
+Fixes (need APK rebuild + web re-publish):
+- frontend/src/lib/supabase.js: force `flowType: "pkce"` — OAuth now returns `?code=...` in the
+  query string (preserved in the deep link); the AuthContext handler calls exchangeCodeForSession.
+  PKCE is auto-handled on web via detectSessionInUrl. No regression to email/password.
+- .github/workflows/android-apk.yml: hardened the clanchat:// intent-filter injection (tolerant
+  MainActivity match) and made the build FAIL if the filter is missing, so a silently-broken APK
+  can't ship.
+Verified in preview: iteration_5 — backend 14/14, frontend 100%, no regression (Google OAuth not
+auto-testable; requires a rebuilt APK on a device).
+
+## Backlog / future
+- Split server.py into routers.
+- Clean up React hydration warning (<span> inside <option>) in AppShell (pre-existing, low pri).
 - Optional: enable FCM push (FCM_SERVICE_ACCOUNT_JSON_B64) and LiveKit calls (LIVEKIT_*).
 - Optional: TENOR_API_KEY / GIPHY_API_KEY for the sticker/GIF picker.
 - Suppress the expected Supabase 400 console.error on legacy-fallback login (cosmetic).

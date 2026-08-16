@@ -122,7 +122,7 @@ jobs:
         working-directory: frontend/android/app/src/main
         run: |
           python3 - <<'PY'
-          import pathlib, re
+          import pathlib, re, sys
           p = pathlib.Path("AndroidManifest.xml")
           x = p.read_text()
           if 'android:scheme="clanchat"' in x:
@@ -136,8 +136,10 @@ jobs:
                   '                <data android:scheme="clanchat" />\n'
                   '            </intent-filter>\n'
               )
+              # Tolerant match: Capacitor may emit android:name=".MainActivity"
+              # OR the fully-qualified "app.clanchat.mobile.MainActivity".
               new_x, count = re.subn(
-                  r'(<activity[^>]*android:name="\.MainActivity"[\s\S]*?)</activity>',
+                  r'(<activity[^>]*android:name="[^"]*MainActivity"[\s\S]*?)</activity>',
                   lambda m: m.group(1) + filter_xml + '        </activity>',
                   x,
                   count=1,
@@ -146,7 +148,16 @@ jobs:
                   p.write_text(new_x)
                   print("manifest patched with clanchat:// intent filter")
               else:
-                  print("::warning::could not locate MainActivity to attach intent filter")
+                  print("::error::could not locate MainActivity to attach the clanchat:// intent filter")
+                  print("---- AndroidManifest.xml ----")
+                  print(x)
+                  sys.exit(1)
+          # Fail-fast: never ship an APK whose Google deep-link is missing.
+          final = p.read_text()
+          if 'android:scheme="clanchat"' not in final:
+              print("::error::clanchat:// intent filter NOT present after patch — Google sign-in would silently bounce. Failing build.")
+              sys.exit(1)
+          print("verified: clanchat:// deep-link intent filter is present in AndroidManifest.xml")
           PY
 
       - name: Install custom CallAudio Capacitor plugin
