@@ -146,14 +146,17 @@ export function AuthProvider({ children }) {
     return data.user;
   };
   const logout = async () => {
-    try { await api.post("/auth/logout"); } catch (e) { console.warn("logout failed", e); }
-    // Also sign out of Supabase so the browser-side session doesn't
-    // silently re-authenticate the user on next visit.
-    try { await supabaseSignOut(); } catch { /* noop */ }
+    // Clear local auth state IMMEDIATELY so the UI responds instantly and
+    // sign-out can never hang. Previously we awaited the server logout AND
+    // supabaseSignOut() (both network calls) before clearing state — on
+    // mobile / slow networks those stalled, so the Sign out button appeared
+    // to "do nothing". The remote cleanups are best-effort, fire-and-forget.
     await forgetToken();
     try { localStorage.removeItem("cc_last_user"); } catch { /* ignore */ }
     setPendingProfile(null);
     setUser(null);
+    api.post("/auth/logout").catch(() => {});
+    Promise.resolve().then(() => supabaseSignOut()).catch(() => {});
   };
   const refresh = async () => {
     const { data } = await api.get("/auth/me");

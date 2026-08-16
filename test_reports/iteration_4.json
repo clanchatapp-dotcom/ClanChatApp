@@ -1,0 +1,37 @@
+{
+  "summary": "Frontend verification of two auth bug fixes: (1) Sign out on Settings now works instantly, (2) legacy email/password login is fast. All targeted flows and regressions pass.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Login page", "issues": ["Wrong-password error text shows generic 'Something went wrong.' instead of a more specific 'Invalid email or password' — minor UX polish, not a blocker."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "(Optional/minor) Improve wrong-password error message on Login page to be more specific than 'Something went wrong.'"
+  ],
+  "critical_code_review_comments": [
+    "AuthContext.logout() fires api.post('/auth/logout') and supabaseSignOut() as fire-and-forget after clearing local state — correct fix for the hang, but ensure the unawaited promises have .catch() handlers to avoid unhandledrejection warnings in production.",
+    "Login.jsx tries legacy endpoint first and falls back to Supabase only on 400/401/404 — sensible; consider also falling back on network errors (0 / TypeError) so a transient legacy-API outage doesn't block Supabase users."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped by request)", "frontend": "100%"},
+  "test_credentials": "admin@clanchat.app / admin123, bob@clanchat.app / Password123!",
+  "seed_data_creation": "Created and then deleted one TEST_reg_1786894287@clanchat.app (handle testreg1786894287) during registration regression — cleanup verified (1 user doc removed).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Onboarding tour (data-testid='onboarding-tour') overlays pages on first login/registration and intercepts pointer events — dismiss via the visible 'Skip' text or the close (X) button before clicking anything else, including logout-btn on /settings. Login submit selector: [data-testid='login-submit']. Preview base URL: https://clan-chat-fix.preview.emergentagent.com.",
+  "measurements": {
+    "admin_login_time_sec": 0.43,
+    "bob_login_time_sec": 0.38,
+    "logout_time_sec": 0.07,
+    "register_time_sec": 2.00,
+    "logout_token_cleared": true,
+    "post_logout_feed_redirects_to_login": true,
+    "wrong_password_blocked": true,
+    "auth_me_after_register_status": 200
+  },
+  "rca of the issue": "BUG1 root cause: previous logout() awaited two sequential network calls (server /auth/logout + Supabase signOut) before clearing local state — on flaky mobile networks these could hang, making the button appear unresponsive. Fix clears local state synchronously and fires network calls as fire-and-forget. Verified 0.07s logout with token removed and immediate navigation. BUG2 root cause: prior flow attempted Supabase signInWithPassword first for legacy email/password accounts, adding a wasted round-trip that failed before falling back to the legacy endpoint. Fix reverses the order: legacy first, Supabase fallback only on 400/401/404. Verified admin=0.43s, bob=0.38s reaching /feed."
+}

@@ -59,45 +59,44 @@ export default function Login() {
   const [err, setErr] = useState("");
 
   /**
-   * Try Supabase first (all new accounts and migrated legacy accounts
-   * live there). If Supabase says "user-not-found" / "invalid-credentials"
-   * we fall through to the legacy ClanChat login so users who haven't
-   * completed the Supabase password reset flow can still get in.
+   * Legacy ClanChat login FIRST — it's the authoritative store for
+   * email/password accounts and is a single fast round-trip. Only if the
+   * credentials are rejected there do we try Supabase (covers accounts that
+   * exist only in Supabase). This removes the slow, wasted Supabase round-trip
+   * that every legacy/seeded user used to pay on each sign-in.
    */
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      await loginWithSupabaseEmail(email, password);
+      await login(email, password);
       toast.success("Welcome back");
       nav("/feed", { replace: true });
       return;
-    } catch (sbErr) {
-      const msg = (sbErr?.message || "").toLowerCase();
-      const status = sbErr?.response?.status;
-      const shouldFallback =
-        status === 404 || status === 502 || status === 503 ||
-        msg.includes("supabase config unavailable") ||
-        msg.includes("network error") ||
-        msg.includes("failed to fetch") ||
-        msg.includes("invalid login credentials") ||
-        msg.includes("user not found") ||
-        msg.includes("email not confirmed") ||
-        msg.includes("no supabase session") ||
-        msg.includes("provider is not enabled");
-      if (!shouldFallback) {
-        setErr(sbErr.message || String(sbErr));
+    } catch (legacyErr) {
+      const status = legacyErr?.response?.status;
+      // Only fall through to Supabase when legacy says "bad credentials"
+      // (400/401/404). Genuine server/network errors are surfaced as-is.
+      if (status && ![400, 401, 404].includes(status)) {
+        setErr(formatApiError(legacyErr.response?.data?.detail) || legacyErr.message);
         setBusy(false);
         return;
       }
     }
-    // Legacy fallback
+    // Supabase fallback (Supabase-only / migrated accounts).
     try {
-      await login(email, password);
+      await loginWithSupabaseEmail(email, password);
       toast.success("Welcome back");
       nav("/feed", { replace: true });
-    } catch (legacyErr) {
-      setErr(formatApiError(legacyErr.response?.data?.detail) || legacyErr.message);
+    } catch (sbErr) {
+      const detail = formatApiError(sbErr?.response?.data?.detail);
+      const raw = (sbErr?.message || "").toLowerCase();
+      // Both stores rejected the credentials → show a single clear message.
+      const isAuthFail =
+        !sbErr?.response || [400, 401, 404].includes(sbErr?.response?.status) ||
+        raw.includes("invalid") || raw.includes("credential") ||
+        raw.includes("no supabase session");
+      setErr(isAuthFail ? "Invalid email or password." : (detail || sbErr?.message || "Invalid email or password."));
     } finally { setBusy(false); }
   };
 
