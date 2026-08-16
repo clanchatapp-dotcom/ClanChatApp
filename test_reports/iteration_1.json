@@ -1,0 +1,44 @@
+{
+  "summary": "Restoration verification of ClanChat auth + admin + feed after Supabase re-linking. Ran 10 backend pytest tests (all PASS) and 4 end-to-end Playwright UI flows (all PASS). Login (admin+bob), registration, admin panel, and feed all work; Supabase-first-then-legacy fallback is functioning; no runtime error overlay; no 'Supabase config unavailable' message.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "tested_flows": [
+    "GET /api/supabase/config returns url + anonKey + bucket='ClanChatApp' (200)",
+    "POST /api/auth/login admin@clanchat.app/admin123 -> 200, user.role=admin",
+    "POST /api/auth/login bob@clanchat.app/Password123! -> 200",
+    "POST /api/auth/login wrong password -> 401",
+    "POST /api/auth/register with new email/handle/dob -> 200",
+    "POST /api/auth/supabase-login without token -> 4xx (contract), with invalid token -> 4xx",
+    "POST /api/upload/signed-url (admin auth) -> 200 with supabase upload_url",
+    "Admin auth: admin endpoint reachable (found /api/admin/reports)",
+    "Feed endpoint reachable authenticated",
+    "UI: /login loads with no runtime error overlay and no 'Supabase config unavailable'",
+    "UI: admin login lands on /feed, shows 'Welcome back', Admin nav link present, /admin renders moderation panel (Reports/CSAM/Watchlist tabs, stats)",
+    "UI: bob login lands on /feed (composer/'Quiet in here' visible)",
+    "UI: registration flow lands on /feed",
+    "Code review: CompleteProfile.jsx renders data-testid='complete-profile' when pendingProfile set, mounted globally in App.js; AuthContext handles needs_profile:true from /api/auth/supabase-login (server.py line ~1250)"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_auth_restoration.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is very large (~5000+ lines) — future refactor recommended to split into modules (auth, feed, admin, moderation) but not blocking.",
+    "Frontend logs a 400 from Supabase on every legacy-fallback login (expected by design). Consider suppressing the console.error for cleaner devtools UX."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_restoration.py (new)"
+  ],
+  "success_rate": { "backend": "100% (10/10)", "frontend": "100% (4/4 flows)" },
+  "test_credentials": "admin@clanchat.app/admin123, bob@clanchat.app/Password123!, teen@clanchat.app/Password123! — all working via legacy JWT fallback",
+  "seed_data_creation": "Registration test created ephemeral TEST_ui_<epoch>@clanchat.app users in Mongo; harmless, prefixed 'TEST_'.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Auth restoration verified end-to-end. Supabase project fkhsijjwkrwbwjjaapbb is live; email/password uses Supabase-first then legacy JWT fallback (fallback path is what authenticates seeded accounts, since their emails don't exist in Supabase). Google OAuth cannot be tested without a real Google account, but backend contract (/api/auth/supabase-login returns {needs_profile:true} for unknown emails) and frontend CompleteProfile screen wiring are code-verified. Backend test file at /app/backend/tests/test_auth_restoration.py can be reused.",
+  "rca of the issue": "N/A — restoration task, no bugs found. Everything works as expected after Supabase re-linking."
+}

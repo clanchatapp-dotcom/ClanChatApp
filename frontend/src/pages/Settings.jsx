@@ -1,0 +1,424 @@
+import { useState } from "react";
+import { useAuth } from "../context/AuthContext";
+import api, { formatApiError } from "../lib/api";
+import { Link, useNavigate } from "react-router-dom";
+import { toast } from "sonner";
+import { Sun, Moon, LogOut, ShieldCheck, AlertTriangle, KeyRound, Flag, MessageCircle, Trash2 } from "lucide-react";
+
+export default function Settings() {
+  const { user, refresh, theme, setTheme, logout } = useAuth();
+  const nav = useNavigate();
+  const s = user?.settings || {};
+  const cz = s.comfort_zone || {};
+
+  const [followMode, setFollowMode] = useState(user.follow_mode);
+  const [nsfwAccount, setNsfwAccount] = useState(!!user.nsfw_account);
+  const [dmsFollowers, setDmsFollowers] = useState(s.dms_enabled_followers);
+  const [wallPerm, setWallPerm] = useState(s.wall_post_permission || "owner");
+  const [taggableBy, setTaggableBy] = useState(s.taggable_by || "followers");
+  const [tagApproval, setTagApproval] = useState(!!s.tag_approval_mode);
+  const [realNameVis, setRealNameVis] = useState(s.real_name_visibility || "nobody");
+  const [dmScreenshots, setDmScreenshots] = useState(!!s.dm_screenshots_allowed);
+  // comfort zone
+  const [nsfw, setNsfw] = useState(!!cz.nsfw);
+  const [ai, setAi] = useState(cz.ai_content !== false);
+  const [strong, setStrong] = useState(cz.strong_language !== false);
+  const [violence, setViolence] = useState(!!cz.violence);
+  const [sensitive, setSensitive] = useState(!!cz.sensitive);
+  const [anon, setAnon] = useState(cz.anonymous_accounts !== false);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.patch("/users/me", {
+        follow_mode: followMode,
+        nsfw_account: nsfwAccount,
+        real_name_visibility: realNameVis,
+        settings: {
+          dms_enabled_followers: dmsFollowers,
+          wall_post_permission: wallPerm,
+          taggable_by: taggableBy,
+          tag_approval_mode: tagApproval,
+          real_name_visibility: realNameVis,
+          dm_screenshots_allowed: dmScreenshots,
+          comfort_zone: {
+            nsfw, ai_content: ai, strong_language: strong, violence,
+            sensitive, anonymous_accounts: anon,
+          },
+        },
+      });
+      toast.success("Saved");
+      refresh();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="px-5 pt-6 pb-24">
+      <header className="flex items-center justify-between mb-6">
+        <h1 className="font-heading text-3xl">Settings</h1>
+        <Link to="/feed" className="text-zinc-500 text-sm">Done</Link>
+      </header>
+
+      {/* Strikes — always visible */}
+      <Section title="My strikes">
+        <div className="border border-zinc-900 rounded-xl p-3 flex items-center gap-3">
+          <AlertTriangle size={18} className={user.strikes ? "text-red-400" : "text-zinc-600"} />
+          <div className="flex-1">
+            <div className="text-sm">{user.strikes || 0} of 3 strikes</div>
+            <div className="text-xs text-zinc-500">3 strikes is permanent deletion. Strikes may expire after 12 months of clean behaviour.</div>
+          </div>
+          <span data-testid="strike-count" className="text-xl font-heading text-zinc-300">{user.strikes || 0}</span>
+        </div>
+        {(user.strike_history || []).length > 0 && (
+          <details className="mt-2">
+            <summary className="text-xs text-zinc-500 cursor-pointer">View history</summary>
+            <ul className="mt-2 space-y-1">
+              {user.strike_history.map((h) => (
+                <li key={`${h.applied_at}-${h.level}`} className="text-xs text-zinc-400 border-l-2 border-zinc-800 pl-2">
+                  Strike {h.level} · {h.reason} · {new Date(h.applied_at).toLocaleDateString()}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </Section>
+
+      <Section title="Theme">
+        <div className="flex gap-2">
+          <button data-testid="theme-dark" onClick={() => setTheme("dark")}
+            className={`flex-1 p-3 rounded-xl border flex items-center gap-2 justify-center text-sm ${theme === "dark" ? "border-[#FF5A00] text-[#FF5A00]" : "border-zinc-900 text-zinc-400"}`}>
+            <Moon size={16} /> Dark
+          </button>
+          <button data-testid="theme-light" onClick={() => setTheme("light")}
+            className={`flex-1 p-3 rounded-xl border flex items-center gap-2 justify-center text-sm ${theme === "light" ? "border-[#FF5A00] text-[#FF5A00]" : "border-zinc-900 text-zinc-400"}`}>
+            <Sun size={16} /> Light
+          </button>
+        </div>
+      </Section>
+
+      <Section title="Who can follow me">
+        <Radio name="follow" value={followMode} onChange={setFollowMode}
+          options={[
+            { v: "open", l: "Open · anyone can follow" },
+            { v: "approval", l: "Approval required" },
+          ]} testIdPrefix="follow-mode" />
+      </Section>
+
+      <Section title="Wall posts">
+        <Radio name="wall" value={wallPerm} onChange={setWallPerm}
+          options={[
+            { v: "owner", l: "Only me" },
+            { v: "followers", l: "Followers" },
+            { v: "inner", l: "Inner Circle" },
+          ]} testIdPrefix="wall-perm" />
+      </Section>
+
+      <Section title="Who can tag me">
+        <Radio name="tag" value={taggableBy} onChange={setTaggableBy}
+          options={[
+            { v: "anyone", l: "Anyone" },
+            { v: "followers", l: "Followers" },
+            { v: "inner", l: "Inner Circle only" },
+            { v: "nobody", l: "Nobody" },
+          ]} testIdPrefix="taggable-by" />
+        <Toggle label="Approve every tag before it appears on me"
+          checked={tagApproval} onChange={setTagApproval} testId="toggle-tag-approval" />
+        <p className="text-[11px] text-zinc-600 mt-1">18+ tags and photo/video tags always require manual approval — hardcoded, no override.</p>
+      </Section>
+
+      <Section title="Real name">
+        <p className="text-xs text-zinc-500 mb-2">Held internally for verification. Set or change it in Edit Profile.</p>
+        <Radio name="rn" value={realNameVis} onChange={setRealNameVis}
+          options={[
+            { v: "nobody", l: "Nobody (default)" },
+            { v: "inner", l: "Inner Circle only" },
+            { v: "followers", l: "All followers" },
+            { v: "everyone", l: "Everyone" },
+          ]} testIdPrefix="rn-vis" />
+      </Section>
+
+      <Section title="Direct messages">
+        <Toggle label="Allow DMs from approved followers (Tier 2)"
+          checked={dmsFollowers} onChange={setDmsFollowers} testId="toggle-dms-followers" />
+        <p className="text-xs text-zinc-600 mt-2">Tier 1 has no DMs. Inner Circle DMs are controlled per-member.</p>
+
+        <div className="mt-4 pt-4 border-t border-zinc-900">
+          <Toggle
+            label="Allow screenshots of my DMs"
+            checked={dmScreenshots}
+            onChange={setDmScreenshots}
+            testId="toggle-dm-screenshots"
+          />
+          <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
+            Off by default. Screenshots are only allowed in a thread when <strong>both</strong> people have this on.
+            On the <strong>Android app</strong> this triggers the OS-level screenshot block (FLAG_SECURE) and prevents screen recording too.
+            On the <strong>web and iOS</strong> the platforms don&apos;t allow apps to block screenshots — we show a warning banner instead so both parties know the protection is partial.
+          </p>
+        </div>
+      </Section>
+
+      <Section title="My Comfort Zone">
+        <Toggle label="Show 18+ content" checked={nsfw} onChange={user.is_minor ? () => {} : setNsfw}
+          disabled={user.is_minor} testId="toggle-nsfw" />
+        {user.is_minor && <p className="text-xs text-red-400 mt-1">Disabled for under-18 accounts.</p>}
+        <Toggle label="Show AI content" checked={ai} onChange={setAi} testId="toggle-ai" />
+        <Toggle label="Allow strong language" checked={strong} onChange={setStrong} testId="toggle-strong" />
+        <Toggle label="Show graphic violence" checked={violence} onChange={setViolence} testId="toggle-violence" />
+        <Toggle label="Show sensitive topics (drugs, self-harm, eating disorders)" checked={sensitive} onChange={setSensitive} testId="toggle-sensitive" />
+        <Toggle label="Show anonymous accounts in feed" checked={anon} onChange={setAnon} testId="toggle-anon" />
+      </Section>
+
+      {!user.is_minor && (
+        <Section title="Account flag">
+          <Toggle label="Flag account as 18+ (hides me from minors in search)"
+            checked={nsfwAccount} onChange={setNsfwAccount} testId="toggle-nsfw-account" />
+        </Section>
+      )}
+
+      <Section title="Inner Circle">
+        <Link to="/connections" data-testid="connections-link" className="cc-btn-secondary w-full text-sm text-center block">
+          Manage connections (tiers, followers, invites)
+        </Link>
+        <Link to="/inner" data-testid="inner-manage-link" className="cc-btn-secondary w-full text-sm text-center block mt-2">
+          Inner Circle permissions
+        </Link>
+      </Section>
+
+      <Section title="Safety">
+        <Link
+          to="/me/reports"
+          data-testid="my-reports-link"
+          className="cc-btn-secondary w-full text-sm text-center block inline-flex items-center justify-center gap-2"
+        >
+          <Flag size={14} /> My reports
+        </Link>
+        <Link
+          to="/me/comments"
+          data-testid="my-comments-link"
+          className="cc-btn-secondary w-full text-sm text-center block inline-flex items-center justify-center gap-2 mt-2"
+        >
+          <MessageCircle size={14} /> My comments &amp; replies
+        </Link>
+      </Section>
+
+      {user.role === "admin" && (
+        <Section title="Admin">
+          <Link to="/admin" data-testid="admin-link" className="cc-btn-secondary w-full text-sm text-center block inline-flex items-center justify-center gap-2">
+            <ShieldCheck size={14} /> Open admin panel
+          </Link>
+        </Section>
+      )}
+
+      <button onClick={save} disabled={busy} data-testid="save-settings"
+        className="cc-btn-primary w-full mt-2">{busy ? "Saving…" : "Save settings"}</button>
+
+      {user.auth_provider !== "google" && (
+        <Section title="Password">
+          <ChangePasswordCard />
+        </Section>
+      )}
+
+      <button onClick={async () => { await logout(); nav("/"); }} data-testid="logout-btn"
+        className="cc-btn-secondary w-full mt-4 inline-flex items-center justify-center gap-2 text-red-400">
+        <LogOut size={16} /> Sign out
+      </button>
+
+      <Section title="Danger zone">
+        <DeleteAccountCard />
+      </Section>
+    </div>
+  );
+}
+
+function DeleteAccountCard() {
+  const { user, logout } = useAuth();
+  const nav = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const needsPassword = user?.auth_provider !== "google";
+  const canSubmit = confirmation.trim().toUpperCase() === "DELETE" && (!needsPassword || password.length > 0);
+
+  const submit = async () => {
+    if (busy || !canSubmit) return;
+    setBusy(true);
+    try {
+      await api.post("/auth/delete-account", { password, confirmation });
+      // Wipe local session state — the token is already invalid server-side.
+      await logout().catch(() => {});
+      toast.success("Account scheduled for deletion. You have 30 days to restore by signing back in.");
+      nav("/", { replace: true });
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || err.message);
+    } finally { setBusy(false); }
+  };
+
+  if (!open) {
+    return (
+      <button
+        data-testid="open-delete-account"
+        onClick={() => setOpen(true)}
+        className="w-full text-sm text-center inline-flex items-center justify-center gap-2 border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-full px-4 py-3 transition"
+      >
+        <Trash2 size={14} /> Delete my account
+      </button>
+    );
+  }
+  return (
+    <div className="border border-red-500/30 rounded-2xl p-4 bg-red-500/[0.03]" data-testid="delete-account-form">
+      <div className="text-sm font-medium text-red-400 mb-2">Delete my account</div>
+      <p className="text-xs text-zinc-400 leading-relaxed mb-3">
+        This will hide your account and all your content for 30 days. During
+        that time you can restore everything just by signing back in. After
+        30 days it&apos;s permanently deleted — posts, wall notes, DMs, media,
+        the lot.
+      </p>
+      {needsPassword && (
+        <input
+          data-testid="delete-password"
+          type="password"
+          placeholder="Your password"
+          className="cc-input w-full mb-2"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="current-password"
+        />
+      )}
+      <input
+        data-testid="delete-confirmation"
+        placeholder="Type DELETE to confirm"
+        className="cc-input w-full mb-3"
+        value={confirmation}
+        onChange={(e) => setConfirmation(e.target.value)}
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={() => { setOpen(false); setPassword(""); setConfirmation(""); }}
+          disabled={busy}
+          className="flex-1 cc-btn-secondary text-sm"
+        >
+          Cancel
+        </button>
+        <button
+          data-testid="delete-confirm"
+          onClick={submit}
+          disabled={!canSubmit || busy}
+          className="flex-1 bg-red-500 hover:bg-red-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-white rounded-full py-2.5 text-sm font-medium transition"
+        >
+          {busy ? "Deleting…" : "Delete account"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <section className="mb-6">
+      <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mb-3">{title}</div>
+      {children}
+    </section>
+  );
+}
+
+function Toggle({ label, checked, onChange, testId, disabled }) {
+  return (
+    <label
+      data-testid={testId}
+      className={`flex items-center justify-between p-3 border border-zinc-900 rounded-xl mt-2 ${disabled ? "opacity-50" : "cursor-pointer"}`}
+    >
+      <span className="text-sm">{label}</span>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="accent-[#FF5A00] pointer-events-none"
+        aria-label={label}
+      />
+    </label>
+  );
+}
+
+function Radio({ name, value, onChange, options, testIdPrefix }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {options.map(o => (
+        <label key={o.v} className="flex items-center justify-between p-3 border border-zinc-900 rounded-xl cursor-pointer">
+          <span className="text-sm">{o.l}</span>
+          <input type="radio" name={name} checked={value === o.v} onChange={() => onChange(o.v)}
+            data-testid={`${testIdPrefix}-${o.v}`} className="accent-[#FF5A00]" />
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function ChangePasswordCard() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirmNext, setConfirmNext] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (next.length < 8) { toast.error("New password must be at least 8 characters"); return; }
+    if (next !== confirmNext) { toast.error("New passwords don't match"); return; }
+    setBusy(true);
+    try {
+      await api.post("/auth/change-password", { current_password: current, new_password: next });
+      toast.success("Password changed");
+      setCurrent(""); setNext(""); setConfirmNext("");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="border border-zinc-900 rounded-xl p-3 flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-xs text-zinc-500">
+        <KeyRound size={13} /> Change your password
+      </div>
+      <input
+        data-testid="pw-current"
+        type="password"
+        placeholder="Current password"
+        autoComplete="current-password"
+        className="cc-input text-sm"
+        value={current}
+        onChange={e => setCurrent(e.target.value)}
+      />
+      <input
+        data-testid="pw-new"
+        type="password"
+        placeholder="New password (min 8 chars)"
+        autoComplete="new-password"
+        className="cc-input text-sm"
+        value={next}
+        onChange={e => setNext(e.target.value)}
+      />
+      <input
+        data-testid="pw-confirm"
+        type="password"
+        placeholder="Confirm new password"
+        autoComplete="new-password"
+        className="cc-input text-sm"
+        value={confirmNext}
+        onChange={e => setConfirmNext(e.target.value)}
+      />
+      <button
+        data-testid="pw-submit"
+        onClick={submit}
+        disabled={busy || !current || !next || !confirmNext}
+        className="cc-btn-primary text-sm py-2 disabled:opacity-50"
+      >
+        {busy ? "Updating…" : "Update password"}
+      </button>
+      <p className="text-[10px] text-zinc-600 leading-relaxed">
+        Forgotten your current password? Contact an admin — they can issue a temporary reset.
+      </p>
+    </div>
+  );
+}
