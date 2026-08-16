@@ -1,0 +1,262 @@
+name: Build Android APK
+
+# Builds a debug-signed APK for ClanChat on every push to main and on every
+# manually-triggered run. The APK is uploaded as a workflow artifact that
+# testers can download directly from the Actions tab — no Android Studio
+# required on the user's machine.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/android-apk.yml"
+  workflow_dispatch: {}
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: |
+          if [ -f yarn.lock ]; then
+            yarn install --frozen-lockfile || yarn install
+          else
+            echo "::warning::frontend/yarn.lock not found in repo — generating a fresh lockfile."
+            yarn install
+          fi
+
+      - name: Build web bundle
+        working-directory: frontend
+        env:
+          REACT_APP_BACKEND_URL: https://clanchat.app
+          CI: "false"
+        run: yarn build
+
+      - name: Add Capacitor Android platform
+        working-directory: frontend
+        run: |
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
+      - name: Wire Firebase Cloud Messaging
+        working-directory: frontend
+        run: |
+          if [ ! -f android-resources/google-services.json ]; then
+            echo "::warning::android-resources/google-services.json missing — push notifications will not work in this build."
+          else
+            cp android-resources/google-services.json android/app/google-services.json
+            echo "Copied google-services.json into android/app/"
+          fi
+          python3 - <<'PY'
+          import pathlib, re
+          proj = pathlib.Path("android/build.gradle")
+          if proj.exists():
+              src = proj.read_text()
+              if "com.google.gms:google-services" not in src:
+                  src = re.sub(
+                      r"(dependencies\s*\{)",
+                      r"\1\n        classpath 'com.google.gms:google-services:4.5.0'",
+                      src, count=1,
+                  )
+                  proj.write_text(src)
+                  print("project build.gradle patched with google-services classpath")
+          app = pathlib.Path("android/app/build.gradle")
+          if app.exists():
+              src = app.read_text()
+              if "com.google.gms.google-services" not in src:
+                  src = src.rstrip() + "\napply plugin: 'com.google.gms.google-services'\n"
+                  app.write_text(src)
+                  print("app build.gradle patched with google-services apply line")
+          PY
+
+      - name: Inject Android media + push permissions
+        working-directory: frontend/android/app/src/main
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path("AndroidManifest.xml")
+          x = p.read_text()
+          perms = [
+              '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />',
+              '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
+              '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
+              '<uses-permission android:name="android.permission.CAMERA" />',
+              '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
+              '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
+              '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />',
+              '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+              '<uses-permission android:name="android.permission.WAKE_LOCK" />',
+              '<uses-permission android:name="android.permission.VIBRATE" />',
+              '<uses-feature android:name="android.hardware.camera" android:required="false" />',
+              '<uses-feature android:name="android.hardware.microphone" android:required="false" />',
+          ]
+          for line in perms:
+              if line.split('android:name="')[1].split('"')[0] not in x:
+                  x = x.replace("<application", line + "\n    <application", 1)
+          p.write_text(x)
+          print("manifest patched:")
+          print(x)
+          PY
+
+      - name: Inject custom URL scheme intent filter (Google OAuth deep-link)
+        working-directory: frontend/android/app/src/main
+        run: |
+          python3 - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("AndroidManifest.xml")
+          x = p.read_text()
+          if 'android:scheme="clanchat"' in x:
+              print("intent filter already present")
+          else:
+              filter_xml = (
+                  '            <intent-filter android:autoVerify="false">\n'
+                  '                <action android:name="android.intent.action.VIEW" />\n'
+                  '                <category android:name="android.intent.category.DEFAULT" />\n'
+                  '                <category android:name="android.intent.category.BROWSABLE" />\n'
+                  '                <data android:scheme="clanchat" />\n'
+                  '            </intent-filter>\n'
+              )
+              new_x, count = re.subn(
+                  r'(<activity[^>]*android:name="\.MainActivity"[\s\S]*?)</activity>',
+                  lambda m: m.group(1) + filter_xml + '        </activity>',
+                  x,
+                  count=1,
+              )
+              if count == 1:
+                  p.write_text(new_x)
+                  print("manifest patched with clanchat:// intent filter")
+              else:
+                  print("::warning::could not locate MainActivity to attach intent filter")
+          PY
+
+      - name: Install custom CallAudio Capacitor plugin
+        working-directory: frontend
+        run: |
+          PLUGIN_DIR=android/app/src/main/java/app/clanchat/mobile
+          mkdir -p "$PLUGIN_DIR"
+          cp android-resources/call-audio/CallAudioPlugin.java "$PLUGIN_DIR/CallAudioPlugin.java"
+          echo "Copied CallAudioPlugin.java to $PLUGIN_DIR"
+
+          cat > "$PLUGIN_DIR/MainActivity.java" <<'JAVA'
+          package app.clanchat.mobile;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  registerPlugin(CallAudioPlugin.class);
+                  super.onCreate(savedInstanceState);
+              }
+          }
+          JAVA
+          sed -i 's/^          //' "$PLUGIN_DIR/MainActivity.java"
+          echo "== MainActivity.java =="
+          cat "$PLUGIN_DIR/MainActivity.java"
+
+      - name: Copy launcher icons
+        working-directory: frontend
+        run: |
+          if [ ! -d android-resources ]; then
+            echo "::warning::frontend/android-resources/ not found — using default icons."
+            exit 0
+          fi
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            src="android-resources/mipmap-$d"
+            dest="android/app/src/main/res/mipmap-$d"
+            if [ -d "$src" ]; then
+              mkdir -p "$dest"
+              cp "$src/ic_launcher.png" "$dest/ic_launcher.png" 2>/dev/null || true
+              cp "$src/ic_launcher_round.png" "$dest/ic_launcher_round.png" 2>/dev/null || true
+              cp "$src/ic_launcher_foreground.png" "$dest/ic_launcher_foreground.png" 2>/dev/null || true
+            fi
+          done
+
+      - name: Force compatible Play Services & Browser versions
+        working-directory: frontend
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          proj = pathlib.Path("android/build.gradle")
+          if proj.exists():
+              src = proj.read_text()
+              if "androidx.browser:browser:1.8.0" not in src:
+                  resolution_block = """
+          allprojects {
+              configurations.all {
+                  resolutionStrategy {
+                      force 'androidx.browser:browser:1.8.0'
+                      force 'com.google.android.gms:play-services-base:18.5.0'
+                      force 'com.google.android.gms:play-services-tasks:18.2.0'
+                      force 'com.google.android.gms:play-services-auth:21.2.0'
+                  }
+              }
+          }
+          """
+                  src += resolution_block
+                  proj.write_text(src)
+                  print("Project root build.gradle patched with forced dependency versions")
+          PY
+
+      - name: Make gradlew executable
+        working-directory: frontend/android
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        working-directory: frontend/android
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Rename APK
+        working-directory: frontend/android
+        run: |
+          src="app/build/outputs/apk/debug/app-debug.apk"
+          mkdir -p ../../dist
+          cp "$src" "../../dist/ClanChat-debug.apk"
+          ls -lh ../../dist/
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClanChat-debug-apk
+          path: dist/ClanChat-debug.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload APK to Firebase App Distribution
+        if: ${{ env.FIREBASE_APP_ID_ANDROID != '' && env.FIREBASE_SERVICE_ACCOUNT_JSON != '' }}
+        env:
+          FIREBASE_APP_ID_ANDROID: ${{ secrets.FIREBASE_APP_ID_ANDROID }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_APPDIST_TESTER_GROUPS: ${{ secrets.FIREBASE_APPDIST_TESTER_GROUPS }}
+        run: |
+          set -euo pipefail
+          echo "$FIREBASE_SERVICE_ACCOUNT_JSON" > /tmp/firebase-sa.json
+          GOOGLE_APPLICATION_CREDENTIALS=/tmp/firebase-sa.json \
+          npx --yes firebase-tools@latest appdistribution:distribute \
+            dist/ClanChat-debug.apk \
+            --app "$FIREBASE_APP_ID_ANDROID" \
+            --release-notes "CI build ${{ github.sha }} on ${{ github.ref_name }}" \
+            --groups "${FIREBASE_APPDIST_TESTER_GROUPS:-internal}"
+          rm -f /tmp/firebase-sa.json
+

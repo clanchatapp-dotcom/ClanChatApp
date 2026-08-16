@@ -1,0 +1,22 @@
+{
+  "summary": "Light regression pass after adding Android/GitHub Actions build files. Backend: all 10 tests in test_auth_restoration.py PASS. Frontend: /login loads without runtime overlay, admin@clanchat.app/admin123 logs in and lands on /feed, Admin nav visible in sidebar, /admin moderation panel renders (Reports/counters/filters visible). GET /api/supabase/config returns url+anonKey+bucket. Backend startup logs clean (only pre-existing LiveKit env warning). Android build files live outside CRA src/ and had ZERO impact on the running web app.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin page", "issues": ["Pre-existing React hydration warning: <span> child of <option> in Admin.jsx line 365 (reportsCategoryCounts). Not a regression from this change; flagging for future cleanup."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_restoration.py", "/app/test_reports/pytest/iteration_2.xml"],
+  "action_items": [],
+  "critical_code_review_comments": ["Admin.jsx ~L365 renders <span data-ve-dynamic> inside <option> causing hydration warning; wrap dynamic text without span or use option text-only."],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin@clanchat.app / admin123 (used /app/memory/test_credentials.md fallback: request-supplied creds worked)",
+  "seed_data_creation": "Removed one stray TEST_ registration user from test_register_new_user; users collection now contains only admin/alice/bob/teen as required.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 1 restored auth/admin/feed and passed 100%. Iteration 2 confirmed regression-free after Android APK build files were added (.github/workflows, frontend/android-resources, CAPACITOR.md). Reuse /app/backend/tests/test_auth_restoration.py for future regression runs.",
+  "rca of the issue": "N/A - no regression detected."
+}
