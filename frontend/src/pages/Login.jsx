@@ -28,6 +28,12 @@ function GoogleButton({ extra }) {
       } else {
         toast.error(msg);
       }
+    } finally {
+      // On native, loginWithSupabaseGoogle() only kicks off the Chrome
+      // Custom Tab redirect and returns immediately — the real result
+      // lands later via the appUrlOpen deep-link handler in AuthContext.
+      // Resetting busy here (not just on error) is what unsticks the
+      // "Opening Google…" button so a retry tap actually works.
       setBusy(false);
     }
   };

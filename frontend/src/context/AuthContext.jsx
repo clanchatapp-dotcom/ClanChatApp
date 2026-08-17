@@ -283,6 +283,8 @@ export function AuthProvider({ children }) {
         const refresh = params.get("refresh_token") || hashParams.get("refresh_token");
         const code = params.get("code");
         if (code) {
+          // Single-use PKCE code — never retry this call, a second attempt
+          // with the same code will always fail.
           await supa.auth.exchangeCodeForSession(code);
         } else if (access && refresh) {
           await supa.auth.setSession({ access_token: access, refresh_token: refresh });
@@ -290,7 +292,24 @@ export function AuthProvider({ children }) {
           toast.error("Google returned no sign-in code. Please try again.");
           return;
         }
-        await exchangeSupabaseToken();
+        // exchangeSupabaseToken() only talks to our own backend and is
+        // idempotent (same Supabase access token each attempt), unlike the
+        // single-use code exchange above — safe to retry on a transient
+        // network blip instead of surfacing a one-off "network error".
+        let lastErr;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await exchangeSupabaseToken();
+            lastErr = null;
+            break;
+          } catch (retryErr) {
+            lastErr = retryErr;
+            const status = retryErr?.response?.status;
+            if (status && status < 500) break; // real rejection, not a network blip
+            if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+          }
+        }
+        if (lastErr) throw lastErr;
       } catch (e) {
         const msg = e?.response?.data?.detail || e?.message || String(e);
         toast.error(`Couldn't finish Google sign-in: ${typeof msg === "string" ? msg : "unknown error"}`);
