@@ -144,3 +144,17 @@ Verified in preview: iteration_6 — backend 14/14, frontend 100%, no regression
   timeout fix -> rebuild required.
 - Verified iteration_9: frontend 100%, no regression/loops.
 - ACTION for user: RE-PUBLISH web (purges stale SW, ships Google redirect fix) + REBUILD APK.
+
+## Google/login hardening per user spec (this session) — DONE
+1. /login now explicitly calls supabase.auth.exchangeCodeForSession(code) when ?code= is present
+   (detectSessionInUrl set to false). On verifier missing/invalid -> shows error + auto-restarts
+   the OAuth flow once (sessionStorage 'cc_oauth_retry' guard) instead of silently showing Welcome
+   back. Handles ?error= too. URL cleaned via history.replaceState.
+2. index.js canonicalizeHost(): redirects www.clanchat.app and *.emergent.host -> https://clanchat.app
+   BEFORE render (PKCE needs same-origin start->finish). Preview host untouched. Web OAuth redirectTo
+   pinned to `${canonicalOrigin}/login`.
+3. sw.js: skipWaiting + clients.claim (immediate takeover), static assets switched cache-first ->
+   NETWORK-FIRST so a stale bundle can't be served during login. SHELL_CACHE v2.
+Verified iteration_10: backend 14/14, frontend 7/7, no loops/regressions.
+REMINDER for user: Supabase Site URL should be https://clanchat.app (apex) and redirect list must
+include https://clanchat.app/login (already covered by clanchat.app/**). Re-publish web + rebuild APK.

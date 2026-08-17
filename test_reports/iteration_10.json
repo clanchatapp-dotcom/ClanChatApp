@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 10 — verified the 3 OAuth-hardening changes (explicit exchangeCodeForSession on /login, canonical origin redirect in index.js, sw.js network-first). Backend pytest 14/14 pass. Frontend regressions all pass. Both NEW synthetic OAuth-return cases (?error= and ?code=fake_invalid_code) behave per spec: URL is cleaned, no crash, no silent welcome-screen with dangling params, no navigation to /feed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "regression_results": {
+    "admin_login_admin_nav": "PASS — admin@clanchat.app -> /feed, Admin nav present, no redirect loop",
+    "bob_login": "PASS — bob@clanchat.app -> /feed",
+    "authed_visit_to_login_forwards_to_feed": "PASS — /login while authenticated instantly forwards to /feed (no loop)",
+    "logout_from_settings": "PASS — logout clears clanchat_access_token + clanchat_refresh_token, navigates to /login (via nav('/') -> Protected redirect), post-logout /feed access blocked. NOTE: Playwright's Element.click() timed out because the button sits at y≈2697 (below the 900px viewport). Programmatic .click() worked and the flow is correct — this is a test-harness scroll artifact, not a product bug.",
+    "two_step_registration": "PASS — /register step1 (email+password) -> Continue -> step2 (handle/display/dob) -> Create account -> /feed",
+    "oauth_error_return": "PASS (NEW) — /login?error=access_denied&error_description=denied cleaned URL back to /login, showed data-testid=login-error 'Google sign-in was cancelled or failed: denied', did NOT navigate to /feed, no crash.",
+    "oauth_fake_code": "PASS-per-spec (NEW) — /login?code=fake_invalid_code triggered exchangeCodeForSession (4x 400 on /auth/v1/token from Supabase confirms attempt), URL was cleaned to /login (no dangling ?code), no /feed navigation, no runtime overlay, no page errors. The auto-retry branch initiated a fresh signInWithOAuth (which per spec is acceptable — 'it may auto-retry once which will redirect toward Google — that's acceptable'). In our automation the retry did not visibly land the user on accounts.google.com nor show the fallthrough error text; but the acceptance bar per the request (no crash / no silent welcome / no dangling ?code) is met.",
+    "no_runtime_overlay_or_page_errors": "PASS — 0 pageerrors across all flows. Only console errors are pre-auth 401s from /api/auth/me probe and the expected 400s from Supabase token exchange during the fake_code test."
+  },
+  "backend_pytest": "14/14 PASS (tests/test_auth_restoration.py) — JUnit at /app/test_reports/pytest/iter10.xml",
+  "test_report_links": [
+    "/app/backend/tests/test_auth_restoration.py",
+    "/app/test_reports/pytest/iter10.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Login.jsx exchange effect (lines 80–124) is correct: cleans URL BEFORE setting error/retry (prevents infinite re-runs), gates one automatic restart via sessionStorage 'cc_oauth_retry', and cleanly falls through to a visible error on the second failure. Verifier-detection regex (verifier / pkce / code challenge / invalid request / 'auth code and code verifier') looks comprehensive for supabase-js error strings.",
+    "Minor UX observation (non-blocking): during the retry branch, setErr('Reconnecting to Google…') is set before the redirect kicks in; if the redirect happens synchronously via window.location assignment the message never gets time to paint. Consider a small delay or a dedicated 'reconnecting' visual state — but the current behaviour still satisfies the spec.",
+    "canonicalizeHost() in index.js correctly excludes preview host (*.preview.emergentagent.com), so preview testing is unaffected. www<->apex redirect direction matches the edge's 308 (apex -> www) — good, no infinite reload risk.",
+    "sw.js v2: network-first for both navigations and same-origin static assets is the right fix for the stale-bundle-during-login problem. /api/* correctly excluded.",
+    "Onboarding tour overlay dismissed persistently now (clanchat_tour_seen_user_* localStorage flag) — resolves the click-intercept flakiness flagged in earlier iterations."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (7/7 in-scope flows)"},
+  "test_credentials": "admin@clanchat.app / admin123, bob@clanchat.app / Password123! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created one TEST_ user during registration flow verification; deleted post-test. DB back to canonical set: admin, alice, bob, teen, thomasgallacher92 (real google user).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "OAuth-hardening (exchangeCodeForSession explicit on /login, canonical-origin redirect, sw v2 network-first) is verified stable. The Playwright default .click() on the Settings logout button times out because the button is off-viewport (y≈2697 at 1280x900) — use scroll_into_view_if_needed AND then a programmatic evaluate('el.click()'), or increase viewport height, otherwise it will look like a false regression. Fake-code OAuth test: the auto-retry branch (`sessionStorage.setItem('cc_oauth_retry','1')` + signInWithOAuth) may swallow the visible 'Google sign-in didn't complete' error because the second signInWithOAuth navigates the page and resets React state — this is per-spec-acceptable.",
+  "rca_of_the_issue": "N/A — no issues to RCA."
+}
