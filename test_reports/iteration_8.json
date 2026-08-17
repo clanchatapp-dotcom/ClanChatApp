@@ -1,0 +1,26 @@
+{
+  "summary": "Verified new two-step registration flow at /register plus login/logout regression. All primary flows pass. Step 1 shows only email/password + Google (handle/dob hidden), min-6 password validation shows inline reg-error and blocks advance, Continue advances to step 2, Back returns to step 1 with credentials preserved, and full step-2 submit creates the account and lands on /feed. Admin and bob login still work; logout from /settings clears token and returns to /. Only Register.jsx related flow was in scope; no backend code changed so no pytest run was necessary (existing test_auth_restoration.py from prior iterations remains valid).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/settings & /feed after login", "issues": ["OnboardingTour overlay (data-testid=onboarding-tour, z-[100]) intercepts pointer events on every login — logout-btn on /settings and other buttons are unclickable until the tour is dismissed via Skip/close. Consider auto-marking the tour as seen after first dismissal, or lowering z-index / making it non-blocking. Not blocking users (Skip works) but hurts automated testing and UX for returning users."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_restoration.py"],
+  "action_items": [
+    "(Minor) Persist onboarding-tour dismissal in localStorage so it doesn't re-appear on every login and block /settings interactions."
+  ],
+  "critical_code_review_comments": [
+    "Register.jsx two-step wizard is clean and correct: single /register call only fires on step-2 submit (no half-finished accounts), Supabase-first with well-scoped legacy fallback, error surfaces via reg-error, and Back preserves entered credentials because state is lifted to the parent form object.",
+    "Supabase rate-limit errors (e.g. 'email rate limit exceeded', HTTP 429) surface as raw reg-error text. Consider mapping them to a friendlier 'Too many signup attempts, try again in a minute.'"
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (no backend changes this iteration)", "frontend": "100% (all requested register + regression flows passed)"},
+  "test_credentials": "admin@clanchat.app/admin123, bob@clanchat.app/Password123! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "One Supabase-side account was created during the successful two-step submission (twostep_<ts>@example.com). No local Mongo test users remained after run (verified: only admin/alice/bob/teen/thomasgallacher92 present).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Two-step register verified passing on preview URL. Supabase enforces an email rate limit (~1/min) so avoid rapid successive real signups in tests; use unique emails and space them out. OnboardingTour overlay blocks clicks after login — always Skip it first in Playwright before clicking header/nav/settings buttons."
+}

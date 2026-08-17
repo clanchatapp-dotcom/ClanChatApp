@@ -11,10 +11,23 @@ export default function Register() {
   const [form, setForm] = useState({
     email: "", password: "", handle: "", display_name: "", dob: ""
   });
+  // Two-step signup: step 1 = account (email + password), step 2 = profile
+  // (# handle, display name, date of birth). The account is actually created
+  // when step 2 is submitted (single /register call), so there's no
+  // half-finished account if the user drops off.
+  const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const goToProfile = (e) => {
+    e.preventDefault();
+    setErr("");
+    if (!form.email.trim()) { setErr("Enter your email."); return; }
+    if (form.password.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    setStep(2);
+  };
 
   // Supabase-first signup. Falls back to legacy /auth/register if Supabase
   // is temporarily unavailable so signups aren't hard-blocked while
@@ -35,18 +48,6 @@ export default function Register() {
         setBusy(false);
         return;
       }
-      // Fall through to legacy register when Supabase is unavailable
-      // (production not yet redeployed → 404 on /api/auth/supabase-login
-      // or /api/supabase/config), when config is missing, or when
-      // provider isn't enabled yet.
-      //
-      // ALSO fall through when Supabase itself succeeded but returned
-      // no session (email-confirmation is enabled on the project — the
-      // Supabase user exists but they can't log in until they click a
-      // link in their email). Rather than blocking the user, we create
-      // the ClanChat account directly via the legacy endpoint so they
-      // can start using the app immediately. This was the "no-one can
-      // sign up" incident on production.
       const shouldFallback =
         status === 404 || status === 502 || status === 503 ||
         msg.includes("supabase config unavailable") ||
@@ -78,35 +79,62 @@ export default function Register() {
       <h1 className="font-heading text-4xl mt-3">Join the clubhouse</h1>
       <p className="text-zinc-500 mt-2 text-sm">Privacy by design. # handles, three tiers, zero algorithm.</p>
 
-      <form onSubmit={submit} className="flex flex-col gap-3 mt-8">
-        <input data-testid="reg-email" className="cc-input" type="email" placeholder="Email"
-          value={form.email} onChange={e => set("email", e.target.value)} required />
-        <input data-testid="reg-password" className="cc-input" type="password" placeholder="Password (min 6)"
-          value={form.password} onChange={e => set("password", e.target.value)} required />
-        <div className="relative">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">#</span>
-          <input data-testid="reg-handle" className="cc-input pl-7" placeholder="handle"
-            value={form.handle} onChange={e => set("handle", e.target.value.toLowerCase())} required />
-        </div>
-        <input data-testid="reg-display" className="cc-input" placeholder="Display name"
-          value={form.display_name} onChange={e => set("display_name", e.target.value)} required />
-        <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 mt-2">Date of birth</label>
-        <input data-testid="reg-dob" className="cc-input" type="date" value={form.dob}
-          onChange={e => set("dob", e.target.value)} required />
-        <p className="text-xs text-zinc-500">Self-declared. Minor protection rules apply for under-18 accounts.</p>
-        {err && <div className="text-sm text-red-400" data-testid="reg-error">{err}</div>}
-        <button data-testid="reg-submit" className="cc-btn-primary mt-3" disabled={busy}>
-          {busy ? "Creating…" : "Create account"}
-        </button>
-      </form>
-
-      <div className="flex items-center gap-3 my-6 text-zinc-600 text-xs uppercase tracking-[0.2em]">
-        <div className="flex-1 h-px bg-zinc-900" /> or <div className="flex-1 h-px bg-zinc-900" />
+      {/* Step indicator */}
+      <div className="flex items-center gap-2 mt-6" data-testid="reg-step-indicator">
+        <span className={`h-1.5 flex-1 rounded-full transition-colors ${step >= 1 ? "bg-[#FF5A00]" : "bg-zinc-800"}`} />
+        <span className={`h-1.5 flex-1 rounded-full transition-colors ${step >= 2 ? "bg-[#FF5A00]" : "bg-zinc-800"}`} />
       </div>
-      <GoogleButton extra="Sign up with Google" />
-      <p className="text-center text-sm text-zinc-500 mt-8">
-        Already in? <Link to="/login" className="text-[#FF5A00] hover:underline" data-testid="login-link">Sign in</Link>
+      <p className="text-xs uppercase tracking-[0.2em] text-zinc-500 mt-3">
+        Step {step} of 2 — {step === 1 ? "Your account" : "Your profile"}
       </p>
+
+      {step === 1 && (
+        <>
+          <form onSubmit={goToProfile} className="flex flex-col gap-3 mt-6" data-testid="reg-step-1">
+            <input data-testid="reg-email" className="cc-input" type="email" placeholder="Email"
+              value={form.email} onChange={e => set("email", e.target.value)} required autoFocus />
+            <input data-testid="reg-password" className="cc-input" type="password" placeholder="Password (min 6)"
+              value={form.password} onChange={e => set("password", e.target.value)} required />
+            {err && <div className="text-sm text-red-400" data-testid="reg-error">{err}</div>}
+            <button data-testid="reg-continue" className="cc-btn-primary mt-3">
+              Continue
+            </button>
+          </form>
+
+          <div className="flex items-center gap-3 my-6 text-zinc-600 text-xs uppercase tracking-[0.2em]">
+            <div className="flex-1 h-px bg-zinc-900" /> or <div className="flex-1 h-px bg-zinc-900" />
+          </div>
+          <GoogleButton extra="Sign up with Google" />
+          <p className="text-center text-sm text-zinc-500 mt-8">
+            Already in? <Link to="/login" className="text-[#FF5A00] hover:underline" data-testid="login-link">Sign in</Link>
+          </p>
+        </>
+      )}
+
+      {step === 2 && (
+        <form onSubmit={submit} className="flex flex-col gap-3 mt-6" data-testid="reg-step-2">
+          <p className="text-zinc-500 text-sm">Signing up as <b className="text-zinc-300">{form.email}</b></p>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">#</span>
+            <input data-testid="reg-handle" className="cc-input pl-7" placeholder="handle"
+              value={form.handle} onChange={e => set("handle", e.target.value.toLowerCase())} required autoFocus />
+          </div>
+          <input data-testid="reg-display" className="cc-input" placeholder="Display name"
+            value={form.display_name} onChange={e => set("display_name", e.target.value)} required />
+          <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 mt-2">Date of birth</label>
+          <input data-testid="reg-dob" className="cc-input" type="date" value={form.dob}
+            onChange={e => set("dob", e.target.value)} required />
+          <p className="text-xs text-zinc-500">Self-declared. Minor protection rules apply for under-18 accounts.</p>
+          {err && <div className="text-sm text-red-400" data-testid="reg-error">{err}</div>}
+          <button data-testid="reg-submit" className="cc-btn-primary mt-3" disabled={busy}>
+            {busy ? "Creating…" : "Create account"}
+          </button>
+          <button type="button" data-testid="reg-back" onClick={() => { setErr(""); setStep(1); }}
+            className="text-xs text-zinc-500 hover:text-zinc-300 mt-1 self-center">
+            Back
+          </button>
+        </form>
+      )}
     </div>
   );
 }
