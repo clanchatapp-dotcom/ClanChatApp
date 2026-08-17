@@ -121,15 +121,17 @@ export async function sbSignInGoogle() {
   }
 
   // Web: normal redirect flow. Return to the PUBLIC /login route on the
-  // CANONICAL origin (https://clanchat.app in prod), never a protected page.
-  // PKCE requires the same origin start->finish; index.js has already moved
-  // www/emergent.host visitors to clanchat.app, so window.location.origin is
-  // canonical here, but we compute it defensively anyway. Login.jsx reads the
-  // ?code= and calls exchangeCodeForSession explicitly.
+  // CANONICAL origin (https://www.clanchat.app in prod — the domain edge
+  // 308-redirects the bare apex to www, so www is the host that actually
+  // terminates with a 200), never a protected page. PKCE requires the same
+  // origin start->finish; index.js has already moved apex/emergent.host
+  // visitors to www.clanchat.app, so window.location.origin is canonical
+  // here, but we compute it defensively anyway. AuthContext's mount effect
+  // reads the ?code= and calls exchangeCodeForSession explicitly.
   const origin =
-    (window.location.hostname === "www.clanchat.app" ||
+    (window.location.hostname === "clanchat.app" ||
      window.location.hostname.endsWith(".emergent.host"))
-      ? "https://clanchat.app"
+      ? "https://www.clanchat.app"
       : window.location.origin;
   const { data, error } = await supa.auth.signInWithOAuth({
     provider: "google",
