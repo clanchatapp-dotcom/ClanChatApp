@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { formatApiError } from "../lib/api";
@@ -56,13 +56,20 @@ function GoogleButton({ extra }) {
 }
 
 export default function Login() {
-  const { login, loginWithSupabaseEmail } = useAuth();
+  const { user, login, loginWithSupabaseEmail } = useAuth();
   const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  // If a session lands here (e.g. returning from the Google OAuth redirect,
+  // which we point at this public /login route so the ?code= isn't dropped),
+  // forward the now-authenticated user into the app.
+  useEffect(() => {
+    if (user) nav("/feed", { replace: true });
+  }, [user, nav]);
 
   /**
    * Legacy ClanChat login FIRST — it's the authoritative store for

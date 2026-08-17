@@ -11,10 +11,9 @@
 // runtime caching heuristics. Bump SHELL_CACHE when you ship an
 // incompatible change so old caches get purged.
 
-const SHELL_CACHE = "clanchat-shell-v1";
+const SHELL_CACHE = "clanchat-shell-v2";
 const SHELL_URLS = [
   "/",
-  "/feed",
   "/manifest.json",
   "/favicon.ico",
   "/brand/icon-192.png",

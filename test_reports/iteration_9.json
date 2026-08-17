@@ -1,0 +1,32 @@
+{
+  "summary": "Regression verified after Login.jsx authed-redirect useEffect + supabase.js web Google redirectTo change to /login + SW cache v2. All 5 regression flows requested pass on preview URL. No redirect loop, no bounce, no runtime errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "regression_results": {
+    "bob_login_to_feed": "PASS (final url /feed, stable)",
+    "authed_visit_to_login_redirects_to_feed": "PASS (new useEffect works — /login while authenticated instantly forwarded to /feed with no flash of login form)",
+    "admin_login_with_admin_nav": "PASS (admin sidebar item visible)",
+    "logout_from_settings": "PASS (landed on /, no bounce back to /feed after 2s wait, token cleared)",
+    "no_runtime_overlay_or_page_errors": "PASS (0 pageerrors; only harmless pre-auth 401s from /api/auth/me probe)",
+    "register_two_step_flow": "NOT re-tested this iteration (no register code changed; iteration_8 already verified full pass)",
+    "google_oauth": "NOT tested (external Google account — out of scope per request)"
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_restoration.py"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Login.jsx useEffect(if user -> nav /feed) is safe: dependency [user, nav] fires only when user resolves; login() sets user before its own nav('/feed'), so the effect just no-ops after that. No redirect loop possible because /feed is protected but user is authed at that point.",
+    "supabase.js redirectTo change to `${origin}/login` is correct — Login is a public route so <Protected> won't strip the ?code=, and detectSessionInUrl:true + flowType:'pkce' handle exchange. Post-exchange, the authed-redirect effect fires and lands the user on /feed. Clean fix.",
+    "Minor: onboarding-tour overlay still intercepts clicks on every login (flagged in iter 8) — persisting dismissal in localStorage would fix repeated-login UX and testing friction."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (no backend changes)", "frontend": "100% (5/5 regression flows in scope)"},
+  "test_credentials": "admin@clanchat.app/admin123, bob@clanchat.app/Password123! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None — no users created this iteration.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Login.jsx now has useEffect(user -> nav /feed); confirmed safe. Web Google OAuth redirect target is now `${origin}/login` (public route) — cannot be automated end-to-end (external Google). If future iterations need to simulate the post-OAuth landing, inject a fake Supabase session into localStorage key 'cc.sb.session' then load /login and observe the useEffect forwarding to /feed."
+}

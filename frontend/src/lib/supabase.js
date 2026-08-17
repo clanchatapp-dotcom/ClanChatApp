@@ -120,11 +120,16 @@ export async function sbSignInGoogle() {
     return data;
   }
 
-  // Web: normal redirect flow.
+  // Web: normal redirect flow. Return to the PUBLIC /login route — NOT a
+  // protected page. If we return to /feed, the <Protected> guard redirects to
+  // /login before Supabase can read the `?code=` from the URL, dropping the
+  // OAuth code and leaving the user stuck on "Welcome back". /login is public,
+  // so Supabase's detectSessionInUrl processes the code, and Login.jsx then
+  // forwards the now-authenticated user to /feed.
   const { data, error } = await supa.auth.signInWithOAuth({
     provider: "google",
     options: {
-      redirectTo: `${window.location.origin}/feed`,
+      redirectTo: `${window.location.origin}/login`,
     },
   });
   if (error) throw error;

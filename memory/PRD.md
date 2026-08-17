@@ -129,3 +129,18 @@ Verified in preview: iteration_6 — backend 14/14, frontend 100%, no regression
 - STATUS: email/password login confirmed working by user (web + APK). Google worked once in APK
   (pipeline correct) but is flaky; needs a fresh APK rebuild with the robustness fixes to confirm.
 - ACTION for user: re-publish web + rebuild APK to ship these (both are bundled at build time).
+
+## Login scan (this session) — findings + fixes
+- Live-site email/password login VERIFIED WORKING in a clean browser (reached /feed, all 200s,
+  no errors). So the user's "live site just sits there" = a STALE CACHED build on their device
+  (PWA service worker / old APK), not a code bug. Bumped public/sw.js SHELL_CACHE v1->v2 (and
+  dropped /feed from precache) so old caches purge on next load.
+- Google web bug FIXED: signInWithOAuth redirectTo was `${origin}/feed` (a Protected route) — the
+  guard redirected to /login and stripped the ?code= before Supabase read it => stuck on
+  "Welcome back". Now redirects to PUBLIC `${origin}/login`; Login.jsx added
+  useEffect(if user -> nav('/feed')) to forward once the session lands. (Also covers the preview
+  "403 on sign up with Google" which was the same callback race.)
+- APK "just sits there" for email/password = old APK lacking the getToken() native-storage
+  timeout fix -> rebuild required.
+- Verified iteration_9: frontend 100%, no regression/loops.
+- ACTION for user: RE-PUBLISH web (purges stale SW, ships Google redirect fix) + REBUILD APK.
