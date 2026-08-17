@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import { toast } from "sonner";
 import api, { rememberToken, forgetToken, getToken } from "../lib/api";
 import {
+  getSupabase,
   sbSignInEmail,
   sbSignUpEmail,
   sbSignInGoogle,
@@ -244,6 +245,34 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // Web PKCE return: Google redirects back to /login?code=... . The
+      // client has detectSessionInUrl:false (see lib/supabase.js), so
+      // nothing auto-exchanges this on web — without an explicit call
+      // here the code was silently discarded and the user bounced back to
+      // the login screen with no session ("choose account -> Welcome
+      // back"). Login.jsx never did this despite the comment in
+      // lib/supabase.js claiming it does — this was the actual gap.
+      const code = new URLSearchParams(window.location.search).get("code");
+      if (code) {
+        try {
+          const supa = await getSupabase();
+          const { error } = await supa.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+        } catch (e) {
+          // Missing/invalid PKCE verifier (e.g. the code was opened in a
+          // different browser/tab than the one that started sign-in, or
+          // the code was already used) — surface it and let the user
+          // restart a clean attempt instead of silently falling through
+          // to a blank "Welcome back" screen.
+          if (!cancelled) {
+            toast.error("Your Google sign-in didn't complete (link expired or opened in a different browser). Please tap Continue with Google again.");
+          }
+        } finally {
+          // Single-use code — strip it so a refresh/back-nav can't retry
+          // an already-spent code and hit the same error again.
+          window.history.replaceState({}, "", window.location.pathname);
+        }
+      }
       try {
         const sess = await sbGetSession();
         if (sess && !cancelled) {
