@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { getSupabase } from "../lib/supabase";
 import { formatApiError } from "../lib/api";
 import { toast } from "sonner";
 import { Eye, EyeOff } from "lucide-react"; // Or use emoji ("👁️"/"🙈") if you prefer no icon imports
@@ -57,7 +56,7 @@ function GoogleButton({ extra }) {
 }
 
 export default function Login() {
-  const { user, login, loginWithSupabaseEmail, loginWithSupabaseGoogle } = useAuth();
+  const { user, login, loginWithSupabaseEmail } = useAuth();
   const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -65,63 +64,12 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  // If a session lands here (e.g. returning from the Google OAuth redirect,
-  // which we point at this public /login route so the ?code= isn't dropped),
-  // forward the now-authenticated user into the app.
+  // If a session lands here (e.g. an already-signed-in user navigating to
+  // /login), forward them into the app. The Google OAuth ?code= exchange is
+  // handled at the app root (App.js), which returns to /feed.
   useEffect(() => {
     if (user) nav("/feed", { replace: true });
   }, [user, nav]);
-
-  // Explicit OAuth code exchange. Google returns to /login?code=… (PKCE). We
-  // exchange it here rather than relying on detectSessionInUrl, so that if the
-  // code-verifier is missing/expired (reused link, or the flow started on a
-  // different origin) we show a clear error and restart the flow ONCE — instead
-  // of silently rendering this "Welcome back" screen.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("code");
-    const oauthError = params.get("error_description") || params.get("error");
-    const cleanUrl = () => { try { window.history.replaceState({}, "", "/login"); } catch { /* ignore */ } };
-
-    if (oauthError) {
-      cleanUrl();
-      setErr(`Google sign-in was cancelled or failed: ${oauthError}`);
-      return;
-    }
-    if (!code) return;
-
-    let cancelled = false;
-    (async () => {
-      setBusy(true);
-      try {
-        const supa = await getSupabase();
-        await supa.auth.exchangeCodeForSession(code);
-        cleanUrl();
-        sessionStorage.removeItem("cc_oauth_retry");
-        // AuthContext's onSupabaseAuth picks up SIGNED_IN, swaps it for a
-        // ClanChat JWT and sets `user`; the effect above then routes to /feed.
-      } catch (e) {
-        if (cancelled) return;
-        cleanUrl();
-        const msg = (e?.message || "").toLowerCase();
-        const verifierIssue =
-          msg.includes("verifier") || msg.includes("pkce") ||
-          msg.includes("code challenge") || msg.includes("invalid request") ||
-          msg.includes("auth code and code verifier");
-        if (verifierIssue && !sessionStorage.getItem("cc_oauth_retry")) {
-          // One automatic restart from this canonical origin (fresh verifier).
-          sessionStorage.setItem("cc_oauth_retry", "1");
-          setErr("Reconnecting to Google…");
-          try { await loginWithSupabaseGoogle(); return; } catch { /* fall through */ }
-        }
-        sessionStorage.removeItem("cc_oauth_retry");
-        setErr("Google sign-in didn't complete. Please tap Continue with Google again.");
-        setBusy(false);
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   /**
    * Legacy ClanChat login FIRST — it's the authoritative store for

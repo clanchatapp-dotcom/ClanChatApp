@@ -120,23 +120,17 @@ export async function sbSignInGoogle() {
     return data;
   }
 
-  // Web: normal redirect flow. Return to the PUBLIC /login route on the
-  // CANONICAL origin (https://www.clanchat.app in prod — the domain edge
-  // 308-redirects the bare apex to www, so www is the host that actually
-  // terminates with a 200), never a protected page. PKCE requires the same
-  // origin start->finish; index.js has already moved apex/emergent.host
-  // visitors to www.clanchat.app, so window.location.origin is canonical
-  // here, but we compute it defensively anyway. AuthContext's mount effect
-  // reads the ?code= and calls exchangeCodeForSession explicitly.
-  const origin =
-    (window.location.hostname === "clanchat.app" ||
-     window.location.hostname.endsWith(".emergent.host"))
-      ? "https://www.clanchat.app"
-      : window.location.origin;
+  // Web: dynamic redirectTo by platform. index.js has already moved everyone
+  // onto the single canonical host (www.clanchat.app in prod; the preview host
+  // on preview), so window.location.origin IS the canonical origin here —
+  // using it guarantees PKCE starts and finishes on the SAME origin (the
+  // code-verifier is per-origin). We return to /feed; App.js exchanges the
+  // ?code= at the root and the Protected guard waits during that exchange, so
+  // landing on /feed does not bounce or loop.
   const { data, error } = await supa.auth.signInWithOAuth({
     provider: "google",
     options: {
-      redirectTo: `${origin}/login`,
+      redirectTo: `${window.location.origin}/feed`,
     },
   });
   if (error) throw error;

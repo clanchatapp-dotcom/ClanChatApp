@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 11 - Verified OAuth redirect-loop hardening on /feed (root-level useOAuthReturn + Protected guard 'Signing you in...'). Backend pytest 14/14 pass. All frontend regressions pass: fake code and error return on /feed both clean the URL and land on /login (no loop, no crash, no runtime overlay); admin & bob login work; authed /login forwards to /feed; unauth /feed redirects to /login; logout from /settings clears tokens and lands on /login; two-step registration ends on /feed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "regression_results": {
+    "oauth_fake_code_on_feed": "PASS - /feed?code=fake_invalid_code briefly showed 'Signing you in...' (interim body contained the retry-fallthrough error text), Supabase /auth/v1/token returned 400 (3x - initial + auto-retry attempt), URL was cleaned (no dangling ?code=), final landing: /login. No runtime overlay, no crash, no infinite bouncing.",
+    "oauth_error_return_on_feed": "PASS - /feed?error=access_denied&error_description=denied cleaned URL, showed toast 'Google sign-in failed: denied', landed on /login. No loop, no crash.",
+    "unauth_feed_redirects_to_login": "PASS - unauth /feed (no code) -> /login as expected (Protected guard).",
+    "admin_login_feed_adminNav": "PASS - admin@clanchat.app/admin123 -> /feed with Admin nav (a[href*='/admin'] present).",
+    "bob_login": "PASS - bob@clanchat.app/Password123! -> /feed.",
+    "authed_login_forwards_to_feed": "PASS - visiting /login while authenticated immediately forwards to /feed.",
+    "logout_from_settings": "PASS - [data-testid=logout-btn] clears clanchat_access_token from localStorage and lands on /login. Used scroll_into_view_if_needed + programmatic click per prior iteration guidance.",
+    "two_step_registration": "PASS - step1 (reg-email/reg-password + reg-continue) -> step2 (reg-handle/reg-display/reg-dob) -> Create -> /feed. Toast 'Account created'.",
+    "no_runtime_overlay_or_pageerrors": "PASS - 0 pageerrors across all flows. Only expected 401s on /api/auth/me pre-login and expected 400s from Supabase token exchange for the fake_code test."
+  },
+  "backend_pytest": "14/14 PASS (backend/tests/test_auth_restoration.py) - JUnit at /app/test_reports/pytest/iter11.xml",
+  "test_report_links": [
+    "/app/backend/tests/test_auth_restoration.py",
+    "/app/test_reports/pytest/iter11.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "App.js useOAuthReturn() correctly: cleans URL BEFORE any error handling / retry to prevent re-runs; gates the auto-restart via sessionStorage cc_oauth_retry so it can only fire once; falls through to a visible toast on the second failure. Verifier-issue regex is comprehensive.",
+    "Protected guard's oauthCodePending() gate ('Signing you in...') is the correct fix for the /feed?code= -> /login bounce that was stripping the PKCE code before exchange could run. The gate reads location.search on each render so it naturally releases once useOAuthReturn cleans the URL.",
+    "supabase.js: detectSessionInUrl:false plus PKCE flow, with an explicit exchangeCodeForSession at the app root, is the right composition - avoids the SDK racing the app's own exchange. redirectTo uses window.location.origin which after canonicalizeHost() equals the origin PKCE was started from (verifier is per-origin), so no verifier mismatch on the happy path.",
+    "Minor UX (non-blocking): during the auto-retry, toast.message('Reconnecting to Google...') is fired synchronously with window.location.href assignment; the toast may not have time to paint. Acceptable per spec.",
+    "canonicalizeHost() correctly excludes the preview host (*.preview.emergentagent.com), confirmed by preview flows working unchanged. Same-origin PKCE is preserved."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (8/8 in-scope flows)"},
+  "test_credentials": "admin@clanchat.app/admin123, bob@clanchat.app/Password123! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created 1 registration test user (test_reg_<ts>@clanchat.app) plus a leftover test_user_ from earlier iterations; both deleted post-test. Users collection restored to canonical set: admin, alice, bob, teen, thomasgallacher92 (real google user).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "OAuth-loop fix confirmed at both /feed?code= and /feed?error= entry points. Registration and logout selectors: reg-email, reg-password, reg-continue, reg-handle, reg-display, reg-dob (native date input), logout-btn. Logout button sits below the fold at 1280x900 - use scroll_into_view_if_needed + evaluate('el.click()'). Real Google OAuth is NOT to be automated per request. Supabase-side console errors (400 on /auth/v1/token) during fake_code test are expected and NOT a bug.",
+  "rca_of_the_issue": "N/A - regression suite green."
+}

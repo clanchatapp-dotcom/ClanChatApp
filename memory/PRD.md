@@ -158,3 +158,17 @@ Verified in preview: iteration_6 — backend 14/14, frontend 100%, no regression
 Verified iteration_10: backend 14/14, frontend 7/7, no loops/regressions.
 REMINDER for user: Supabase Site URL should be https://clanchat.app (apex) and redirect list must
 include https://clanchat.app/login (already covered by clanchat.app/**). Re-publish web + rebuild APK.
+
+## Google OAuth 500-loop fix per user spec (this session) — DONE (iteration_11: 14/14, 8/8)
+- Dynamic redirectTo: web -> `${window.location.origin}/feed` (origin is already canonical via
+  index.js host redirect); native -> clanchat://auth-callback.
+- Root handler App.js useOAuthReturn(): exchanges ?code= via exchangeCodeForSession at app root
+  (works on any landing route incl /feed), cleans URL, handles ?error=, one-time auto-restart on
+  verifier error (sessionStorage cc_oauth_retry).
+- Protected guard now WAITS ('Signing you in…') while oauthCodePending() instead of bouncing to
+  /login — this was the bounce that dropped the code and caused the loop.
+- Native deep-link listener (root AuthProvider) handles clanchat://auth-callback: setSession for
+  tokens / exchangeCodeForSession for code. detectSessionInUrl=false (explicit handling).
+- Verified: /feed?code=fake -> 'Signing you in…' -> /login with clear error, NO loop/500.
+- ACTION for user: re-publish web + rebuild APK. Supabase redirect list must include the app
+  origin /feed (www.clanchat.app + clanchat.app/**) and clanchat://auth-callback (already added).
