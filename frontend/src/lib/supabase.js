@@ -38,7 +38,7 @@ export async function getSupabase() {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: true, // needed for OAuth redirect flow (web)
+        detectSessionInUrl: false, // we exchange the ?code= explicitly on /login
         // Force PKCE. The default (implicit) flow returns the session in the
         // URL *fragment* (#access_token=…), which Android strips when Chrome
         // Custom Tabs fires the `clanchat://` deep-link intent — so the APK
@@ -120,16 +120,21 @@ export async function sbSignInGoogle() {
     return data;
   }
 
-  // Web: normal redirect flow. Return to the PUBLIC /login route — NOT a
-  // protected page. If we return to /feed, the <Protected> guard redirects to
-  // /login before Supabase can read the `?code=` from the URL, dropping the
-  // OAuth code and leaving the user stuck on "Welcome back". /login is public,
-  // so Supabase's detectSessionInUrl processes the code, and Login.jsx then
-  // forwards the now-authenticated user to /feed.
+  // Web: normal redirect flow. Return to the PUBLIC /login route on the
+  // CANONICAL origin (https://clanchat.app in prod), never a protected page.
+  // PKCE requires the same origin start->finish; index.js has already moved
+  // www/emergent.host visitors to clanchat.app, so window.location.origin is
+  // canonical here, but we compute it defensively anyway. Login.jsx reads the
+  // ?code= and calls exchangeCodeForSession explicitly.
+  const origin =
+    (window.location.hostname === "www.clanchat.app" ||
+     window.location.hostname.endsWith(".emergent.host"))
+      ? "https://clanchat.app"
+      : window.location.origin;
   const { data, error } = await supa.auth.signInWithOAuth({
     provider: "google",
     options: {
-      redirectTo: `${window.location.origin}/login`,
+      redirectTo: `${origin}/login`,
     },
   });
   if (error) throw error;

@@ -46,6 +46,17 @@ export function AuthProvider({ children }) {
       // Let AuthCallback handle
       return;
     }
+    // Iter 31 fix — a fresh Google OAuth redirect back lands on /feed with
+    // a Supabase PKCE `?code=` param. The Supabase session exchange (SDK
+    // config fetch -> code exchange -> our own /auth/supabase-login) is
+    // several round-trips and can lose the race against this single fast
+    // /auth/me call below, which would otherwise set user=null and make
+    // Protected bounce back to /login before the OAuth session ever lands
+    // (worse on production's extra network hop than on preview). Give the
+    // OAuth exchange a head start instead of racing it.
+    if (new URLSearchParams(window.location.search).has("code")) {
+      await new Promise((r) => setTimeout(r, 2500));
+    }
     // Iter 26 fix — the APK was logging users out after a few minutes of
     // inactivity because Capacitor Preferences occasionally returns
     // `{value:null}` right after a WebView resume, the request went out

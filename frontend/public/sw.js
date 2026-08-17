@@ -59,21 +59,21 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Same-origin static assets: cache-first, freshen in background.
+  // Same-origin static assets: NETWORK-FIRST so a fresh deploy's JS/CSS is
+  // never shadowed by a stale cached bundle (critical during login — a cached
+  // old bundle was causing sign-in to hang). Fall back to cache only when
+  // offline/unreachable.
   if (url.origin === self.location.origin) {
     event.respondWith(
-      caches.match(req).then((cached) => {
-        const fetching = fetch(req)
-          .then((resp) => {
-            if (resp.ok) {
-              const clone = resp.clone();
-              caches.open(SHELL_CACHE).then((c) => c.put(req, clone));
-            }
-            return resp;
-          })
-          .catch(() => cached);
-        return cached || fetching;
-      })
+      fetch(req)
+        .then((resp) => {
+          if (resp.ok) {
+            const clone = resp.clone();
+            caches.open(SHELL_CACHE).then((c) => c.put(req, clone));
+          }
+          return resp;
+        })
+        .catch(() => caches.match(req))
     );
   }
 });
