@@ -545,6 +545,11 @@ app = FastAPI()
 api = APIRouter(prefix="/api")
 
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
 # ----------------------------------------------------------------------
 # Firebase Cloud Messaging — push notifications for Android.
 #
