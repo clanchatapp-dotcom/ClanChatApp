@@ -1,89 +1,5312 @@
-from fastapi import FastAPI, APIRouter
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
-
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+import os
+import uuid
+import hashlib
+import logging
+import re
+import secrets
+from datetime import datetime, timezone, timedelta, date
+from typing import List, Literal, Optional
+
+import bcrypt
+import jwt
+import requests
+from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends, UploadFile, File, Form, Query, Header
+from fastapi.responses import Response as FastResponse
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, Field, EmailStr
+
+# ------------------------------------------------------------------
+# DB
+# ------------------------------------------------------------------
+mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ["DB_NAME"]]
 
-# Create the main app without a prefix
+# ------------------------------------------------------------------
+# Constants & helpers
+# ------------------------------------------------------------------
+JWT_ALGORITHM = "HS256"
+JWT_SECRET = os.environ["JWT_SECRET"]
+APP_NAME = os.environ.get("APP_NAME", "clanchat")
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+EMERGENT_AUTH_SESSION_DATA_URL = (
+    "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+)
+
+BANNED_WORDS = {
+    # representative starter list — covers slurs/hate; expand on review
+    "nigger", "nigga", "faggot", "fag", "tranny", "retard", "retarded",
+    "kike", "spic", "chink", "gook", "wetback", "dyke",
+}
+
+# Tags flagged NSFW for the purposes of trending/discovery. Split into two
+# groups so we don't accidentally block innocent tags:
+#   NSFW_TAG_EXACT      — must equal the tag exactly. Used for short slang
+#                         words that would false-positive as substrings
+#                         (e.g. "ass" is in the exact set so we don't kill
+#                         #class, #grass, #compass, #passion).
+#   NSFW_TAG_SUBSTRING  — matched as a substring inside the tag. Reserved
+#                         for distinctive fragments where any occurrence is
+#                         almost certainly NSFW (e.g. "porn" matches porno,
+#                         pornstar, hardporn, etc.).
+# Both sets are lowercase — tag sanitisation already forces lowercase +
+# alphanumeric-only, so we never need to worry about punctuation/spacing.
+NSFW_TAG_EXACT = {
+    # Anatomy / short slang — exact match to avoid killing legit words
+    "ass", "asses", "arse", "arses", "azz",
+    "butt", "butts",
+    "boob", "boobs", "booba", "booby",
+    "tit", "tits",
+    "cock", "cocks", "cocky",
+    "dick", "dicks", "dik",
+    "balls", "ballsack",
+    "cum", "cums", "cumming", "cummy",
+    "jizz",
+    "sex", "sexed", "sexo", "seks", "s3x",
+    "kink", "kinks", "k1nk",
+    "cp",  # child porn — critical exact match, too short for substring
+    "bj",  # blowjob abbreviation
+    "hj",  # handjob abbreviation
+    "dp",  # double-penetration
+    "gay",  # NOT NSFW — identity, kept OUT of this list intentionally
+}
+# Safety net: never let "gay" sneak in even if someone edits the set above.
+NSFW_TAG_EXACT.discard("gay")
+
+NSFW_TAG_SUBSTRING = {
+    # Umbrella labels
+    "nsfw", "nsfl", "18plus", "adult", "adultonly", "onlyfans", "onlyfan",
+    # Explicit categories
+    "porn", "pr0n", "porno", "pornstar", "pornhub", "xvideos", "redtube",
+    "youporn", "xxx",
+    "hentai", "h3ntai", "doujin", "ecchi",
+    "erotic", "erotica", "erotics",
+    "lewd", "smut", "smutty",
+    # Nudity
+    "nude", "nud3", "nudes", "naked", "nak3d", "topless", "bottomless",
+    # Sexual acts / descriptors
+    "sexy", "sexual", "sexting", "sexbot", "sextape",
+    "orgy", "orgasm", "orgasms",
+    "fuck", "fucking", "fucked", "fuk", "fck", "phuck",
+    "blowjob", "handjob", "footjob", "titjob", "rimjob",
+    "gangbang", "threesome", "foursome",
+    "creampie", "bukkake", "facial", "cumshot",
+    "deepthroat", "throatfuck",
+    "anal", "ana1", "anus", "buttfuck", "buttplug",
+    "vaginal", "vaginas",
+    "cameltoe", "upskirt", "downblouse", "sideboob", "underboob",
+    # Anatomy — longer forms (short ones live in the exact set)
+    "titties", "titty", "tittie", "boobs", "boobies", "boobjob",
+    "nipple", "nipples",
+    "vagina", "vulva", "clitoris", "pussy", "puss1", "pussi",
+    "penis", "peni5", "penises", "phallus", "phalluses",
+    "scrotum", "testicle", "testicles",
+    "buttcrack", "buttcheek", "assjob", "asscheek",
+    # Kink / fetish
+    "bdsm", "bondage", "fetish", "kinky",
+    "milf", "dilf", "gilf", "cougar",
+    "cuckold", "cuckqueen",
+    "tentacle", "tentacles",
+    "yiff",  # NSFW furry — safe substring
+    # Sex work
+    "camgirl", "camboy", "camwhore", "webcamgirl", "webcamboy",
+    "escort", "escorts", "hooker", "hookers", "prostitute", "prostitution",
+    "slut", "sluts", "slutty",
+    "whore", "whores", "whor3", "whor3s",
+    "thot", "thots",
+    "stripper", "strippers", "stripclub",
+    # Body-shape terms with almost-exclusively-NSFW usage
+    "thicc",
+    # Illegal / hard-block categories
+    "loli", "lolicon", "shota", "shotacon", "childporn", "kiddieporn",
+    "pedo", "pedophile", "pedophilia", "pedophiles",
+    "incest", "incestuous",
+    "beastiality", "bestiality", "zoophilia",
+    "rape", "raping", "raped", "rapist",
+    "snuff",
+    # Toys / paraphernalia
+    "dildo", "dildos", "vibrator", "fleshlight",
+    # Gore / NSFL adjacent (user asked to exclude NSFW references broadly)
+    "gore", "nsfl",
+}
+
+
+def is_nsfw_tag(tag: str) -> bool:
+    """True if a tag is a sexual/NSFW reference. Uses an exact match for
+    short slang (avoid false positives on class/grass/cocktail) and a
+    substring match for distinctive fragments (porn, hentai, milf, etc.).
+    Cheap enough to run in a Python loop over trending candidates."""
+    if not tag:
+        return False
+    t = tag.lower()
+    if t in NSFW_TAG_EXACT:
+        return True
+    return any(term in t for term in NSFW_TAG_SUBSTRING)
+TIERS = {"public", "followers", "inner"}
+
+storage_key_cache: Optional[str] = None
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+
+def create_access_token(user_id: str) -> str:
+    payload = {
+        "sub": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=30),
+        "type": "access",
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def create_refresh_token(user_id: str) -> str:
+    payload = {
+        "sub": user_id,
+        # Iter 29 — bump refresh token to 60 days so users who take a
+        # break from the app for a few weeks come back to a working
+        # session instead of the login screen. Access token stays 30d
+        # (rotated every refresh); refresh gives us the runway.
+        "exp": datetime.now(timezone.utc) + timedelta(days=60),
+        "type": "refresh",
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def set_auth_cookies(response: Response, access: str, refresh: str):
+    # Iter 26/29 — access cookie 30d (matches JWT), refresh cookie 60d.
+    response.set_cookie("access_token", access, httponly=True, secure=True,
+                        samesite="none", max_age=60 * 60 * 24 * 30, path="/")
+    response.set_cookie("refresh_token", refresh, httponly=True, secure=True,
+                        samesite="none", max_age=60 * 60 * 24 * 60, path="/")
+
+
+# ----------------------------------------------------------------------
+
+
+def clear_auth_cookies(response: Response):
+    response.delete_cookie("access_token", path="/")
+    response.delete_cookie("refresh_token", path="/")
+    response.delete_cookie("session_token", path="/")
+
+
+# ----------------------------------------------------------------------
+# DM encryption — AES-256-GCM at rest.
+#
+# This is *server-side* encryption (a.k.a. "encryption at rest"), NOT end-to-
+# end. ClanChat holds the key. The threat model this protects against:
+#   • Stolen MongoDB dumps / leaked backups — ciphertext only
+#   • Casual ops or contractor poking around the DB outside the watchlist
+#     flow — they see opaque base64 strings, not message content
+#   • A leaked read-replica or accidental fixture export
+#
+# It does NOT protect against:
+#   • A compromised app server (the key sits in memory there)
+#   • An admin abusing the watchlist (the audit log is the deterrent)
+#
+# The UI surfaces this as "Encrypted" — never "End-to-end encrypted". When
+# we ship Signal-protocol E2E later we'll flip the label.
+# ----------------------------------------------------------------------
+import base64 as _base64
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _AESGCM
+import secrets as _secrets
+
+_DM_KEY_RAW = os.environ.get("DM_ENCRYPTION_KEY", "").strip()
+if _DM_KEY_RAW:
+    try:
+        _DM_KEY = _base64.urlsafe_b64decode(_DM_KEY_RAW)
+        if len(_DM_KEY) != 32:
+            raise ValueError(f"DM_ENCRYPTION_KEY must decode to 32 bytes, got {len(_DM_KEY)}")
+    except Exception as _e:
+        raise RuntimeError(f"Invalid DM_ENCRYPTION_KEY in env: {_e}")
+else:
+    # Dev fallback so the server still boots locally; in production the env
+    # var MUST be set or every restart re-keys and prior messages become
+    # unreadable. We log a loud warning so this isn't silent.
+    _DM_KEY = _AESGCM.generate_key(bit_length=256)
+    logging.warning("DM_ENCRYPTION_KEY not set — using ephemeral key. DMs will not survive a server restart.")
+
+_DM_CIPHER = _AESGCM(_DM_KEY)
+
+
+def encrypt_dm(plaintext: str) -> str:
+    """Encrypt a DM body. Returns base64(nonce || ciphertext+tag)."""
+    if not plaintext:
+        return ""
+    nonce = _secrets.token_bytes(12)  # AES-GCM standard nonce length
+    ct = _DM_CIPHER.encrypt(nonce, plaintext.encode("utf-8"), None)
+    return _base64.urlsafe_b64encode(nonce + ct).decode("ascii")
+
+
+def decrypt_dm(payload: str) -> str:
+    """Reverse of encrypt_dm. Returns '' on bad/empty input — never raises
+    into the request handler, because a single corrupt row should not nuke
+    the whole thread fetch."""
+    if not payload:
+        return ""
+    try:
+        blob = _base64.urlsafe_b64decode(payload.encode("ascii"))
+        nonce, ct = blob[:12], blob[12:]
+        return _DM_CIPHER.decrypt(nonce, ct, None).decode("utf-8")
+    except Exception as e:
+        logging.warning("decrypt_dm failed: %s", e)
+        return "[unreadable]"
+
+
+def hydrate_dm(doc: dict) -> dict:
+    """Read-path helper: if a stored DM row has `content_enc`, decrypt it
+    into `content` for the response. Legacy rows (pre-encryption) keep their
+    plaintext `content` untouched."""
+    if not doc:
+        return doc
+    if doc.get("content_enc"):
+        doc = {**doc, "content": decrypt_dm(doc["content_enc"])}
+        doc.pop("content_enc", None)
+    return doc
+
+
+def calc_age(dob_str: str) -> int:
+    try:
+        d = date.fromisoformat(dob_str)
+    except Exception:
+        return 0
+    today = date.today()
+    return today.year - d.year - ((today.month, today.day) < (d.month, d.day))
+
+
+def is_minor(user: dict) -> bool:
+    return user.get("is_minor", False) or calc_age(user.get("dob", "1900-01-01")) < 18
+
+
+def sanitize_handle(h: str) -> str:
+    h = (h or "").strip().lower().lstrip("#")
+    if not re.fullmatch(r"[a-z0-9_]{3,20}", h):
+        raise HTTPException(400, "Handle must be 3-20 chars, lowercase letters/numbers/underscore")
+    return h
+
+
+def sanitize_tags(raw: List[str]) -> List[str]:
+    out = []
+    seen = set()
+    for t in raw or []:
+        t = (t or "").strip().lower().lstrip("#")
+        if not t:
+            continue
+        if not re.fullmatch(r"[a-z0-9]+", t):
+            continue
+        if t in BANNED_WORDS:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= 10:
+            break
+    return out
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def real_name_visible(target: dict, viewer: Optional[dict]) -> bool:
+    visibility = target.get("settings", {}).get("real_name_visibility", "nobody")
+    if not target.get("real_name") or visibility == "nobody":
+        return False
+    if visibility == "everyone":
+        return True
+    if not viewer:
+        return False
+    if viewer["user_id"] == target["user_id"]:
+        return True
+    if visibility == "followers":
+        return bool(await db.follows.find_one({
+            "follower_id": viewer["user_id"], "followee_id": target["user_id"], "status": "active"
+        }))
+    if visibility == "inner":
+        return bool(await db.inner_circle.find_one({
+            "owner_id": target["user_id"], "member_id": viewer["user_id"], "status": "active"
+        }))
+    return False
+
+
+def public_user(u: dict) -> dict:
+    return {
+        "user_id": u["user_id"],
+        "handle": u["handle"],
+        "display_name": u.get("display_name", u["handle"]),
+        "bio": u.get("bio", ""),
+        "avatar_path": u.get("avatar_path"),
+        "links": u.get("links", []),
+        "follow_mode": u.get("follow_mode", "open"),
+        "is_minor": u.get("is_minor", False),
+        "nsfw_account": u.get("nsfw_account", False),
+        "role": u.get("role", "user"),
+        # Account-type flags — public so profile badges can render.
+        "is_creator": u.get("is_creator", False),
+        "creator_category": u.get("creator_category"),
+        "is_premium": u.get("is_premium", False),
+        "is_verified": u.get("is_verified", False),
+    }
+
+
+def private_user(u: dict) -> dict:
+    return {
+        **public_user(u),
+        "email": u.get("email"),
+        "dob": u.get("dob"),
+        "auth_provider": u.get("auth_provider", "password"),
+        "settings": u.get("settings", default_settings()),
+        "role": u.get("role", "user"),
+        "nsfw_account": u.get("nsfw_account", False),
+        "real_name": u.get("real_name", ""),
+        "strikes": u.get("strikes", 0),
+        "strike_history": u.get("strike_history", []),
+        "suspended_until": u.get("suspended_until"),
+    }
+
+
+def default_settings() -> dict:
+    return {
+        "theme": "dark",
+        "dms_enabled_followers": False,  # T2 DMs default off
+        "wall_post_permission": "owner",  # owner | followers | inner
+        "taggable_by": "followers",       # anyone | followers | inner | nobody
+        "tag_approval_mode": False,       # if True, all tags require approval
+        "real_name_visibility": "nobody", # nobody | inner | followers | everyone
+        "dm_screenshots_allowed": False,  # both parties must opt-in; default OFF (privacy-first)
+        "onboarded": False,
+        "comfort_zone": {
+            "nsfw": False,
+            "ai_content": True,
+            "strong_language": True,
+            "violence": False,
+            "self_harm": False,
+            "gore": False,
+            "sensitive": False,
+            "anonymous_accounts": True,
+        },
+    }
+
+
+# ------------------------------------------------------------------
+# Storage helpers
+# ------------------------------------------------------------------
+def init_storage() -> Optional[str]:
+    global storage_key_cache
+    if storage_key_cache or not EMERGENT_KEY:
+        return storage_key_cache
+    try:
+        r = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+        r.raise_for_status()
+        storage_key_cache = r.json()["storage_key"]
+    except Exception as e:
+        logging.error(f"storage init failed: {e}")
+        storage_key_cache = None
+    return storage_key_cache
+
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    if not key:
+        raise HTTPException(500, "Storage unavailable")
+    r = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def get_object(path: str):
+    key = init_storage()
+    if not key:
+        raise HTTPException(500, "Storage unavailable")
+    r = requests.get(f"{STORAGE_URL}/objects/{path}",
+                     headers={"X-Storage-Key": key}, timeout=60)
+    r.raise_for_status()
+    return r.content, r.headers.get("Content-Type", "application/octet-stream")
+
+
+# ------------------------------------------------------------------
+# Auth dependency
+# ------------------------------------------------------------------
+async def get_current_user(request: Request) -> dict:
+    # session cookie (google oauth) takes precedence
+    session_token = request.cookies.get("session_token")
+    if session_token:
+        sess = await db.user_sessions.find_one({"session_token": session_token}, {"_id": 0})
+        if sess:
+            exp = sess.get("expires_at")
+            if isinstance(exp, str):
+                exp = datetime.fromisoformat(exp)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if exp >= datetime.now(timezone.utc):
+                user = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
+                if user:
+                    return user
+    # JWT cookie or bearer
+    token = request.cookies.get("access_token")
+    if not token:
+        ah = request.headers.get("Authorization", "")
+        if ah.startswith("Bearer "):
+            token = ah[7:]
+    if not token:
+        raise HTTPException(401, "Not authenticated")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(401, "Invalid token type")
+        user = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0})
+        if not user:
+            raise HTTPException(401, "User not found")
+        if user.get("deleted"):
+            raise HTTPException(403, "Account deleted")
+        # Soft-deleted account: the session must be terminated. The user
+        # can reactivate by signing in via /auth/login (which auto-lifts
+        # the soft-delete flag).
+        if user.get("soft_deleted_at"):
+            raise HTTPException(401, "Account pending deletion — sign in to restore")
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid token")
+
+
+async def get_optional_user(request: Request) -> Optional[dict]:
+    try:
+        return await get_current_user(request)
+    except HTTPException:
+        return None
+
+
+# ------------------------------------------------------------------
+# Visibility check
+# ------------------------------------------------------------------
+async def can_view_post(post: dict, viewer: Optional[dict]) -> bool:
+    # Quarantined content (CSAM flag) is invisible to everyone except admins.
+    # Even the author cannot view a quarantined post — content is locked pending review.
+    if post.get("quarantined"):
+        if viewer and viewer.get("role") == "admin":
+            return True
+        return False
+    if not viewer:
+        return post["tier"] == "public" and not post.get("nsfw")
+    if viewer["user_id"] == post["author_id"]:
+        return True
+    # check blocks
+    if await db.blocks.find_one({"blocker_id": post["author_id"], "blocked_id": viewer["user_id"]}):
+        return False
+    if await db.blocks.find_one({"blocker_id": viewer["user_id"], "blocked_id": post["author_id"]}):
+        return False
+    tier = post["tier"]
+    if tier == "public":
+        return True
+    if tier == "followers":
+        return bool(await db.follows.find_one({
+            "follower_id": viewer["user_id"], "followee_id": post["author_id"], "status": "active"
+        }))
+    if tier == "inner":
+        return bool(await db.inner_circle.find_one({
+            "owner_id": post["author_id"], "member_id": viewer["user_id"], "status": "active"
+        }))
+    return False
+
+
+async def relation(viewer_id: str, target_id: str) -> dict:
+    if viewer_id == target_id:
+        return {"self": True, "follows": False, "inner": False}
+    f = await db.follows.find_one({"follower_id": viewer_id, "followee_id": target_id, "status": "active"})
+    ic = await db.inner_circle.find_one({"owner_id": target_id, "member_id": viewer_id, "status": "active"})
+    pending = await db.follows.find_one({"follower_id": viewer_id, "followee_id": target_id, "status": "pending"})
+    return {"self": False, "follows": bool(f), "inner": bool(ic), "follow_pending": bool(pending)}
+
+
+# ------------------------------------------------------------------
+# App & router
+# ------------------------------------------------------------------
 app = FastAPI()
-
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+api = APIRouter(prefix="/api")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+# ----------------------------------------------------------------------
+# Firebase Cloud Messaging — push notifications for Android.
+#
+# The service account JSON is stored base64-encoded in
+# FCM_SERVICE_ACCOUNT_JSON_B64 so it never sits in plaintext on disk. If
+# unset (e.g. local dev), push is a no-op and never raises — DMs/calls/
+# etc. still work in-app, you just don't get notified when the app is
+# backgrounded.
+# ----------------------------------------------------------------------
+_FCM_OK = False
+_fb_messaging = None
+try:
+    _FCM_RAW = os.environ.get("FCM_SERVICE_ACCOUNT_JSON_B64", "").strip()
+    if _FCM_RAW:
+        import json as _json
+        import firebase_admin as _firebase_admin
+        from firebase_admin import credentials as _fb_creds, messaging as _fb_messaging
+        _sa_dict = _json.loads(_base64.b64decode(_FCM_RAW).decode("utf-8"))
+        if not _firebase_admin._apps:
+            _firebase_admin.initialize_app(_fb_creds.Certificate(_sa_dict))
+        _FCM_OK = True
+        logging.info("Firebase Cloud Messaging initialised for project %s", _sa_dict.get("project_id"))
+except Exception as _e:
+    logging.warning("FCM init failed: %s — push notifications disabled.", _e)
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
+async def fcm_push(user_id: str, title: str, body: str, *, data: dict | None = None,
+                   notif_type: str = "generic") -> int:
+    """Send a push to every registered device of a user. Honours per-type
+    toggles. Dead tokens are pruned automatically."""
+    if not _FCM_OK or _fb_messaging is None:
+        return 0
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0, "push_prefs": 1})
+    if u and u.get("push_prefs", {}).get(notif_type) is False:
+        return 0
+    cursor = db.device_tokens.find({"user_id": user_id}, {"_id": 0, "token": 1})
+    tokens = [t["token"] async for t in cursor]
+    if not tokens:
+        return 0
+    delivered, dead = 0, []
+    for tok in tokens:
+        try:
+            msg = _fb_messaging.Message(
+                token=tok,
+                notification=_fb_messaging.Notification(title=title[:80], body=body[:240]),
+                data={k: str(v) for k, v in (data or {}).items()},
+                android=_fb_messaging.AndroidConfig(
+                    priority="high",
+                    notification=_fb_messaging.AndroidNotification(
+                        channel_id=f"clanchat_{notif_type}",
+                        sound="default",
+                        default_vibrate_timings=True,
+                    ),
+                ),
+            )
+            _fb_messaging.send(msg)
+            delivered += 1
+        except _fb_messaging.UnregisteredError:
+            dead.append(tok)
+        except Exception as e:
+            logging.warning("fcm send to %s failed: %s", tok[:12], e)
+    if dead:
+        await db.device_tokens.delete_many({"token": {"$in": dead}})
+    return delivered
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+class DeviceTokenIn(BaseModel):
+    token: str = Field(min_length=10, max_length=512)
+    platform: str = Field(default="android", pattern="^(android|ios|web)$")
 
-# Include the router in the main app
-app.include_router(api_router)
 
+class PushPrefsIn(BaseModel):
+    dms: bool | None = None
+    calls: bool | None = None
+    follows: bool | None = None
+    inner_invites: bool | None = None
+
+
+# Note: the @api endpoints for register-device / unregister-device /
+# prefs are declared near the end of the file (after get_current_user
+# is defined), so the route registration happens in dependency order.
+
+
+# ------------------------------------------------------------------
+# Pydantic models
+# ------------------------------------------------------------------
+class RegisterIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+    handle: str
+    display_name: str = Field(min_length=1, max_length=40)
+    dob: str  # YYYY-MM-DD
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class GoogleSessionIn(BaseModel):
+    session_id: str
+    dob: Optional[str] = None
+    handle: Optional[str] = None
+
+
+class PostIn(BaseModel):
+    content: str = Field(default="", max_length=4000)
+    tier: str
+    tags: List[str] = []
+    media_paths: List[str] = []
+    is_ai: bool = False
+    ai_label: Optional[str] = None  # None | "generated" | "assisted" | "altered"
+    depicts_real_person: bool = False
+    has_consent: bool = False
+    nsfw: bool = False
+    tagged_user_ids: List[str] = []  # tag-other-users
+    is_audio_track: bool = False  # audio tab posts
+
+
+class CommentIn(BaseModel):
+    content: str = Field(min_length=1, max_length=1000)
+
+
+class WallPostIn(BaseModel):
+    content: str = Field(max_length=2000)
+    nsfw: bool = False
+
+
+class BoardIn(BaseModel):
+    title: str = Field(min_length=2, max_length=80)
+    description: str = Field(default="", max_length=500)
+    tier: str
+    allow_t1_read: bool = True
+
+
+class BoardMessageIn(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class DMIn(BaseModel):
+    recipient_id: str
+    content: str = Field(default="", max_length=2000)
+    media_paths: list[str] = Field(default_factory=list, max_length=4)
+
+
+class GroupCreateIn(BaseModel):
+    name: str = Field(min_length=2, max_length=60)
+    member_ids: List[str] = Field(default_factory=list, max_length=14)
+
+
+class GroupMessageIn(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class ProfileUpdateIn(BaseModel):
+    display_name: Optional[str] = None
+    bio: Optional[str] = Field(default=None, max_length=150)
+    avatar_path: Optional[str] = None
+    links: Optional[List[dict]] = None  # [{label, url}]
+    follow_mode: Optional[str] = None  # open | approval
+    settings: Optional[dict] = None
+    nsfw_account: Optional[bool] = None
+    real_name: Optional[str] = Field(default=None, max_length=80)
+    real_name_visibility: Optional[str] = None  # nobody|inner|followers|everyone
+
+
+class InnerInviteIn(BaseModel):
+    user_id: str
+    permissions: dict = {}  # dms, audio_messages, audio_calls, video_calls
+
+
+class FollowActionIn(BaseModel):
+    user_id: str
+
+
+class ReportIn(BaseModel):
+    target_type: Literal["user", "post", "board", "message"]
+    target_id: str
+    # Structured categories per the ClanChat spec. `csam` is the critical
+    # lane — it triggers immediate quarantine + CEOP scaffolding. `underage`
+    # is separate from CSAM: a user acting like a minor without proof, versus
+    # confirmed child sexual abuse material.
+    category: Literal[
+        "csam",
+        "underage",
+        "harassment",
+        "hate",
+        "self_harm",
+        "inappropriate",
+        "unlabelled_ai",
+        "impersonation",
+        "spam",
+        "other",
+    ]
+    notes: str = ""
+
+
+# ------------------------------------------------------------------
+# Auth routes
+# ------------------------------------------------------------------
+@api.post("/auth/register")
+async def register(payload: RegisterIn, response: Response):
+    email = payload.email.lower()
+    handle = sanitize_handle(payload.handle)
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(409, "Email already in use")
+    if await db.users.find_one({"handle": handle}):
+        raise HTTPException(409, "Handle already taken")
+    try:
+        date.fromisoformat(payload.dob)
+    except Exception:
+        raise HTTPException(400, "Invalid DOB (YYYY-MM-DD)")
+    age = calc_age(payload.dob)
+    if age < 13:
+        raise HTTPException(400, "Minimum age is 13")
+    uid = f"user_{uuid.uuid4().hex[:12]}"
+    user = {
+        "user_id": uid,
+        "email": email,
+        "password_hash": hash_password(payload.password),
+        "handle": handle,
+        "display_name": payload.display_name.strip(),
+        "dob": payload.dob,
+        "is_minor": age < 18,
+        "bio": "",
+        "avatar_path": None,
+        "links": [],
+        "follow_mode": "open",
+        "settings": default_settings(),
+        "role": "user",
+        "auth_provider": "password",
+        "strikes": 0,
+        "suspended_until": None,
+        "created_at": now_iso(),
+    }
+    await db.users.insert_one(user)
+    access, refresh = create_access_token(uid), create_refresh_token(uid)
+    set_auth_cookies(response, access, refresh)
+    return {"user": private_user(user), "access_token": access, "refresh_token": refresh}
+
+
+@api.post("/auth/login")
+async def login(payload: LoginIn, response: Response):
+    user = await db.users.find_one({"email": payload.email.lower()})
+    if not user or not user.get("password_hash") or not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(401, "Invalid email or password")
+    if user.get("deleted"):
+        raise HTTPException(403, "This account has been permanently deleted.")
+    # Soft-deleted account: restore automatically on successful login
+    # (within the 30-day grace period). Wipe the soft-delete markers and
+    # the account is fully live again.
+    if user.get("soft_deleted_at"):
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$unset": {"soft_deleted_at": "", "soft_delete_purge_at": ""}}
+        )
+        user.pop("soft_deleted_at", None)
+        user.pop("soft_delete_purge_at", None)
+    if user.get("suspended_until"):
+        try:
+            until = datetime.fromisoformat(user["suspended_until"])
+            if until > datetime.now(timezone.utc):
+                raise HTTPException(403, f"Account suspended until {user['suspended_until']}")
+        except (ValueError, TypeError):
+            pass
+    access, refresh = create_access_token(user["user_id"]), create_refresh_token(user["user_id"])
+    set_auth_cookies(response, access, refresh)
+    return {"user": private_user(user), "access_token": access, "refresh_token": refresh}
+
+
+class RefreshIn(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+@api.post("/auth/refresh")
+async def refresh_access(payload: RefreshIn, request: Request, response: Response):
+    """Exchange a valid refresh token for a fresh access token.
+
+    Accepts the refresh token from EITHER:
+      1. The `refresh_token` cookie (web)
+      2. The `refresh_token` field in the JSON body (Capacitor APK — no
+         cross-origin cookies)
+
+    Returns a new access token + a rotated refresh token so a stolen
+    refresh token can only be used once before it's invalidated by the
+    next legitimate refresh.
+    """
+    token = payload.refresh_token or request.cookies.get("refresh_token")
+    if not token:
+        raise HTTPException(401, "Missing refresh token")
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Refresh token expired — please sign in again")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid refresh token")
+    if data.get("type") != "refresh":
+        raise HTTPException(401, "Not a refresh token")
+    user_id = data.get("sub")
+    if not user_id:
+        raise HTTPException(401, "Malformed refresh token")
+    user = await db.users.find_one({"user_id": user_id})
+    if not user or user.get("deleted"):
+        raise HTTPException(403, "Account no longer exists")
+    if user.get("soft_deleted_at"):
+        # Deleted user coming back through the refresh flow → also restore.
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$unset": {"soft_deleted_at": "", "soft_delete_purge_at": ""}}
+        )
+    access = create_access_token(user_id)
+    refresh = create_refresh_token(user_id)
+    set_auth_cookies(response, access, refresh)
+    return {"access_token": access, "refresh_token": refresh, "user": private_user(user)}
+
+
+# =====================================================================
+#  Account deletion — 30-day soft delete with automatic restore on login
+# =====================================================================
+class DeleteAccountIn(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+    confirmation: str  # user must type "DELETE" verbatim
+
+
+@api.post("/auth/delete-account")
+async def delete_account(payload: DeleteAccountIn, response: Response, user=Depends(get_current_user)):
+    """Kick off a 30-day soft delete.
+
+    The account is immediately hidden from all discovery / search / DMs
+    / mentions / follows. All posts, wall notes, comments and DMs stop
+    surfacing to other users (enforced by the deleted-check on every
+    read endpoint).
+
+    A cron job (or a lazy on-login sweep) hard-deletes the user +
+    content after `soft_delete_purge_at`. Logging in during the grace
+    period auto-restores the account.
+    """
+    if payload.confirmation.strip().upper() != "DELETE":
+        raise HTTPException(400, "Please type DELETE to confirm")
+    if user.get("password_hash"):
+        if not verify_password(payload.password, user["password_hash"]):
+            raise HTTPException(401, "Incorrect password")
+    # Google-auth users have no password_hash — we accept the current
+    # session as sufficient proof they own the account.
+    now = datetime.now(timezone.utc)
+    purge_at = now + timedelta(days=30)
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "soft_deleted_at": now.isoformat(),
+            "soft_delete_purge_at": purge_at.isoformat(),
+        }}
+    )
+    clear_auth_cookies(response)
+    return {"ok": True, "purge_at": purge_at.isoformat()}
+
+
+@api.post("/auth/cancel-delete")
+async def cancel_soft_delete(user=Depends(get_current_user)):
+    """Explicit restore from within the app (if the user reversed course
+    mid-grace-period via a special "restore my account" link they saved).
+    Also happens implicitly on login."""
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$unset": {"soft_deleted_at": "", "soft_delete_purge_at": ""}}
+    )
+    return {"ok": True}
+
+
+@api.post("/auth/logout")
+async def logout(response: Response, request: Request):
+    session_token = request.cookies.get("session_token")
+    if session_token:
+        await db.user_sessions.delete_one({"session_token": session_token})
+    clear_auth_cookies(response)
+    return {"ok": True}
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+@api.post("/auth/change-password")
+async def change_password(payload: ChangePasswordIn, user=Depends(get_current_user)):
+    """Logged-in user updates their own password. Requires the current
+    password — protects against session-hijack attacks where a stolen token
+    is used to silently take over the account."""
+    if user.get("auth_provider") != "password" or not user.get("password_hash"):
+        # Google-only accounts don't have a password to change.
+        raise HTTPException(400, "This account signs in with Google. Manage your password in your Google Account settings.")
+    if not verify_password(payload.current_password, user["password_hash"]):
+        raise HTTPException(401, "Current password is incorrect")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(400, "New password must be different from the current one")
+    new_hash = hash_password(payload.new_password)
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"password_hash": new_hash}})
+    return {"ok": True}
+
+
+class PasswordResetRequestIn(BaseModel):
+    email: EmailStr
+    handle: str = Field(min_length=1, max_length=30)
+    reason: str = Field(default="", max_length=300)
+
+
+@api.post("/auth/request-reset")
+async def request_password_reset(payload: PasswordResetRequestIn):
+    """Public endpoint: user who can't log in submits an admin-support
+    ticket requesting a manual reset. We never confirm whether the email/
+    handle actually exists — that would leak account enumeration. The
+    admin sees the request in /admin → Reports → Password resets and uses
+    the existing /admin/users/{id}/reset-password tool to issue a temp
+    password, then contacts the user out-of-band.
+
+    Rate-limited at one request per email per hour to stop spam."""
+    email = payload.email.lower().strip()
+    handle = payload.handle.lstrip("#").lower().strip()
+    one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    recent = await db.password_reset_requests.count_documents({
+        "email": email, "created_at": {"$gt": one_hour_ago},
+    })
+    if recent >= 1:
+        # Always return ok so we don't leak rate-limit state to attackers.
+        return {"ok": True}
+    # Look the user up but don't tell the caller if we found them.
+    target = await db.users.find_one({"$or": [{"email": email}, {"handle": handle}]}, {"_id": 0})
+    await db.password_reset_requests.insert_one({
+        "request_id": f"prr_{uuid.uuid4().hex[:10]}",
+        "email": email, "handle": handle, "reason": payload.reason.strip()[:300],
+        "target_user_id": target["user_id"] if target else None,
+        "target_handle": target.get("handle") if target else None,
+        "status": "open",
+        "created_at": now_iso(),
+        "resolved_by": None, "resolved_at": None,
+    })
+    return {"ok": True}
+
+
+@api.get("/admin/password-resets")
+async def admin_list_password_resets(admin=Depends(get_current_user), status: str = "open"):
+    if admin.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    cursor = db.password_reset_requests.find({"status": status}, {"_id": 0}).sort("created_at", -1).limit(200)
+    return {"requests": [r async for r in cursor]}
+
+
+@api.post("/admin/password-resets/{request_id}/close")
+async def admin_close_password_reset(request_id: str, admin=Depends(get_current_user)):
+    if admin.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    await db.password_reset_requests.update_one(
+        {"request_id": request_id},
+        {"$set": {"status": "closed", "resolved_by": admin["user_id"], "resolved_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------
+# Stickers / GIFs — Tenor v2 proxy
+#
+# The Tenor API key (TENOR_API_KEY) stays server-side. The client only
+# ever calls our /stickers/* endpoints. If the key is unset the picker
+# shows bundled emoji reactions only.
+# ----------------------------------------------------------------------
+_TENOR_API_KEY = os.environ.get("TENOR_API_KEY", "").strip()
+
+
+@api.get("/stickers/config")
+async def stickers_config(user=Depends(get_current_user)):
+    return {"tenor_enabled": bool(_TENOR_API_KEY)}
+
+
+@api.get("/stickers/tenor-search")
+async def stickers_tenor_search(q: str, user=Depends(get_current_user)):
+    if not _TENOR_API_KEY:
+        raise HTTPException(503, "Tenor not configured")
+    q = (q or "").strip()[:60]
+    if not q:
+        return {"results": []}
+    import httpx
+    params = {
+        "q": q, "key": _TENOR_API_KEY, "client_key": "clanchat",
+        "limit": 24, "media_filter": "gif,tinygif", "contentfilter": "high",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get("https://tenor.googleapis.com/v2/search", params=params)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logging.warning("tenor search failed: %s", e)
+        raise HTTPException(502, "Tenor search failed")
+    results = []
+    for item in data.get("results", []):
+        media = item.get("media_formats", {})
+        gif = media.get("gif") or media.get("tinygif") or {}
+        preview = (media.get("tinygif") or media.get("gif") or {}).get("url")
+        if gif.get("url"):
+            results.append({"id": item.get("id"), "url": gif["url"], "preview": preview or gif["url"]})
+    return {"results": results}
+
+
+# ------------------------------------------------------------------
+# Giphy proxy — server-side so the API key is never shipped to
+# the browser or the Android APK. Frontend calls /api/giphy/search
+# instead of api.giphy.com directly.
+# ------------------------------------------------------------------
+_GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY", "").strip()
+
+
+@api.get("/giphy/search")
+async def giphy_search(
+    mode: str = "gif",
+    q: str = "",
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    """Server-side proxy for Giphy. `mode` = 'gif' or 'sticker'. Empty `q`
+    returns trending results. Rating is hardcoded to 'g' — no override
+    accepted from the client so nobody can bypass SFW."""
+    if not _GIPHY_API_KEY:
+        raise HTTPException(503, "Giphy not configured")
+    kind = "stickers" if mode == "sticker" else "gifs"
+    query = (q or "").strip()[:80]
+    endpoint = f"{kind}/search" if query else f"{kind}/trending"
+    params = {
+        "api_key": _GIPHY_API_KEY,
+        "rating": "g",  # SFW hardcoded — do NOT accept override from client
+        "limit": 24,
+        "offset": max(0, min(int(offset or 0), 500)),
+        "fields": "id,url,title,username,alt_text,images.fixed_height_small,images.fixed_height,images.original",
+    }
+    if query:
+        params["q"] = query
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(f"https://api.giphy.com/v1/{endpoint}", params=params)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logging.warning("giphy search failed: %s", e)
+        raise HTTPException(502, "Giphy search failed")
+    # Return only the fields the picker actually renders. Prevents anything
+    # unexpected from the upstream API leaking into the client bundle.
+    items = []
+    for item in data.get("data") or []:
+        images = item.get("images") or {}
+        items.append({
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "alt_text": item.get("alt_text"),
+            "username": item.get("username"),
+            "url": item.get("url"),
+            "images": {
+                "fixed_height_small": images.get("fixed_height_small"),
+                "fixed_height": images.get("fixed_height"),
+                "original": images.get("original"),
+            },
+        })
+    return {"items": items}
+
+
+
+@api.get("/auth/me")
+async def me(user=Depends(get_current_user)):
+    return private_user(user)
+
+
+@api.post("/auth/google-session")
+async def google_session(payload: GoogleSessionIn, response: Response):
+    # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    r = requests.get(EMERGENT_AUTH_SESSION_DATA_URL,
+                     headers={"X-Session-ID": payload.session_id}, timeout=30)
+    if r.status_code != 200:
+        raise HTTPException(401, "Invalid session id")
+    data = r.json()
+    email = data["email"].lower()
+    session_token = data["session_token"]
+    name = data.get("name") or email.split("@")[0]
+    picture = data.get("picture")
+
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        uid = existing["user_id"]
+        # update picture/name if blank
+        update = {}
+        if not existing.get("display_name"):
+            update["display_name"] = name
+        if update:
+            await db.users.update_one({"user_id": uid}, {"$set": update})
+        user = await db.users.find_one({"user_id": uid}, {"_id": 0})
+        new_user = False
+    else:
+        if not payload.dob:
+            # Tell frontend we need DOB + handle to finish signup
+            return {"needs_profile": True, "google_email": email, "google_name": name}
+        try:
+            date.fromisoformat(payload.dob)
+        except Exception:
+            raise HTTPException(400, "Invalid DOB")
+        age = calc_age(payload.dob)
+        if age < 13:
+            raise HTTPException(400, "Minimum age is 13")
+        # auto-generate handle if missing or taken
+        base = (payload.handle or re.sub(r"[^a-z0-9_]", "", name.lower()) or "user")[:18]
+        candidate = base
+        suffix = 0
+        while await db.users.find_one({"handle": candidate}):
+            suffix += 1
+            candidate = f"{base}{suffix}"[:20]
+        uid = f"user_{uuid.uuid4().hex[:12]}"
+        user = {
+            "user_id": uid, "email": email, "password_hash": None,
+            "handle": candidate, "display_name": name, "dob": payload.dob,
+            "is_minor": age < 18, "bio": "", "avatar_path": picture,
+            "links": [], "follow_mode": "open", "settings": default_settings(),
+            "role": "user", "auth_provider": "google", "strikes": 0,
+            "suspended_until": None, "created_at": now_iso(),
+        }
+        await db.users.insert_one(user)
+        new_user = True
+
+    await db.user_sessions.insert_one({
+        "user_id": user["user_id"], "session_token": session_token,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+        "created_at": now_iso(),
+    })
+    response.set_cookie("session_token", session_token, httponly=True, secure=True,
+                        samesite="none", max_age=60 * 60 * 24 * 7, path="/")
+    # Also mint a bearer JWT so the Capacitor APK (which serves the bundled
+    # build from https://localhost and can't share cookies with clanchat.app)
+    # has a persistent auth token. Without this, Google sign-in users get
+    # logged out the moment the app reloads.
+    access_token = create_access_token(user["user_id"])
+    refresh_token = create_refresh_token(user["user_id"])
+    response.set_cookie("access_token", access_token, httponly=True, secure=True,
+                        samesite="none", max_age=60 * 60 * 24 * 30, path="/")
+    response.set_cookie("refresh_token", refresh_token, httponly=True, secure=True,
+                        samesite="none", max_age=60 * 60 * 24 * 7, path="/")
+    return {"user": private_user(user), "new_user": new_user, "access_token": access_token}
+
+
+# ------------------------------------------------------------------
+# Supabase Auth bridge
+#
+# Supabase is the identity provider (email/password + Google via OAuth).
+# ClanChat still issues its own JWT for per-request auth so the ~200
+# existing `Depends(get_current_user)` sites in this file don't change.
+#
+# Flow:
+#   1. Client signs in against Supabase (email/pw or Google).
+#   2. Client sends the resulting access_token to /api/auth/supabase-login.
+#   3. Server verifies via supabase.auth.get_user(), upserts the Mongo
+#      user record keyed by supabase_uid (linked by email so legacy
+#      accounts auto-merge on first Supabase login), returns the standard
+#      ClanChat JWT pair.
+# ------------------------------------------------------------------
+class SupabaseLoginIn(BaseModel):
+    access_token: str
+    dob: Optional[str] = None
+    handle: Optional[str] = None
+
+
+@api.post("/auth/supabase-login")
+async def supabase_login(payload: SupabaseLoginIn, response: Response):
+    from supabase_helpers import verify_access_token
+    try:
+        info = verify_access_token(payload.access_token)
+    except Exception as e:
+        logging.warning("supabase token verify failed: %s", e)
+        raise HTTPException(401, "Invalid Supabase token") from e
+
+    supabase_uid = info.get("id")
+    email = (info.get("email") or "").lower()
+    if not supabase_uid or not email:
+        raise HTTPException(401, "Supabase token missing id/email")
+    email_verified = bool(info.get("email_verified"))
+    name = (info.get("name") or "").strip() or email.split("@")[0]
+    picture = info.get("picture") or None
+
+    existing = await db.users.find_one({"supabase_uid": supabase_uid})
+    if not existing and email:
+        existing = await db.users.find_one({"email": email})
+
+    if existing:
+        uid = existing["user_id"]
+        update = {"supabase_uid": supabase_uid, "auth_provider": "supabase"}
+        if email_verified and not existing.get("email_verified"):
+            update["email_verified"] = True
+        if not existing.get("display_name") and name:
+            update["display_name"] = name
+        if not existing.get("avatar_path") and picture:
+            update["avatar_path"] = picture
+        await db.users.update_one({"user_id": uid}, {"$set": update})
+        user = await db.users.find_one({"user_id": uid}, {"_id": 0})
+        new_user = False
+    else:
+        # Brand-new Supabase account → require DOB + handle so minor
+        # protections are enforced from the very first record.
+        if not payload.dob:
+            return {"needs_profile": True, "supabase_email": email, "supabase_name": name}
+        try:
+            date.fromisoformat(payload.dob)
+        except Exception:
+            raise HTTPException(400, "Invalid DOB")
+        age = calc_age(payload.dob)
+        if age < 13:
+            raise HTTPException(400, "Minimum age is 13")
+        base = (payload.handle or re.sub(r"[^a-z0-9_]", "", name.lower()) or "user")[:18]
+        candidate = base
+        suffix = 0
+        while await db.users.find_one({"handle": candidate}):
+            suffix += 1
+            candidate = f"{base}{suffix}"[:20]
+        uid = f"user_{uuid.uuid4().hex[:12]}"
+        user = {
+            "user_id": uid, "email": email, "password_hash": None,
+            "supabase_uid": supabase_uid, "email_verified": email_verified,
+            "handle": candidate, "display_name": name, "dob": payload.dob,
+            "is_minor": age < 18, "bio": "", "avatar_path": picture,
+            "links": [], "follow_mode": "open", "settings": default_settings(),
+            "role": "user", "auth_provider": "supabase",
+            "strikes": 0, "suspended_until": None, "created_at": now_iso(),
+        }
+        await db.users.insert_one(user)
+        new_user = True
+
+    access_token = create_access_token(user["user_id"])
+    refresh_token = create_refresh_token(user["user_id"])
+    response.set_cookie("access_token", access_token, httponly=True, secure=True,
+                        samesite="none", max_age=60 * 60 * 24, path="/")
+    response.set_cookie("refresh_token", refresh_token, httponly=True, secure=True,
+                        samesite="none", max_age=60 * 60 * 24 * 7, path="/")
+    return {"user": private_user(user), "new_user": new_user,
+            "access_token": access_token, "refresh_token": refresh_token}
+
+
+@api.get("/supabase/config")
+async def supabase_client_config():
+    """Web-safe Supabase config for the frontend SDK. anon key is meant
+    to be public — RLS + Auth rules enforce security."""
+    return {
+        "url": os.environ.get("SUPABASE_URL", ""),
+        "anonKey": os.environ.get("SUPABASE_ANON_KEY", ""),
+        "bucket": os.environ.get("SUPABASE_BUCKET", "clanchat"),
+    }
+
+
+class SignedUploadIn(BaseModel):
+    filename: str
+    content_type: str
+    scope: str = "post"  # post | avatar | dm | wall | audio
+
+
+@api.post("/upload/signed-url")
+async def upload_signed_url(payload: SignedUploadIn, user=Depends(get_current_user)):
+    """Return a Supabase Storage signed upload URL scoped to the auth'd
+    user's id so nobody can overwrite somebody else's uploads."""
+    from supabase_helpers import signed_upload_url
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", payload.filename or "").strip("._-")[:80]
+    if not safe_name:
+        safe_name = f"file_{uuid.uuid4().hex[:8]}"
+    scope = payload.scope if payload.scope in ("post", "avatar", "dm", "wall", "audio") else "post"
+    path = f"u/{user['user_id']}/{scope}/{uuid.uuid4().hex[:10]}_{safe_name}"
+    try:
+        info = signed_upload_url(path)
+    except Exception as e:
+        logging.warning("supabase signed url failed: %s", e)
+        raise HTTPException(503, f"Supabase Storage not available: {e}") from e
+    # Keep a stable response shape close to the old Firebase one so
+    # frontend uploadFile() code doesn't have to branch by provider.
+    return {
+        "upload_url": info["signed_url"],
+        "path": info["path"],
+        "public_url": info["public_url"],
+        "token": info.get("token"),
+        "provider": "supabase",
+    }
+
+
+# ------------------------------------------------------------------
+# Users / profile
+# ------------------------------------------------------------------
+@api.patch("/users/me")
+async def update_me(payload: ProfileUpdateIn, user=Depends(get_current_user)):
+    update = {}
+    if payload.display_name is not None:
+        update["display_name"] = payload.display_name.strip()[:40]
+    if payload.bio is not None:
+        update["bio"] = payload.bio[:150]
+    if payload.avatar_path is not None:
+        update["avatar_path"] = payload.avatar_path
+    if payload.links is not None:
+        update["links"] = [{"label": (link.get("label") or "")[:30], "url": (link.get("url") or "")[:200]}
+                           for link in payload.links[:10]]
+    if payload.follow_mode in ("open", "approval"):
+        update["follow_mode"] = payload.follow_mode
+    if payload.nsfw_account is not None and not user.get("is_minor"):
+        update["nsfw_account"] = bool(payload.nsfw_account)
+    if payload.real_name is not None:
+        update["real_name"] = payload.real_name.strip()[:80]
+    if payload.real_name_visibility in ("nobody", "inner", "followers", "everyone"):
+        # store inside settings too for convenience
+        if "settings" not in update:
+            update["settings"] = {**user.get("settings", default_settings()),
+                                  "real_name_visibility": payload.real_name_visibility}
+        else:
+            update["settings"]["real_name_visibility"] = payload.real_name_visibility
+    if payload.settings is not None:
+        current_settings = user.get("settings", default_settings())
+        merged = {**current_settings, **payload.settings}
+        # comfort_zone merge
+        if "comfort_zone" in payload.settings:
+            merged["comfort_zone"] = {**current_settings.get("comfort_zone", {}),
+                                      **payload.settings["comfort_zone"]}
+            if user.get("is_minor"):
+                merged["comfort_zone"]["nsfw"] = False  # hardcoded
+        update["settings"] = merged
+    if update:
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
+    fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return private_user(fresh)
+
+
+@api.get("/users/by-handle/{handle}")
+async def get_user_by_handle(handle: str, viewer=Depends(get_optional_user)):
+    h = handle.strip().lower().lstrip("#")
+    target = await db.users.find_one({"handle": h}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Not found")
+    if viewer and target["user_id"] != viewer["user_id"]:
+        # Admins can see EVERY account, including minors — they need this to
+        # action reports targeting minors. The hardcoded protections still
+        # apply to all non-admins.
+        is_admin = viewer.get("role") == "admin"
+        # Adults can NEVER find minors. No exceptions (admins exempt).
+        if target.get("is_minor") and not is_minor(viewer) and not is_admin:
+            raise HTTPException(404, "Not found")
+        # Minors can NEVER find NSFW-flagged accounts. No exceptions.
+        if is_minor(viewer) and target.get("nsfw_account"):
+            raise HTTPException(404, "Not found")
+    rel = await relation(viewer["user_id"], target["user_id"]) if viewer else {"self": False, "follows": False, "inner": False, "follow_pending": False}
+    out_user = public_user(target)
+    if await real_name_visible(target, viewer):
+        out_user["real_name"] = target.get("real_name", "")
+    return {"user": out_user, "relation": rel}
+
+
+@api.get("/users/search")
+async def search_users(q: str = Query(..., min_length=1), viewer=Depends(get_current_user)):
+    q = q.strip().lower().lstrip("#")
+    if not re.fullmatch(r"[a-z0-9_]{1,20}", q):
+        return {"results": []}
+    cursor = db.users.find({"handle": {"$regex": f"^{re.escape(q)}"}}, {"_id": 0}).limit(20)
+    is_admin = viewer.get("role") == "admin"
+    results = []
+    async for u in cursor:
+        if u["user_id"] == viewer["user_id"]:
+            results.append(public_user(u))
+            continue
+        # Adults can NEVER find minors. No exceptions (admins exempt — they need
+        # to be able to search for minor accounts to action reports about them).
+        if u.get("is_minor") and not is_minor(viewer) and not is_admin:
+            continue
+        # Minors can NEVER find NSFW-flagged accounts. No exceptions.
+        if is_minor(viewer) and u.get("nsfw_account"):
+            continue
+        if await db.blocks.find_one({"blocker_id": u["user_id"], "blocked_id": viewer["user_id"]}):
+            continue
+        results.append(public_user(u))
+    return {"results": results}
+
+
+# ------------------------------------------------------------------
+# Follow system
+# ------------------------------------------------------------------
+def adult_minor_block(actor: dict, target: dict, actor_initiated: bool) -> Optional[str]:
+    """Adults cannot follow/DM/invite minors unless minor initiated."""
+    if actor_initiated and not is_minor(actor) and is_minor(target):
+        return "Adults cannot initiate follow/DM/invite with minors"
+    return None
+
+
+def hide_minor_from(viewer: Optional[dict], author: Optional[dict]) -> bool:
+    """Discovery/gallery hard-block: minor accounts and any content by
+    a minor MUST be invisible to adult, non-admin viewers. Anonymous
+    (unauthenticated) viewers are treated as adults for the purposes of
+    this rule — they must never see minor content either.
+
+    Returns True if the viewer should be shown NOTHING from this author.
+    """
+    if not author:
+        return False
+    if not author.get("is_minor"):
+        return False
+    # Admins can see everything for moderation.
+    if viewer and viewer.get("role") == "admin":
+        return False
+    # Other minors can see minor content (peer-to-peer).
+    if viewer and is_minor(viewer):
+        return False
+    return True
+
+
+async def minor_author_ids() -> list:
+    """All user_ids belonging to minor accounts. Cached would be better
+    but the collection is tiny and the query cost is <1ms in Mongo."""
+    return [u["user_id"] async for u in db.users.find(
+        {"is_minor": True}, {"_id": 0, "user_id": 1}
+    )]
+
+
+@api.post("/follow/{target_id}")
+async def follow_user(target_id: str, user=Depends(get_current_user)):
+    if target_id == user["user_id"]:
+        raise HTTPException(400, "Cannot follow yourself")
+    target = await db.users.find_one({"user_id": target_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Not found")
+    # Minors can NEVER follow NSFW-flagged accounts. No exceptions.
+    if is_minor(user) and target.get("nsfw_account"):
+        raise HTTPException(404, "Not found")
+    err = adult_minor_block(user, target, actor_initiated=True)
+    if err:
+        raise HTTPException(403, err)
+    if await db.blocks.find_one({"blocker_id": target_id, "blocked_id": user["user_id"]}):
+        raise HTTPException(403, "Blocked")
+    existing = await db.follows.find_one({"follower_id": user["user_id"], "followee_id": target_id})
+    if existing:
+        return {"status": existing["status"]}
+    status = "active" if target.get("follow_mode", "open") == "open" else "pending"
+    follow_id = f"fol_{uuid.uuid4().hex[:10]}"
+    await db.follows.insert_one({
+        "follow_id": follow_id,
+        "follower_id": user["user_id"], "followee_id": target_id,
+        "status": status, "created_at": now_iso(),
+    })
+    try:
+        if status == "pending":
+            await fcm_push(target_id, "New follow request",
+                           f"#{user.get('handle', 'someone')} wants to follow you",
+                           data={"type": "follow_request", "from_id": user["user_id"]},
+                           notif_type="follows")
+        else:
+            await fcm_push(target_id, "New follower",
+                           f"#{user.get('handle', 'someone')} is now following you",
+                           data={"type": "new_follower", "from_id": user["user_id"]},
+                           notif_type="follows")
+    except Exception as _e:
+        logging.warning("follow push failed: %s", _e)
+    # Also write to the unified activity feed.
+    await emit_activity_event(
+        recipient_id=target_id,
+        kind="follow_request" if status == "pending" else "follow_accepted",
+        actor_id=user["user_id"],
+        ref={"follow_id": follow_id},
+    )
+    return {"status": status}
+
+
+@api.delete("/follow/{target_id}")
+async def unfollow(target_id: str, user=Depends(get_current_user)):
+    await db.follows.delete_one({"follower_id": user["user_id"], "followee_id": target_id})
+    # Cascade Inner Circle eviction in BOTH directions:
+    #   1) The target's IC — if the target had me in their IC, remove me,
+    #      because IC presupposes the follow relationship.
+    #   2) My IC — if I had the target in my IC, remove them too. Once I
+    #      stop following someone I clearly don't want them in my inner
+    #      circle either, and leaving them there creates a stale roster
+    #      that bypasses tier gating.
+    await db.inner_circle.delete_one({"owner_id": target_id, "member_id": user["user_id"]})
+    await db.inner_circle.delete_one({"owner_id": user["user_id"], "member_id": target_id})
+    return {"ok": True}
+
+
+@api.post("/follow/remove/{user_id}")
+async def remove_follower(user_id: str, user=Depends(get_current_user)):
+    """Kick someone off my followers list. Also removes them from my IC —
+    non-followers can never be IC members."""
+    await db.follows.delete_one({"follower_id": user_id, "followee_id": user["user_id"]})
+    await db.inner_circle.delete_one({"owner_id": user["user_id"], "member_id": user_id})
+    return {"ok": True}
+
+
+@api.get("/follow/requests")
+async def follow_requests(user=Depends(get_current_user)):
+    cursor = db.follows.find({"followee_id": user["user_id"], "status": "pending"}, {"_id": 0})
+    reqs = []
+    async for f in cursor:
+        u = await db.users.find_one({"user_id": f["follower_id"]}, {"_id": 0})
+        if u:
+            reqs.append({"follow_id": f["follow_id"], "user": public_user(u), "created_at": f["created_at"]})
+    return {"requests": reqs}
+
+
+@api.post("/follow/requests/{follow_id}/approve")
+async def approve_follow(follow_id: str, user=Depends(get_current_user)):
+    f = await db.follows.find_one({"follow_id": follow_id, "followee_id": user["user_id"]})
+    if not f:
+        raise HTTPException(404, "Not found")
+    await db.follows.update_one({"follow_id": follow_id}, {"$set": {"status": "active"}})
+    return {"ok": True}
+
+
+@api.post("/follow/requests/{follow_id}/decline")
+async def decline_follow(follow_id: str, user=Depends(get_current_user)):
+    await db.follows.delete_one({"follow_id": follow_id, "followee_id": user["user_id"]})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Inner Circle
+# ------------------------------------------------------------------
+@api.post("/inner/invite")
+async def invite_inner(payload: InnerInviteIn, user=Depends(get_current_user)):
+    if payload.user_id == user["user_id"]:
+        raise HTTPException(400, "Cannot invite yourself")
+    target = await db.users.find_one({"user_id": payload.user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Not found")
+    # Minors can NEVER receive invites from NSFW-flagged accounts. No exceptions.
+    if is_minor(target) and user.get("nsfw_account"):
+        raise HTTPException(404, "Not found")
+    err = adult_minor_block(user, target, actor_initiated=True)
+    if err:
+        raise HTTPException(403, err)
+    perms = {
+        "dms": bool(payload.permissions.get("dms", True)),
+        "audio_messages": bool(payload.permissions.get("audio_messages", False)),
+        "audio_calls": bool(payload.permissions.get("audio_calls", False)),
+        "video_calls": bool(payload.permissions.get("video_calls", False)),
+    }
+    existing = await db.inner_circle.find_one({"owner_id": user["user_id"], "member_id": payload.user_id})
+    if existing:
+        await db.inner_circle.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"permissions": perms}}
+        )
+        return {"status": existing["status"]}
+    invite_id = f"inv_{uuid.uuid4().hex[:10]}"
+    await db.inner_circle.insert_one({
+        "invite_id": invite_id,
+        "owner_id": user["user_id"], "member_id": payload.user_id,
+        "permissions": perms, "status": "pending", "created_at": now_iso(),
+    })
+    # Push + activity event so the invited user sees it on their Activity
+    # tab AND gets a phone notification.
+    await emit_activity_event(
+        recipient_id=payload.user_id, kind="inner_invite",
+        actor_id=user["user_id"], ref={"invite_id": invite_id},
+        push_title="Inner Circle invite",
+        push_body=f"#{user.get('handle') or 'someone'} invited you to their Inner Circle",
+        push_data={"kind": "inner_invite", "invite_id": invite_id},
+    )
+    return {"status": "pending"}
+
+
+@api.get("/inner/invites")
+async def list_inner_invites(user=Depends(get_current_user)):
+    cursor = db.inner_circle.find({"member_id": user["user_id"], "status": "pending"}, {"_id": 0})
+    out = []
+    async for inv in cursor:
+        owner = await db.users.find_one({"user_id": inv["owner_id"]}, {"_id": 0})
+        if owner:
+            out.append({"invite_id": inv["invite_id"], "owner": public_user(owner),
+                        "permissions": inv["permissions"], "created_at": inv["created_at"]})
+    return {"invites": out}
+
+
+@api.post("/inner/invites/{invite_id}/accept")
+async def accept_inner_invite(invite_id: str, user=Depends(get_current_user)):
+    inv = await db.inner_circle.find_one({"invite_id": invite_id, "member_id": user["user_id"]})
+    if not inv:
+        raise HTTPException(404, "Not found")
+    await db.inner_circle.update_one({"invite_id": invite_id}, {"$set": {"status": "active"}})
+    return {"ok": True}
+
+
+@api.post("/inner/invites/{invite_id}/decline")
+async def decline_inner_invite(invite_id: str, user=Depends(get_current_user)):
+    await db.inner_circle.delete_one({"invite_id": invite_id, "member_id": user["user_id"]})
+    return {"ok": True}
+
+
+@api.get("/inner/members")
+async def inner_members(user=Depends(get_current_user)):
+    cursor = db.inner_circle.find({"owner_id": user["user_id"], "status": "active"}, {"_id": 0})
+    out = []
+    async for m in cursor:
+        u = await db.users.find_one({"user_id": m["member_id"]}, {"_id": 0})
+        if u:
+            out.append({"member": public_user(u), "permissions": m["permissions"]})
+    return {"members": out}
+
+
+@api.delete("/inner/members/{member_id}")
+async def inner_remove(member_id: str, user=Depends(get_current_user)):
+    """Demote a member out of my Inner Circle. Their follower relationship
+    stays intact (they drop from Tier 3 → Tier 2 in my hierarchy). If I
+    want to remove them entirely I still need to /follow/remove them or
+    they need to /follow/{me} (delete)."""
+    res = await db.inner_circle.delete_one({
+        "owner_id": user["user_id"],
+        "member_id": member_id,
+    })
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Not in your Inner Circle")
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Posts & Feed
+# ------------------------------------------------------------------
+async def serialize_post(post: dict, viewer: Optional[dict]) -> dict:
+    author = await db.users.find_one({"user_id": post["author_id"]}, {"_id": 0})
+    liked = False
+    if viewer:
+        liked = bool(await db.likes.find_one({"post_id": post["post_id"], "user_id": viewer["user_id"]}))
+    comment_count = await db.comments.count_documents({"post_id": post["post_id"]})
+    can_comment = False
+    if viewer:
+        can_comment = await user_can_comment(post, viewer)
+    tagged = await get_approved_tags(post["post_id"])
+    return {
+        "post_id": post["post_id"],
+        "author": public_user(author) if author else None,
+        "content": post["content"],
+        "tier": post["tier"],
+        "tags": post.get("tags", []),
+        "media": post.get("media_paths", []),
+        "is_ai": post.get("is_ai", False),
+        "ai_label": post.get("ai_label"),
+        "depicts_real_person": post.get("depicts_real_person", False),
+        "nsfw": post.get("nsfw", False),
+        "is_audio_track": post.get("is_audio_track", False),
+        "like_count": post.get("like_count", 0),
+        "liked": liked,
+        "comment_count": comment_count,
+        "can_comment": can_comment,
+        "tagged_users": tagged,
+        "created_at": post["created_at"],
+        "pinned": post.get("pinned", False),
+        # Edit-history metadata — the frontend uses `edited_at` to render
+        # the small "· edited" badge next to the post text, and
+        # `edit_history` to power the tap-to-see-history modal.
+        "edited_at": post.get("edited_at"),
+        "edit_history": post.get("edit_history") or [],
+    }
+
+
+async def is_restricted(restrictor_id: str, restricted_id: str) -> bool:
+    return bool(await db.restrictions.find_one({
+        "restrictor_id": restrictor_id, "restricted_id": restricted_id,
+    }))
+
+
+async def user_can_comment(post: dict, viewer: dict) -> bool:
+    """Inner Circle (Tier 3) of post author only. Author can always comment."""
+    if post["author_id"] == viewer["user_id"]:
+        return True
+    if viewer.get("is_minor") and post.get("nsfw"):
+        return False
+    if await is_restricted(post["author_id"], viewer["user_id"]):
+        return False
+    return bool(await db.inner_circle.find_one({
+        "owner_id": post["author_id"],
+        "member_id": viewer["user_id"],
+        "status": "active",
+    }))
+
+
+async def apply_strike(user_id: str, reason: str, level: int, ban_hours: Optional[int] = None):
+    """Apply a strike. level=1 → 48h suspend. level=2 → 7d. level=3 → permanent delete."""
+    history_entry = {
+        "level": level,
+        "reason": reason[:500],
+        "applied_at": now_iso(),
+    }
+    if level >= 3:
+        history_entry["permanent"] = True
+        await db.users.update_one({"user_id": user_id}, {
+            "$set": {
+                "deleted": True,
+                "deleted_at": now_iso(),
+                "deleted_reason": reason[:500],
+            },
+            "$inc": {"strikes": 1},
+            "$push": {"strike_history": history_entry},
+        })
+        return
+    hours = ban_hours if ban_hours is not None else (48 if level == 1 else 24 * 7)
+    until = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+    history_entry["suspended_until"] = until
+    await db.users.update_one({"user_id": user_id}, {
+        "$set": {"suspended_until": until},
+        "$inc": {"strikes": 1},
+        "$push": {"strike_history": history_entry},
+    })
+
+
+@api.post("/posts")
+async def create_post(payload: PostIn, user=Depends(get_current_user)):
+    if payload.tier not in TIERS:
+        raise HTTPException(400, "Invalid tier")
+    if payload.tier == "public" and payload.nsfw:
+        raise HTTPException(400, "Tier 1 (Public) posts cannot contain 18+ content")
+    # Hardcoded: minors can never mark their own posts as 18+.
+    if payload.nsfw and is_minor(user):
+        raise HTTPException(403, "Minors cannot mark posts as 18+")
+    # AI policy enforcement
+    ai_label = payload.ai_label
+    if ai_label and ai_label not in {"generated", "assisted", "altered"}:
+        raise HTTPException(400, "Invalid AI label")
+    is_ai = bool(ai_label) or payload.is_ai
+    if ai_label:
+        # AI of real person → hard rules
+        if payload.depicts_real_person:
+            if payload.nsfw:
+                # NUCLEAR: AI sexual content of a real person → permanent deletion
+                reason = "AI sexual content depicting a real person"
+                await apply_strike(user["user_id"], reason, level=3)
+                raise HTTPException(403, "AI sexual content depicting real people is permanently banned. Your account has been deleted.")
+            if not payload.has_consent:
+                # AI of real person without consent → Strike 1 + 48h ban
+                reason = "AI generated content depicting a real person without consent"
+                await apply_strike(user["user_id"], reason, level=1, ban_hours=48)
+                raise HTTPException(403, "This content cannot be uploaded. AI content depicting real people requires their explicit consent. A 48-hour suspension has been applied.")
+    if payload.tier == "inner":
+        tags = []  # no tags on inner posts
+    else:
+        tags = sanitize_tags(payload.tags)
+    if not payload.content.strip() and not payload.media_paths:
+        raise HTTPException(400, "Post cannot be empty")
+    pid = f"post_{uuid.uuid4().hex[:12]}"
+    post = {
+        "post_id": pid,
+        "author_id": user["user_id"],
+        "content": payload.content.strip()[:4000],
+        "tier": payload.tier,
+        "tags": tags,
+        "media_paths": payload.media_paths[:10],
+        "is_ai": is_ai,
+        "ai_label": ai_label,
+        "depicts_real_person": bool(payload.depicts_real_person and ai_label),
+        "nsfw": payload.nsfw and payload.tier != "public",
+        "is_audio_track": bool(payload.is_audio_track),
+        "like_count": 0,
+        "pinned": False,
+        "created_at": now_iso(),
+    }
+    await db.posts.insert_one(post)
+    # Tag-other-users — create tag records subject to recipient settings
+    if payload.tagged_user_ids:
+        await create_user_tags(post, user, payload.tagged_user_ids)
+    return await serialize_post(post, user)
+
+
+async def create_user_tags(post: dict, tagger: dict, tagged_ids: List[str]):
+    """Create user-tag rows. Hardcoded: 18+ tags + photo/video tags always need approval."""
+    has_media = bool(post.get("media_paths"))
+    is_18 = bool(post.get("nsfw"))
+    for tid in tagged_ids[:20]:
+        if tid == tagger["user_id"]:
+            continue
+        target = await db.users.find_one({"user_id": tid}, {"_id": 0})
+        if not target:
+            continue
+        # block-aware
+        if await db.blocks.find_one({"$or": [
+            {"blocker_id": tid, "blocked_id": tagger["user_id"]},
+            {"blocker_id": tagger["user_id"], "blocked_id": tid},
+        ]}):
+            continue
+        # adult/minor protection — adults cannot tag minors (acts like contact)
+        err = adult_minor_block(tagger, target, actor_initiated=True)
+        if err:
+            continue
+        # taggable_by rule
+        taggable = target.get("settings", {}).get("taggable_by", "followers")
+        if taggable == "nobody":
+            continue
+        if taggable == "followers":
+            ok = bool(await db.follows.find_one({
+                "follower_id": tagger["user_id"], "followee_id": tid, "status": "active"
+            })) or tid == tagger["user_id"]
+            if not ok:
+                continue
+        if taggable == "inner":
+            ok = bool(await db.inner_circle.find_one({
+                "owner_id": tid, "member_id": tagger["user_id"], "status": "active"
+            }))
+            if not ok:
+                continue
+        # decide status
+        approval_required = bool(target.get("settings", {}).get("tag_approval_mode", False))
+        if has_media or is_18:
+            approval_required = True  # hardcoded
+        status = "pending" if approval_required else "approved"
+        await db.user_tags.insert_one({
+            "tag_id": f"utag_{uuid.uuid4().hex[:10]}",
+            "post_id": post["post_id"],
+            "tagged_user_id": tid,
+            "tagger_id": tagger["user_id"],
+            "status": status,
+            "is_nsfw_post": is_18,
+            "has_media": has_media,
+            "created_at": now_iso(),
+        })
+
+
+async def get_approved_tags(post_id: str) -> List[dict]:
+    tags = []
+    async for t in db.user_tags.find({"post_id": post_id, "status": "approved"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": t["tagged_user_id"]}, {"_id": 0})
+        if u:
+            tags.append({"tag_id": t["tag_id"], "user": public_user(u)})
+    return tags
+
+
+@api.get("/tags/pending")
+async def my_pending_tags(user=Depends(get_current_user)):
+    cursor = db.user_tags.find({"tagged_user_id": user["user_id"], "status": "pending"}, {"_id": 0}).sort("created_at", -1).limit(100)
+    out = []
+    async for t in cursor:
+        post = await db.posts.find_one({"post_id": t["post_id"]}, {"_id": 0})
+        tagger = await db.users.find_one({"user_id": t["tagger_id"]}, {"_id": 0})
+        if not post or not tagger:
+            continue
+        out.append({
+            "tag_id": t["tag_id"],
+            "post_id": t["post_id"],
+            "post_excerpt": (post.get("content") or "")[:120],
+            "post_media": post.get("media_paths", [])[:1],
+            "is_nsfw": t.get("is_nsfw_post", False),
+            "has_media": t.get("has_media", False),
+            "tagger": public_user(tagger),
+            "created_at": t["created_at"],
+        })
+    return {"pending": out}
+
+
+@api.post("/tags/{tag_id}/approve")
+async def approve_tag(tag_id: str, user=Depends(get_current_user)):
+    t = await db.user_tags.find_one({"tag_id": tag_id, "tagged_user_id": user["user_id"]})
+    if not t:
+        raise HTTPException(404, "Not found")
+    await db.user_tags.update_one({"tag_id": tag_id}, {"$set": {"status": "approved", "approved_at": now_iso()}})
+    return {"ok": True}
+
+
+@api.post("/tags/{tag_id}/reject")
+async def reject_tag(tag_id: str, user=Depends(get_current_user)):
+    res = await db.user_tags.delete_one({"tag_id": tag_id, "tagged_user_id": user["user_id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+@api.delete("/tags/{tag_id}")
+async def remove_tag(tag_id: str, user=Depends(get_current_user)):
+    t = await db.user_tags.find_one({"tag_id": tag_id})
+    if not t or t["tagged_user_id"] != user["user_id"]:
+        raise HTTPException(404, "Not found")
+    await db.user_tags.delete_one({"tag_id": tag_id})
+    return {"ok": True}
+
+
+@api.get("/tags/me")
+async def posts_tagged_in(user=Depends(get_current_user)):
+    cursor = db.user_tags.find({"tagged_user_id": user["user_id"], "status": "approved"}, {"_id": 0}).sort("created_at", -1).limit(100)
+    out = []
+    async for t in cursor:
+        post = await db.posts.find_one({"post_id": t["post_id"]}, {"_id": 0})
+        if post and await can_view_post(post, user):
+            out.append(await serialize_post(post, user))
+    return {"posts": out}
+
+
+@api.get("/posts/feed")
+async def get_feed(user=Depends(get_current_user), limit: int = 50, before: Optional[str] = None,
+                   scope: str = "general"):
+    """Chronological feed.
+
+    scope:
+      - "general" (default): everything the viewer is allowed to see,
+        respecting the 3-tier privacy rules and minor/NSFW filters.
+      - "followers": only posts authored by people the viewer follows,
+        by owners of Inner Circles the viewer is a member of, and by the
+        viewer themselves. Tier visibility still applies.
+    """
+    # following ids
+    following = []
+    async for f in db.follows.find({"follower_id": user["user_id"], "status": "active"}, {"_id": 0}):
+        following.append(f["followee_id"])
+    inner_owners = []
+    async for ic in db.inner_circle.find({"member_id": user["user_id"], "status": "active"}, {"_id": 0}):
+        inner_owners.append(ic["owner_id"])
+    # blocks
+    blocked_ids = set()
+    async for b in db.blocks.find({"blocker_id": user["user_id"]}, {"_id": 0}):
+        blocked_ids.add(b["blocked_id"])
+    async for b in db.blocks.find({"blocked_id": user["user_id"]}, {"_id": 0}):
+        blocked_ids.add(b["blocker_id"])
+
+    or_clauses = [
+        {"tier": "public"},
+        {"author_id": user["user_id"]},
+    ]
+    if following:
+        or_clauses.append({"tier": "followers", "author_id": {"$in": following}})
+    if inner_owners:
+        or_clauses.append({"tier": "inner", "author_id": {"$in": inner_owners}})
+
+    query = {"$or": or_clauses}
+    if blocked_ids:
+        query["author_id"] = {"$nin": list(blocked_ids)}
+    if before:
+        query["created_at"] = {"$lt": before}
+
+    # "followers" scope restricts author_id to people the viewer has an
+    # explicit connection with (follow / IC member / self). Applied AFTER
+    # the tier or_clauses so tier privacy still holds.
+    if scope == "followers":
+        allowed_authors = list({*following, *inner_owners, user["user_id"]})
+        if not allowed_authors:
+            return {"posts": []}
+        existing_nin = query.get("author_id", {}).get("$nin", []) if isinstance(query.get("author_id"), dict) else []
+        query["author_id"] = {"$in": allowed_authors}
+        if existing_nin:
+            query["author_id"]["$nin"] = existing_nin
+
+    # Bug 1 fix: Minors are completely invisible on the global/public feed
+    # to non-minor, non-admin viewers. Hardcoded — no override. Their posts
+    # only surface to other minors or to admins acting on reports.
+    if not is_minor(user) and user.get("role") != "admin":
+        minor_ids = [u["user_id"] async for u in db.users.find({"is_minor": True}, {"_id": 0, "user_id": 1})]
+        if minor_ids:
+            author_cond = query.get("author_id")
+            if isinstance(author_cond, dict):
+                existing_nin = author_cond.get("$nin", [])
+                author_cond["$nin"] = list(set(existing_nin + minor_ids))
+                # preserve $in if set by scope=followers
+            else:
+                query["author_id"] = {"$nin": list(set(minor_ids))}
+
+    # Quarantined content is invisible to everyone (admin still sees via /admin/csam/queue).
+    # This is the same rule enforced in can_view_post — applied at the Mongo layer here
+    # because /posts/feed does not iterate through that helper for performance.
+    if user.get("role") != "admin":
+        query["quarantined"] = {"$ne": True}
+
+    # comfort zone filtering
+    cz = user.get("settings", {}).get("comfort_zone", {})
+    if not cz.get("nsfw", False) or is_minor(user):
+        query["nsfw"] = {"$ne": True}
+    if not cz.get("ai_content", True):
+        query["is_ai"] = {"$ne": True}
+
+    cursor = db.posts.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+    posts = []
+    async for p in cursor:
+        posts.append(await serialize_post(p, user))
+    return {"posts": posts}
+
+
+@api.get("/posts/by-user/{user_id}")
+async def posts_by_user(user_id: str, viewer=Depends(get_current_user)):
+    if await db.blocks.find_one({"blocker_id": user_id, "blocked_id": viewer["user_id"]}):
+        return {"posts": []}
+    # Minor protection: adult (non-admin) viewers see NOTHING from a minor's
+    # profile — same rule as search + follow. Prevents adults from scraping
+    # minor accounts via handle URLs.
+    author = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if hide_minor_from(viewer, author):
+        return {"posts": []}
+    # Minors never see NSFW posts on any profile. Hardcoded.
+    query = {"author_id": user_id}
+    if is_minor(viewer):
+        query["nsfw"] = {"$ne": True}
+    cursor = db.posts.find(query, {"_id": 0}).sort("created_at", -1).limit(100)
+    out = []
+    async for p in cursor:
+        if await can_view_post(p, viewer):
+            out.append(await serialize_post(p, viewer))
+    return {"posts": out}
+
+
+@api.get("/posts/pinned/{user_id}")
+async def pinned(user_id: str, viewer=Depends(get_optional_user)):
+    # Minor protection: pinned posts must not leak to adult viewers either.
+    author = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if hide_minor_from(viewer, author):
+        return {"posts": []}
+    cursor = db.posts.find({"author_id": user_id, "pinned": True}, {"_id": 0}).sort("created_at", -1).limit(3)
+    out = []
+    async for p in cursor:
+        if await can_view_post(p, viewer):
+            out.append(await serialize_post(p, viewer))
+    return {"posts": out}
+
+
+@api.post("/posts/{post_id}/pin")
+async def pin_post(post_id: str, user=Depends(get_current_user)):
+    post = await db.posts.find_one({"post_id": post_id, "author_id": user["user_id"]})
+    if not post:
+        raise HTTPException(404, "Not found")
+    count = await db.posts.count_documents({"author_id": user["user_id"], "pinned": True})
+    if not post.get("pinned") and count >= 3:
+        raise HTTPException(400, "Maximum 3 pinned posts")
+    await db.posts.update_one({"post_id": post_id}, {"$set": {"pinned": not post.get("pinned", False)}})
+    return {"pinned": not post.get("pinned", False)}
+
+
+@api.post("/posts/{post_id}/like")
+async def toggle_like(post_id: str, user=Depends(get_current_user)):
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(404, "Not found")
+    if not await can_view_post(post, user):
+        raise HTTPException(403, "Cannot view this post")
+    existing = await db.likes.find_one({"post_id": post_id, "user_id": user["user_id"]})
+    if existing:
+        await db.likes.delete_one({"_id": existing["_id"]})
+        await db.posts.update_one({"post_id": post_id}, {"$inc": {"like_count": -1}})
+        return {"liked": False}
+    await db.likes.insert_one({"post_id": post_id, "user_id": user["user_id"], "created_at": now_iso()})
+    await db.posts.update_one({"post_id": post_id}, {"$inc": {"like_count": 1}})
+    # Notify the post author (never yourself; blocked pairs are dropped).
+    await emit_activity_event(
+        recipient_id=post["author_id"], kind="post_liked",
+        actor_id=user["user_id"], ref={"post_id": post_id},
+        push_title=f"#{user.get('handle') or 'someone'} liked your post",
+        push_body=(post.get("content") or "")[:120],
+        push_data={"kind": "post_liked", "post_id": post_id},
+    )
+    return {"liked": True}
+
+
+@api.delete("/posts/{post_id}")
+async def delete_post(post_id: str, user=Depends(get_current_user)):
+    res = await db.posts.delete_one({"post_id": post_id, "author_id": user["user_id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+class PostEditIn(BaseModel):
+    content: str
+
+
+@api.patch("/posts/{post_id}")
+async def edit_post(post_id: str, payload: PostEditIn, user=Depends(get_current_user)):
+    """Edit a post's text. Keeps a full edit history so viewers can see
+    the original if they tap the 'Edited' badge. Media/tier/tags are
+    intentionally immutable — only the text is editable."""
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(404, "Not found")
+    if post["author_id"] != user["user_id"]:
+        raise HTTPException(403, "Not the author")
+    new_text = (payload.content or "").strip()[:2000]
+    if new_text == (post.get("content") or ""):
+        return {"ok": True, "unchanged": True}
+    history = post.get("edit_history") or []
+    history.append({
+        "content": post.get("content") or "",
+        "at": post.get("edited_at") or post.get("created_at"),
+    })
+    await db.posts.update_one(
+        {"post_id": post_id},
+        {"$set": {
+            "content": new_text,
+            "edited_at": now_iso(),
+            "edit_history": history[-10:],  # cap
+        }}
+    )
+    return {"ok": True}
+
+
+@api.get("/posts/by-tag/{tag}")
+async def posts_by_tag(tag: str, viewer=Depends(get_current_user)):
+    t = tag.lower().strip().lstrip("#")
+    query = {"tags": t, "tier": "public"}
+    # Minor protection: strip minor authors from public tag pages so adults
+    # cannot browse a minor's content through a hashtag.
+    if not is_minor(viewer) and viewer.get("role") != "admin":
+        mins = await minor_author_ids()
+        if mins:
+            query["author_id"] = {"$nin": mins}
+    if is_minor(viewer):
+        query["nsfw"] = {"$ne": True}
+    cursor = db.posts.find(query, {"_id": 0}).sort("created_at", -1).limit(50)
+    out = []
+    async for p in cursor:
+        if await can_view_post(p, viewer):
+            out.append(await serialize_post(p, viewer))
+    return {"posts": out}
+
+
+@api.get("/posts/audio/{user_id}")
+async def audio_posts_by_user(user_id: str, viewer=Depends(get_current_user)):
+    if await db.blocks.find_one({"blocker_id": user_id, "blocked_id": viewer["user_id"]}):
+        return {"posts": []}
+    # Minor protection: adults cannot browse a minor's Audio tab either.
+    author = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if hide_minor_from(viewer, author):
+        return {"posts": []}
+    query = {"author_id": user_id, "is_audio_track": True}
+    if is_minor(viewer):
+        query["nsfw"] = {"$ne": True}
+    cursor = db.posts.find(query, {"_id": 0}).sort("created_at", -1).limit(100)
+    out = []
+    async for p in cursor:
+        if await can_view_post(p, viewer):
+            out.append(await serialize_post(p, viewer))
+    return {"posts": out}
+
+
+# ------------------------------------------------------------------
+# Comments (Inner Circle only on regular posts)
+# ------------------------------------------------------------------
+async def serialize_comment(c: dict) -> dict:
+    author = await db.users.find_one({"user_id": c["author_id"]}, {"_id": 0})
+    return {
+        "comment_id": c["comment_id"],
+        "post_id": c["post_id"],
+        "author": public_user(author) if author else None,
+        "content": c["content"],
+        "created_at": c["created_at"],
+    }
+
+
+@api.get("/posts/{post_id}/comments")
+async def list_comments(post_id: str, viewer=Depends(get_current_user)):
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(404, "Not found")
+    if not await can_view_post(post, viewer):
+        raise HTTPException(404, "Not found")
+    cursor = db.comments.find({"post_id": post_id}, {"_id": 0}).sort("created_at", 1).limit(500)
+    out = []
+    async for c in cursor:
+        out.append(await serialize_comment(c))
+    return {"comments": out, "can_comment": await user_can_comment(post, viewer)}
+
+
+@api.post("/posts/{post_id}/comments")
+async def create_comment(post_id: str, payload: CommentIn, viewer=Depends(get_current_user)):
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(404, "Not found")
+    if not await can_view_post(post, viewer):
+        raise HTTPException(404, "Not found")
+    if not await user_can_comment(post, viewer):
+        raise HTTPException(403, "Only the Inner Circle can comment on this post")
+    cid = f"cmt_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "comment_id": cid,
+        "post_id": post_id,
+        "author_id": viewer["user_id"],
+        "content": payload.content.strip()[:1000],
+        "created_at": now_iso(),
+    }
+    await db.comments.insert_one(doc)
+    # Notify the post author of the new comment.
+    if post.get("author_id") != viewer["user_id"]:
+        await emit_activity_event(
+            recipient_id=post["author_id"], kind="post_commented",
+            actor_id=viewer["user_id"], ref={"post_id": post_id, "comment_id": cid},
+            push_title=f"#{viewer.get('handle') or 'someone'} commented on your post",
+            push_body=doc["content"][:120],
+            push_data={"kind": "post_commented", "post_id": post_id},
+        )
+    return await serialize_comment(doc)
+
+
+@api.delete("/comments/{comment_id}")
+async def delete_comment(comment_id: str, viewer=Depends(get_current_user)):
+    c = await db.comments.find_one({"comment_id": comment_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Not found")
+    post = await db.posts.find_one({"post_id": c["post_id"]}, {"_id": 0})
+    # Comment author OR post owner can delete
+    if c["author_id"] != viewer["user_id"] and (not post or post["author_id"] != viewer["user_id"]):
+        raise HTTPException(403, "Not allowed")
+    await db.comments.delete_one({"comment_id": comment_id})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Wall
+# ------------------------------------------------------------------
+@api.post("/wall/{owner_id}")
+async def post_to_wall(owner_id: str, payload: WallPostIn, user=Depends(get_current_user)):
+    owner = await db.users.find_one({"user_id": owner_id}, {"_id": 0})
+    if not owner:
+        raise HTTPException(404, "Not found")
+    perm = owner.get("settings", {}).get("wall_post_permission", "owner")
+    if owner_id != user["user_id"]:
+        if perm == "owner":
+            raise HTTPException(403, "Wall is owner-only")
+        if perm == "followers":
+            if not await db.follows.find_one({"follower_id": user["user_id"], "followee_id": owner_id, "status": "active"}):
+                raise HTTPException(403, "Followers only")
+        if perm == "inner":
+            if not await db.inner_circle.find_one({"owner_id": owner_id, "member_id": user["user_id"], "status": "active"}):
+                raise HTTPException(403, "Inner circle only")
+    wid = f"wall_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "wall_post_id": wid, "owner_id": owner_id, "author_id": user["user_id"],
+        "content": payload.content.strip()[:2000], "nsfw": payload.nsfw,
+        "created_at": now_iso(),
+    }
+    await db.wall_posts.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/wall/{owner_id}")
+async def get_wall(owner_id: str, viewer=Depends(get_current_user)):
+    cursor = db.wall_posts.find({"owner_id": owner_id}, {"_id": 0}).sort("created_at", -1).limit(100)
+    out = []
+    async for w in cursor:
+        u = await db.users.find_one({"user_id": w["author_id"]}, {"_id": 0})
+        out.append({**w, "author": public_user(u) if u else None})
+    return {"posts": out}
+
+
+@api.delete("/wall/{wall_post_id}")
+async def delete_wall_post(wall_post_id: str, user=Depends(get_current_user)):
+    """Delete a wall note. Allowed for: the note's author, the wall's owner, or an admin."""
+    w = await db.wall_posts.find_one({"wall_post_id": wall_post_id}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Not found")
+    is_admin = user.get("role") == "admin"
+    if w["author_id"] != user["user_id"] and w["owner_id"] != user["user_id"] and not is_admin:
+        raise HTTPException(403, "Not allowed")
+    await db.wall_posts.delete_one({"wall_post_id": wall_post_id})
+    if is_admin and w["author_id"] != user["user_id"] and w["owner_id"] != user["user_id"]:
+        await db.audit_events.insert_one({
+            "event": "wall.delete_admin", "admin_id": user["user_id"],
+            "target_user_id": w["owner_id"], "wall_post_id": wall_post_id,
+            "author_id": w["author_id"], "at": now_iso(),
+        })
+    return {"ok": True}
+
+
+class WallEditIn(BaseModel):
+    content: str
+
+
+@api.patch("/wall/{wall_post_id}")
+async def edit_wall_post(wall_post_id: str, payload: WallEditIn, user=Depends(get_current_user)):
+    """Edit a wall note. Only the note's author can edit — the wall
+    owner can only delete. Keeps history so viewers see 'Edited' badge."""
+    w = await db.wall_posts.find_one({"wall_post_id": wall_post_id}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Not found")
+    if w["author_id"] != user["user_id"]:
+        raise HTTPException(403, "Not the author")
+    new_text = (payload.content or "").strip()[:2000]
+    if new_text == (w.get("content") or ""):
+        return {"ok": True, "unchanged": True}
+    history = w.get("edit_history") or []
+    history.append({
+        "content": w.get("content") or "",
+        "at": w.get("edited_at") or w.get("created_at"),
+    })
+    await db.wall_posts.update_one(
+        {"wall_post_id": wall_post_id},
+        {"$set": {
+            "content": new_text,
+            "edited_at": now_iso(),
+            "edit_history": history[-10:],
+        }}
+    )
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Wall replies (threaded conversation under a wall note)
+# ------------------------------------------------------------------
+class WallReplyIn(BaseModel):
+    content: str
+
+
+async def _wall_reply_permission(owner: dict, viewer_id: str) -> None:
+    """Raise 403 if `viewer_id` cannot reply on `owner`'s wall.
+
+    Uses the same permission model as posting a primary wall note. The
+    wall owner can always reply on their own wall regardless of the
+    setting (they might be following up their own thoughts).
+    """
+    if owner["user_id"] == viewer_id:
+        return
+    perm = owner.get("settings", {}).get("wall_post_permission", "owner")
+    if perm == "owner":
+        raise HTTPException(403, "Wall replies are owner-only")
+    if perm == "followers":
+        if not await db.follows.find_one({
+            "follower_id": viewer_id, "followee_id": owner["user_id"], "status": "active"
+        }):
+            raise HTTPException(403, "Followers only")
+    if perm == "inner":
+        if not await db.inner_circle.find_one({
+            "owner_id": owner["user_id"], "member_id": viewer_id, "status": "active"
+        }):
+            raise HTTPException(403, "Inner circle only")
+
+
+@api.post("/wall/{wall_post_id}/replies")
+async def create_wall_reply(wall_post_id: str, payload: WallReplyIn, user=Depends(get_current_user)):
+    """Create a threaded reply under a wall note."""
+    w = await db.wall_posts.find_one({"wall_post_id": wall_post_id}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Wall note not found")
+    owner = await db.users.find_one({"user_id": w["owner_id"]}, {"_id": 0})
+    if not owner:
+        raise HTTPException(404, "Wall owner not found")
+    await _wall_reply_permission(owner, user["user_id"])
+    text = (payload.content or "").strip()[:1000]
+    if not text:
+        raise HTTPException(400, "Empty reply")
+    rid = f"wrep_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "reply_id": rid,
+        "wall_post_id": wall_post_id,
+        "owner_id": w["owner_id"],
+        "author_id": user["user_id"],
+        "content": text,
+        "created_at": now_iso(),
+    }
+    await db.wall_replies.insert_one(doc)
+    doc.pop("_id", None)
+    # Notify the wall-note author when someone else replies (but not the
+    # note author replying to their own note).
+    if w["author_id"] != user["user_id"]:
+        await emit_activity_event(
+            recipient_id=w["author_id"], kind="post_commented",
+            actor_id=user["user_id"], ref={"wall_post_id": wall_post_id, "reply_id": rid},
+            push_title=f"#{user.get('handle') or 'someone'} replied to your wall note",
+            push_body=text[:120],
+            push_data={"kind": "wall_reply", "wall_post_id": wall_post_id},
+        )
+    # Also nudge the wall owner if they're neither the reply author nor
+    # the note author (e.g. Alice writes on Bob's wall, Carol replies —
+    # Bob wants to know his wall has activity).
+    if w["owner_id"] not in (user["user_id"], w["author_id"]):
+        await emit_activity_event(
+            recipient_id=w["owner_id"], kind="post_commented",
+            actor_id=user["user_id"], ref={"wall_post_id": wall_post_id, "reply_id": rid},
+            push_title=f"#{user.get('handle') or 'someone'} replied on your wall",
+            push_body=text[:120],
+            push_data={"kind": "wall_reply", "wall_post_id": wall_post_id},
+        )
+    return {**doc, "author": public_user(user)}
+
+
+@api.get("/wall/{wall_post_id}/replies")
+async def list_wall_replies(wall_post_id: str, viewer=Depends(get_current_user)):
+    """List replies under a wall note, oldest first (chat-style)."""
+    w = await db.wall_posts.find_one({"wall_post_id": wall_post_id}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Wall note not found")
+    cursor = db.wall_replies.find(
+        {"wall_post_id": wall_post_id}, {"_id": 0}
+    ).sort("created_at", 1).limit(500)
+    out = []
+    async for r in cursor:
+        u = await db.users.find_one({"user_id": r["author_id"]}, {"_id": 0})
+        out.append({**r, "author": public_user(u) if u else None})
+    # `can_reply` tells the client whether to render the input field.
+    can_reply = True
+    try:
+        owner = await db.users.find_one({"user_id": w["owner_id"]}, {"_id": 0})
+        if owner:
+            await _wall_reply_permission(owner, viewer["user_id"])
+    except HTTPException:
+        can_reply = False
+    return {"replies": out, "can_reply": can_reply}
+
+
+@api.delete("/wall/replies/{reply_id}")
+async def delete_wall_reply(reply_id: str, user=Depends(get_current_user)):
+    """Delete a wall reply. Author OR wall owner OR admin can delete."""
+    r = await db.wall_replies.find_one({"reply_id": reply_id}, {"_id": 0})
+    if not r:
+        raise HTTPException(404, "Not found")
+    is_admin = user.get("role") == "admin"
+    if (r["author_id"] != user["user_id"]
+            and r["owner_id"] != user["user_id"]
+            and not is_admin):
+        raise HTTPException(403, "Not allowed")
+    await db.wall_replies.delete_one({"reply_id": reply_id})
+    return {"ok": True}
+
+
+@api.patch("/wall/replies/{reply_id}")
+async def edit_wall_reply(reply_id: str, payload: WallReplyIn, user=Depends(get_current_user)):
+    """Edit a wall reply. Only the reply's author can edit."""
+    r = await db.wall_replies.find_one({"reply_id": reply_id}, {"_id": 0})
+    if not r:
+        raise HTTPException(404, "Not found")
+    if r["author_id"] != user["user_id"]:
+        raise HTTPException(403, "Not the author")
+    new_text = (payload.content or "").strip()[:1000]
+    if not new_text:
+        raise HTTPException(400, "Empty reply")
+    if new_text == (r.get("content") or ""):
+        return {"ok": True, "unchanged": True}
+    history = r.get("edit_history") or []
+    history.append({
+        "content": r.get("content") or "",
+        "at": r.get("edited_at") or r.get("created_at"),
+    })
+    await db.wall_replies.update_one(
+        {"reply_id": reply_id},
+        {"$set": {
+            "content": new_text,
+            "edited_at": now_iso(),
+            "edit_history": history[-10:],
+        }}
+    )
+    return {"ok": True}
+
+
+# ==================================================================
+#  Emoji reactions (generic — DMs / comments / wall notes /
+#  wall replies / board messages)
+# ==================================================================
+REACTION_EMOJIS = ["❤️", "😂", "👍", "😮", "😢", "🔥"]
+REACTION_KINDS = {"dm", "comment", "wall_post", "wall_reply", "board_message"}
+
+
+async def _reaction_check_access(kind: str, target_id: str, viewer: dict) -> dict:
+    """Verify the viewer is allowed to see the target being reacted to.
+
+    Returns the target document (for downstream hooks like activity
+    events). Raises 404 if missing, 403 if not allowed to react.
+
+    We keep the checks light — full tier / block enforcement is done at
+    the read endpoints. Reactions inherit the read permission by proxy
+    (if you can't fetch it, you can't get the id in the first place).
+    """
+    if kind == "dm":
+        doc = await db.dms.find_one({"message_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "DM not found")
+        if viewer["user_id"] not in (doc["from_id"], doc["to_id"]):
+            raise HTTPException(403, "Not a participant")
+        return doc
+    if kind == "comment":
+        doc = await db.comments.find_one({"comment_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Comment not found")
+        return doc
+    if kind == "wall_post":
+        doc = await db.wall_posts.find_one({"wall_post_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Wall note not found")
+        return doc
+    if kind == "wall_reply":
+        doc = await db.wall_replies.find_one({"reply_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Wall reply not found")
+        return doc
+    if kind == "board_message":
+        doc = await db.board_messages.find_one({"message_id": target_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Board message not found")
+        return doc
+    raise HTTPException(400, "Unknown reaction kind")
+
+
+class ReactionIn(BaseModel):
+    kind: str
+    target_id: str
+    emoji: str
+
+
+@api.post("/reactions")
+async def add_reaction(payload: ReactionIn, user=Depends(get_current_user)):
+    """Toggle a reaction: same emoji again removes it; a different
+    emoji replaces the existing one (one reaction per user per target)."""
+    if payload.kind not in REACTION_KINDS:
+        raise HTTPException(400, "Unsupported reaction kind")
+    if payload.emoji not in REACTION_EMOJIS:
+        raise HTTPException(400, "Emoji not allowed")
+    await _reaction_check_access(payload.kind, payload.target_id, user)
+    existing = await db.reactions.find_one({
+        "kind": payload.kind,
+        "target_id": payload.target_id,
+        "user_id": user["user_id"],
+    }, {"_id": 0})
+    if existing and existing.get("emoji") == payload.emoji:
+        # toggle off
+        await db.reactions.delete_one({
+            "kind": payload.kind, "target_id": payload.target_id, "user_id": user["user_id"],
+        })
+        return {"ok": True, "removed": True}
+    await db.reactions.update_one(
+        {"kind": payload.kind, "target_id": payload.target_id, "user_id": user["user_id"]},
+        {"$set": {
+            "kind": payload.kind, "target_id": payload.target_id,
+            "user_id": user["user_id"], "emoji": payload.emoji,
+            "created_at": now_iso(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "emoji": payload.emoji}
+
+
+@api.delete("/reactions")
+async def remove_reaction(kind: str, target_id: str, user=Depends(get_current_user)):
+    if kind not in REACTION_KINDS:
+        raise HTTPException(400, "Unsupported reaction kind")
+    await db.reactions.delete_one({
+        "kind": kind, "target_id": target_id, "user_id": user["user_id"],
+    })
+    return {"ok": True}
+
+
+@api.get("/reactions/{kind}/{target_id}")
+async def get_reactions(kind: str, target_id: str, user=Depends(get_current_user)):
+    """Return `{ counts: {emoji: n}, mine: emoji|null }` — cheap to
+    fetch alongside message lists."""
+    if kind not in REACTION_KINDS:
+        raise HTTPException(400, "Unsupported reaction kind")
+    counts = {}
+    mine = None
+    async for r in db.reactions.find({"kind": kind, "target_id": target_id}, {"_id": 0}):
+        e = r.get("emoji")
+        if e not in REACTION_EMOJIS:
+            continue
+        counts[e] = counts.get(e, 0) + 1
+        if r["user_id"] == user["user_id"]:
+            mine = e
+    return {"counts": counts, "mine": mine}
+
+
+@api.post("/reactions/bulk")
+async def get_reactions_bulk(payload: dict, user=Depends(get_current_user)):
+    """Batch fetch: `{ kind, ids: [...] }` → `{ id: {counts, mine} }`.
+
+    Used by messages/comments lists to avoid N+1 queries when hydrating
+    reaction pills on many items.
+    """
+    kind = payload.get("kind")
+    ids = payload.get("ids") or []
+    if kind not in REACTION_KINDS:
+        raise HTTPException(400, "Unsupported reaction kind")
+    if not isinstance(ids, list) or not ids:
+        return {}
+    ids = [str(x) for x in ids][:500]
+    out = {i: {"counts": {}, "mine": None} for i in ids}
+    async for r in db.reactions.find({"kind": kind, "target_id": {"$in": ids}}, {"_id": 0}):
+        tid = r["target_id"]
+        emoji = r.get("emoji")
+        if tid not in out or emoji not in REACTION_EMOJIS:
+            continue
+        out[tid]["counts"][emoji] = out[tid]["counts"].get(emoji, 0) + 1
+        if r["user_id"] == user["user_id"]:
+            out[tid]["mine"] = emoji
+    return out
+
+
+# ==================================================================
+#  My Comments — unified history of everything the viewer has written
+#  as a reply / comment (post comments + wall replies + board messages)
+# ==================================================================
+@api.get("/me/comments")
+async def my_comments(user=Depends(get_current_user), limit: int = 100):
+    """Reverse-chronological feed of every comment / reply / board
+    message the viewer has written. Deleted parents are filtered out.
+    """
+    limit = max(1, min(500, limit))
+    items = []
+
+    # 1) Post comments
+    async for c in db.comments.find(
+        {"author_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).limit(limit):
+        post = await db.posts.find_one({"post_id": c["post_id"]}, {"_id": 0})
+        if not post:
+            continue
+        pauthor = await db.users.find_one({"user_id": post["author_id"]}, {"_id": 0})
+        items.append({
+            "kind": "comment",
+            "id": c["comment_id"],
+            "content": c.get("content") or "",
+            "created_at": c["created_at"],
+            "edited_at": c.get("edited_at"),
+            "target": {
+                "post_id": post["post_id"],
+                "author_handle": (pauthor or {}).get("handle"),
+                "author_user_id": post["author_id"],
+                "excerpt": (post.get("content") or "")[:120],
+            },
+        })
+
+    # 2) Wall replies
+    async for r in db.wall_replies.find(
+        {"author_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).limit(limit):
+        w = await db.wall_posts.find_one({"wall_post_id": r["wall_post_id"]}, {"_id": 0})
+        if not w:
+            continue
+        owner = await db.users.find_one({"user_id": w["owner_id"]}, {"_id": 0})
+        items.append({
+            "kind": "wall_reply",
+            "id": r["reply_id"],
+            "content": r.get("content") or "",
+            "created_at": r["created_at"],
+            "edited_at": r.get("edited_at"),
+            "target": {
+                "wall_post_id": w["wall_post_id"],
+                "owner_handle": (owner or {}).get("handle"),
+                "owner_user_id": w["owner_id"],
+                "excerpt": (w.get("content") or "")[:120],
+            },
+        })
+
+    # 3) Board messages
+    async for m in db.board_messages.find(
+        {"author_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).limit(limit):
+        board = await db.boards.find_one({"board_id": m["board_id"]}, {"_id": 0})
+        if not board:
+            continue
+        items.append({
+            "kind": "board_message",
+            "id": m["message_id"],
+            "content": m.get("content") or "",
+            "created_at": m["created_at"],
+            "target": {
+                "board_id": board["board_id"],
+                "board_title": board.get("title") or "Untitled board",
+                "owner_user_id": board.get("owner_id"),
+            },
+        })
+
+    # Sort merged list newest first, respecting the caller's limit.
+    items.sort(key=lambda x: x["created_at"], reverse=True)
+    return {"items": items[:limit], "total": len(items)}
+
+
+# ==================================================================
+#  Pin threads (DMs + groups)  —  max 3 total per user
+# ==================================================================
+MAX_PINNED_THREADS = 3
+
+
+class PinThreadIn(BaseModel):
+    kind: str  # "dm" | "group"
+    target_id: str  # other user_id (DM) or group_id (group)
+
+
+def _pinned_threads(user: dict) -> list[dict]:
+    """Return the user's pinned-threads list (always a list)."""
+    pinned = (user.get("settings") or {}).get("pinned_threads") or []
+    return [p for p in pinned if isinstance(p, dict) and p.get("kind") and p.get("target_id")]
+
+
+@api.post("/messages/pin")
+async def pin_thread(payload: PinThreadIn, user=Depends(get_current_user)):
+    if payload.kind not in ("dm", "group"):
+        raise HTTPException(400, "Kind must be 'dm' or 'group'")
+    pinned = _pinned_threads(user)
+    # Already pinned? no-op.
+    if any(p["kind"] == payload.kind and p["target_id"] == payload.target_id for p in pinned):
+        return {"ok": True, "pinned": pinned}
+    if len(pinned) >= MAX_PINNED_THREADS:
+        raise HTTPException(400, f"Max {MAX_PINNED_THREADS} pinned threads. Unpin one first.")
+    pinned.append({
+        "kind": payload.kind,
+        "target_id": payload.target_id,
+        "pinned_at": now_iso(),
+    })
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"settings.pinned_threads": pinned}},
+    )
+    return {"ok": True, "pinned": pinned}
+
+
+@api.delete("/messages/pin")
+async def unpin_thread(kind: str, target_id: str, user=Depends(get_current_user)):
+    pinned = [
+        p for p in _pinned_threads(user)
+        if not (p["kind"] == kind and p["target_id"] == target_id)
+    ]
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"settings.pinned_threads": pinned}},
+    )
+    return {"ok": True, "pinned": pinned}
+
+
+@api.get("/messages/pinned")
+async def get_pinned_threads(user=Depends(get_current_user)):
+    """Return the raw pinned list — the DM/group list endpoints already
+    include a `pinned` boolean, this exists mainly for the settings UI."""
+    return {"pinned": _pinned_threads(user)}
+
+
+# ------------------------------------------------------------------
+# Boards
+# ------------------------------------------------------------------
+@api.post("/boards")
+async def create_board(payload: BoardIn, user=Depends(get_current_user)):
+    if payload.tier not in TIERS:
+        raise HTTPException(400, "Invalid tier")
+    bid = f"brd_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "board_id": bid, "owner_id": user["user_id"],
+        "title": payload.title.strip()[:80], "description": payload.description.strip()[:500],
+        "tier": payload.tier, "allow_t1_read": payload.allow_t1_read,
+        "created_at": now_iso(),
+    }
+    await db.boards.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/boards/by-user/{owner_id}")
+async def list_boards(owner_id: str, viewer=Depends(get_current_user)):
+    cursor = db.boards.find({"owner_id": owner_id}, {"_id": 0}).sort("created_at", -1)
+    out = []
+    async for b in cursor:
+        if b["tier"] == "inner":
+            if owner_id != viewer["user_id"]:
+                if not await db.inner_circle.find_one({"owner_id": owner_id, "member_id": viewer["user_id"], "status": "active"}):
+                    continue
+        elif b["tier"] == "followers":
+            if owner_id != viewer["user_id"]:
+                follows = await db.follows.find_one({"follower_id": viewer["user_id"], "followee_id": owner_id, "status": "active"})
+                if not follows and not b.get("allow_t1_read", True):
+                    continue
+        out.append(b)
+    return {"boards": out}
+
+
+async def can_participate_board(board: dict, user: dict) -> bool:
+    if board["owner_id"] == user["user_id"]:
+        return True
+    tier = board["tier"]
+    if tier == "public":
+        return True
+    if tier == "followers":
+        return bool(await db.follows.find_one({"follower_id": user["user_id"], "followee_id": board["owner_id"], "status": "active"}))
+    if tier == "inner":
+        return bool(await db.inner_circle.find_one({"owner_id": board["owner_id"], "member_id": user["user_id"], "status": "active"}))
+    return False
+
+
+@api.post("/boards/{board_id}/messages")
+async def post_board_message(board_id: str, payload: BoardMessageIn, user=Depends(get_current_user)):
+    board = await db.boards.find_one({"board_id": board_id}, {"_id": 0})
+    if not board:
+        raise HTTPException(404, "Not found")
+    if not await can_participate_board(board, user):
+        raise HTTPException(403, "Cannot participate")
+    mid = f"bmsg_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "message_id": mid, "board_id": board_id, "author_id": user["user_id"],
+        "content": payload.content.strip()[:2000], "created_at": now_iso(),
+    }
+    await db.board_messages.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/boards/{board_id}/messages")
+async def board_messages(board_id: str, viewer=Depends(get_current_user)):
+    board = await db.boards.find_one({"board_id": board_id}, {"_id": 0})
+    if not board:
+        raise HTTPException(404, "Not found")
+    # check read permission
+    if board["tier"] == "inner" and board["owner_id"] != viewer["user_id"]:
+        if not await db.inner_circle.find_one({"owner_id": board["owner_id"], "member_id": viewer["user_id"], "status": "active"}):
+            raise HTTPException(404, "Not found")
+    if board["tier"] == "followers" and board["owner_id"] != viewer["user_id"]:
+        follows = await db.follows.find_one({"follower_id": viewer["user_id"], "followee_id": board["owner_id"], "status": "active"})
+        if not follows and not board.get("allow_t1_read", True):
+            raise HTTPException(403, "Followers only")
+    cursor = db.board_messages.find({"board_id": board_id}, {"_id": 0}).sort("created_at", 1).limit(500)
+    out = []
+    async for m in cursor:
+        u = await db.users.find_one({"user_id": m["author_id"]}, {"_id": 0})
+        out.append({**m, "author": public_user(u) if u else None})
+    return {"board": board, "messages": out, "can_post": await can_participate_board(board, viewer)}
+
+
+# ------------------------------------------------------------------
+# DMs (tier-respecting, text-only V1)
+# ------------------------------------------------------------------
+async def can_dm(sender: dict, recipient: dict) -> tuple[bool, str]:
+    if sender["user_id"] == recipient["user_id"]:
+        return False, "Cannot DM yourself"
+    if await db.blocks.find_one({"blocker_id": recipient["user_id"], "blocked_id": sender["user_id"]}):
+        return False, "Blocked"
+    if await db.blocks.find_one({"blocker_id": sender["user_id"], "blocked_id": recipient["user_id"]}):
+        return False, "Blocked"
+    # Minors can NEVER DM NSFW-flagged accounts. No exceptions.
+    if is_minor(sender) and recipient.get("nsfw_account"):
+        return False, "Cannot message this account"
+    err = adult_minor_block(sender, recipient, actor_initiated=True)
+    if err:
+        # but allowed if minor initiated previously (any past message from minor)
+        prior = await db.dms.find_one({"from_id": recipient["user_id"], "to_id": sender["user_id"]})
+        if not prior:
+            return False, err
+    # check inner circle DM permission first
+    ic = await db.inner_circle.find_one({"owner_id": recipient["user_id"], "member_id": sender["user_id"], "status": "active"})
+    ic_reverse = await db.inner_circle.find_one({"owner_id": sender["user_id"], "member_id": recipient["user_id"], "status": "active"})
+    if ic and ic.get("permissions", {}).get("dms", True):
+        return True, ""
+    if ic_reverse and ic_reverse.get("permissions", {}).get("dms", True):
+        return True, ""
+    # Tier 2: followers only if recipient has DMs enabled
+    follows = await db.follows.find_one({"follower_id": sender["user_id"], "followee_id": recipient["user_id"], "status": "active"})
+    if follows and recipient.get("settings", {}).get("dms_enabled_followers", False):
+        return True, ""
+    return False, "Recipient does not accept DMs"
+
+
+@api.post("/dms")
+async def send_dm(payload: DMIn, user=Depends(get_current_user)):
+    # Self-DM ("Me, myself and I" saved-messages thread) — always allowed.
+    is_self = payload.recipient_id == user["user_id"]
+    if not is_self:
+        recipient = await db.users.find_one({"user_id": payload.recipient_id}, {"_id": 0})
+        if not recipient:
+            raise HTTPException(404, "Recipient not found")
+        ok, reason = await can_dm(user, recipient)
+        if not ok:
+            raise HTTPException(403, reason)
+    content = payload.content.strip()[:2000]
+    if not content and not payload.media_paths:
+        raise HTTPException(400, "Message cannot be empty — add text or attach media.")
+    mid = f"dm_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "message_id": mid, "from_id": user["user_id"], "to_id": payload.recipient_id,
+        # Encrypted content at rest. Plaintext is never persisted.
+        "content_enc": encrypt_dm(content),
+        "content": "",  # legacy column, intentionally blank for new rows
+        "media_paths": payload.media_paths,  # capped at 4 via DMIn validator
+        "created_at": now_iso(),
+        # Self-DMs are pre-marked read since you're sending to yourself —
+        # no point lighting up the unread badge.
+        "read": True if is_self else False,
+    }
+    await db.dms.insert_one(doc)
+    doc.pop("_id", None)
+    # Fire-and-forget push notification. Self-DMs and recipients who muted
+    # DMs in their push prefs get skipped automatically inside fcm_push.
+    if not is_self:
+        sender_handle = user.get("handle", "someone")
+        preview = content[:80] if content else ("📎 Sent media" if payload.media_paths else "New message")
+        # Push + activity event go together.
+        await emit_activity_event(
+            recipient_id=payload.recipient_id, kind="dm_received",
+            actor_id=user["user_id"], ref={"message_id": doc["message_id"]},
+            push_title=f"#{sender_handle}", push_body=preview,
+            push_data={"kind": "dm_received", "from_id": user["user_id"], "message_id": doc["message_id"]},
+        )
+    # Return the decrypted form to the caller so the optimistic UI matches
+    # the persisted version when re-fetched.
+    return hydrate_dm(doc)
+
+
+@api.get("/dms/threads")
+async def list_threads(user=Depends(get_current_user)):
+    # aggregate conversations
+    pipeline = [
+        {"$match": {"$or": [{"from_id": user["user_id"]}, {"to_id": user["user_id"]}]}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {
+            "_id": {
+                "$cond": [{"$eq": ["$from_id", user["user_id"]]}, "$to_id", "$from_id"]
+            },
+            "last_message": {"$first": "$$ROOT"},
+        }},
+    ]
+    cursor = db.dms.aggregate(pipeline)
+    # Load the pinned map once; keys are the other participant's user_id.
+    pin_map = {}
+    for p in _pinned_threads(user):
+        if p["kind"] == "dm":
+            pin_map[p["target_id"]] = p.get("pinned_at")
+    threads = []
+    self_thread = None
+    async for t in cursor:
+        other_id = t["_id"]
+        if other_id == user["user_id"]:
+            # Pin the self thread to the top later, don't bucket with the rest.
+            self_thread = {
+                "with": {**public_user(user), "is_self": True, "display_name": "Me, myself and I"},
+                "last": hydrate_dm({k: v for k, v in t["last_message"].items() if k != "_id"}),
+                "pinned": False,
+                "pinned_at": None,
+            }
+            continue
+        other = await db.users.find_one({"user_id": other_id}, {"_id": 0})
+        if not other:
+            continue
+        threads.append({
+            "with": public_user(other),
+            "last": hydrate_dm({k: v for k, v in t["last_message"].items() if k != "_id"}),
+            "pinned": other_id in pin_map,
+            "pinned_at": pin_map.get(other_id),
+        })
+    # Sort: pinned first (newest pin at top), then unpinned by recency
+    # (already sorted by aggregate).
+    threads.sort(
+        key=lambda t: (0 if t["pinned"] else 1, -(int(datetime.fromisoformat(t["pinned_at"].replace("Z", "+00:00")).timestamp()) if t["pinned_at"] else 0)),
+    )
+    # Always surface the self thread, even if empty.
+    if self_thread is None:
+        self_thread = {
+            "with": {**public_user(user), "is_self": True, "display_name": "Me, myself and I"},
+            "last": None,
+            "pinned": False,
+            "pinned_at": None,
+        }
+    return {"threads": [self_thread, *threads]}
+
+
+@api.get("/dms/with/{other_id}")
+async def dm_history(other_id: str, user=Depends(get_current_user)):
+    is_self = other_id == user["user_id"]
+    # Mark incoming messages as read. For self-DMs this is a no-op since
+    # self-sends are already inserted with read=True.
+    await db.dms.update_many(
+        {"from_id": other_id, "to_id": user["user_id"], "read": False},
+        {"$set": {"read": True, "read_at": now_iso()}},
+    )
+    cursor = db.dms.find({
+        "$or": [
+            {"from_id": user["user_id"], "to_id": other_id},
+            {"from_id": other_id, "to_id": user["user_id"]},
+        ]
+    }, {"_id": 0}).sort("created_at", 1).limit(500)
+    msgs = []
+    async for m in cursor:
+        msgs.append(hydrate_dm(m))
+    if is_self:
+        other = {**user, "display_name": "Me, myself and I"}
+        return {"messages": msgs, "with": {**public_user(other), "is_self": True}, "can_send": True, "reason": "", "screenshots_allowed": True}
+    other = await db.users.find_one({"user_id": other_id}, {"_id": 0})
+    ok, reason = (False, "")
+    if other:
+        ok, reason = await can_dm(user, other)
+    # Screenshots allowed only when BOTH sides have opted in. Default off.
+    my_pref = (user.get("settings") or {}).get("dm_screenshots_allowed", False)
+    other_pref = ((other or {}).get("settings") or {}).get("dm_screenshots_allowed", False)
+    screenshots_allowed = bool(my_pref and other_pref)
+    return {
+        "messages": msgs,
+        "with": public_user(other) if other else None,
+        "can_send": ok,
+        "reason": reason,
+        "screenshots_allowed": screenshots_allowed,
+    }
+
+
+@api.delete("/dms/{message_id}")
+async def delete_dm(message_id: str, user=Depends(get_current_user)):
+    """Delete a DM message. Only the sender can delete their own message
+    (or an admin). Deletion is destructive — the row is removed from the
+    database so the recipient's copy also disappears from their thread on
+    their next fetch."""
+    msg = await db.dms.find_one({"message_id": message_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(404, "Message not found")
+    is_admin = user.get("role") == "admin"
+    if msg["from_id"] != user["user_id"] and not is_admin:
+        raise HTTPException(403, "You can only delete messages you sent")
+    await db.dms.delete_one({"message_id": message_id})
+    if is_admin and msg["from_id"] != user["user_id"]:
+        await db.audit_events.insert_one({
+            "event": "dm.delete_admin", "admin_id": user["user_id"],
+            "target_user_id": msg["from_id"], "message_id": message_id,
+            "at": now_iso(),
+        })
+    return {"ok": True}
+
+
+class DMEditIn(BaseModel):
+    content: str
+
+
+@api.patch("/dms/{message_id}")
+async def edit_dm(message_id: str, payload: DMEditIn, user=Depends(get_current_user)):
+    """Edit a DM message. Only the sender can edit. Media attachments
+    are immutable — text only. Keeps history so the recipient can see
+    the message was edited."""
+    msg = await db.dms.find_one({"message_id": message_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(404, "Not found")
+    if msg["from_id"] != user["user_id"]:
+        raise HTTPException(403, "You can only edit messages you sent")
+    new_text = (payload.content or "").strip()[:2000]
+    if not new_text:
+        return {"ok": True, "unchanged": True}
+    prior = msg.get("edit_history") or []
+    prior.append({"at": msg.get("edited_at") or msg.get("created_at")})
+    # Re-encrypt with the same helper the send-path uses so keys stay
+    # in sync with the rest of the DM store.
+    await db.dms.update_one(
+        {"message_id": message_id},
+        {"$set": {
+            "content_enc": encrypt_dm(new_text),
+            "edited_at": now_iso(),
+            "edit_history": prior[-5:],
+        }}
+    )
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Block / Mute / Report
+# ------------------------------------------------------------------
+@api.post("/restrict/{user_id}")
+async def restrict_user(user_id: str, user=Depends(get_current_user)):
+    """Quietly limit follower access — they can still follow but their interactions are silenced."""
+    if user_id == user["user_id"]:
+        raise HTTPException(400, "Cannot restrict yourself")
+    await db.restrictions.update_one(
+        {"restrictor_id": user["user_id"], "restricted_id": user_id},
+        {"$setOnInsert": {"created_at": now_iso()}}, upsert=True
+    )
+    return {"ok": True}
+
+
+@api.delete("/restrict/{user_id}")
+async def unrestrict(user_id: str, user=Depends(get_current_user)):
+    await db.restrictions.delete_one({"restrictor_id": user["user_id"], "restricted_id": user_id})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Group chats — Inner Circle only, max 15, consent-based
+# ------------------------------------------------------------------
+GROUP_MAX = 15
+
+
+async def is_in_owner_inner(owner_id: str, member_id: str) -> bool:
+    return bool(await db.inner_circle.find_one({
+        "owner_id": owner_id, "member_id": member_id, "status": "active"
+    }))
+
+
+def serialize_group(g: dict, viewer_id: str) -> dict:
+    members = g.get("members", [])
+    accepted = [m for m in members if m.get("status") == "accepted"]
+    return {
+        "group_id": g["group_id"],
+        "name": g["name"],
+        "owner_id": g["owner_id"],
+        "members": members,
+        "member_count": len(accepted),
+        "my_status": next((m["status"] for m in members if m["user_id"] == viewer_id), None),
+        "created_at": g["created_at"],
+    }
+
+
+@api.post("/groups")
+async def create_group(payload: GroupCreateIn, user=Depends(get_current_user)):
+    # Only IC members may be added
+    member_objs = [{"user_id": user["user_id"], "status": "accepted", "joined_at": now_iso()}]
+    seen = {user["user_id"]}
+    for mid in payload.member_ids[:GROUP_MAX - 1]:
+        if mid in seen:
+            continue
+        if not await is_in_owner_inner(user["user_id"], mid):
+            continue  # silently skip non-IC
+        member_objs.append({"user_id": mid, "status": "pending", "invited_at": now_iso()})
+        seen.add(mid)
+    gid = f"grp_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "group_id": gid,
+        "owner_id": user["user_id"],
+        "name": payload.name.strip()[:60],
+        "members": member_objs,
+        "created_at": now_iso(),
+    }
+    await db.groups.insert_one(doc)
+    # Fan out group-invite activity events to every pending member so
+    # they see it on their Activity feed + get a push.
+    for m in member_objs:
+        if m.get("status") == "pending":
+            await emit_activity_event(
+                recipient_id=m["user_id"], kind="group_invite",
+                actor_id=user["user_id"], ref={"group_id": gid},
+                push_title="Group invite",
+                push_body=f"#{user.get('handle') or 'someone'} invited you to {doc['name']}",
+                push_data={"kind": "group_invite", "group_id": gid},
+            )
+    doc.pop("_id", None)
+    return serialize_group(doc, user["user_id"])
+
+
+@api.get("/groups")
+async def list_my_groups(user=Depends(get_current_user)):
+    cursor = db.groups.find({
+        "members": {"$elemMatch": {"user_id": user["user_id"], "status": {"$in": ["accepted", "pending"]}}}
+    }, {"_id": 0}).sort("created_at", -1)
+    pin_map = {}
+    for p in _pinned_threads(user):
+        if p["kind"] == "group":
+            pin_map[p["target_id"]] = p.get("pinned_at")
+    out = []
+    async for g in cursor:
+        row = serialize_group(g, user["user_id"])
+        row["pinned"] = g.get("group_id") in pin_map
+        row["pinned_at"] = pin_map.get(g.get("group_id"))
+        out.append(row)
+    # Pinned groups float to the top (newest pin first), rest keep recency.
+    out.sort(
+        key=lambda x: (0 if x.get("pinned") else 1, -(int(datetime.fromisoformat(x["pinned_at"].replace("Z", "+00:00")).timestamp()) if x.get("pinned_at") else 0)),
+    )
+    return {"groups": out}
+
+
+@api.post("/groups/{group_id}/accept")
+async def group_accept(group_id: str, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id})
+    if not g:
+        raise HTTPException(404, "Not found")
+    m = next((x for x in g.get("members", []) if x["user_id"] == user["user_id"] and x["status"] == "pending"), None)
+    if not m:
+        raise HTTPException(404, "Not found")
+    await db.groups.update_one(
+        {"group_id": group_id, "members.user_id": user["user_id"]},
+        {"$set": {"members.$.status": "accepted", "members.$.joined_at": now_iso()}}
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/decline")
+async def group_decline(group_id: str, user=Depends(get_current_user)):
+    # Silent decline — pull member entry, no notification
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {"$pull": {"members": {"user_id": user["user_id"], "status": "pending"}}}
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/leave")
+async def group_leave(group_id: str, user=Depends(get_current_user)):
+    # Silent leave
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {"$pull": {"members": {"user_id": user["user_id"]}}}
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/invite")
+async def group_invite(group_id: str, payload: FollowActionIn, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id})
+    if not g or g["owner_id"] != user["user_id"]:
+        raise HTTPException(403, "Owner only")
+    if len(g.get("members", [])) >= GROUP_MAX:
+        raise HTTPException(400, "Group at max capacity (15)")
+    if any(m["user_id"] == payload.user_id for m in g.get("members", [])):
+        raise HTTPException(400, "Already in group")
+    if not await is_in_owner_inner(user["user_id"], payload.user_id):
+        raise HTTPException(403, "Member must be in your Inner Circle")
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {"$push": {"members": {"user_id": payload.user_id, "status": "pending", "invited_at": now_iso()}}}
+    )
+    # Notify the invited user via activity feed + push.
+    await emit_activity_event(
+        recipient_id=payload.user_id, kind="group_invite",
+        actor_id=user["user_id"], ref={"group_id": group_id},
+        push_title="Group invite",
+        push_body=f"#{user.get('handle') or 'someone'} invited you to {g.get('name') or 'a group'}",
+        push_data={"kind": "group_invite", "group_id": group_id},
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/remove/{user_id}")
+async def group_remove_member(group_id: str, user_id: str, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id})
+    if not g or g["owner_id"] != user["user_id"]:
+        raise HTTPException(403, "Owner only")
+    if user_id == user["user_id"]:
+        raise HTTPException(400, "Owner cannot remove themselves; delete group instead")
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {"$pull": {"members": {"user_id": user_id}}}
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{group_id}/messages")
+async def group_send(group_id: str, payload: GroupMessageIn, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id})
+    if not g:
+        raise HTTPException(404, "Not found")
+    if not any(m["user_id"] == user["user_id"] and m["status"] == "accepted" for m in g.get("members", [])):
+        raise HTTPException(403, "Not a group member")
+    mid = f"gmsg_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "message_id": mid, "group_id": group_id,
+        "from_id": user["user_id"], "content": payload.content.strip()[:2000],
+        "created_at": now_iso(),
+    }
+    await db.group_messages.insert_one(doc)
+    # Notify every accepted member other than the sender.
+    for m in g.get("members", []):
+        if m.get("status") == "accepted" and m.get("user_id") != user["user_id"]:
+            await emit_activity_event(
+                recipient_id=m["user_id"], kind="group_message",
+                actor_id=user["user_id"],
+                ref={"group_id": group_id, "message_id": mid},
+                push_title=g.get("name") or "New group message",
+                push_body=f"#{user.get('handle') or 'someone'}: {doc['content'][:120]}",
+                push_data={"kind": "group_message", "group_id": group_id},
+            )
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/groups/{group_id}/messages")
+async def group_messages(group_id: str, since: Optional[str] = None, user=Depends(get_current_user)):
+    g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
+    if not g:
+        raise HTTPException(404, "Not found")
+    if not any(m["user_id"] == user["user_id"] and m["status"] == "accepted" for m in g.get("members", [])):
+        raise HTTPException(403, "Not a group member")
+    query = {"group_id": group_id}
+    if since:
+        query["created_at"] = {"$gt": since}
+    cursor = db.group_messages.find(query, {"_id": 0}).sort("created_at", 1).limit(500)
+    msgs = []
+    async for m in cursor:
+        msgs.append(m)
+    return {"group": serialize_group(g, user["user_id"]), "messages": msgs}
+
+
+@api.post("/block/{user_id}")
+async def block_user(user_id: str, user=Depends(get_current_user)):
+    if user_id == user["user_id"]:
+        raise HTTPException(400, "Cannot block self")
+    await db.blocks.update_one(
+        {"blocker_id": user["user_id"], "blocked_id": user_id},
+        {"$setOnInsert": {"created_at": now_iso()}}, upsert=True
+    )
+    # remove follows both ways
+    await db.follows.delete_many({"$or": [
+        {"follower_id": user["user_id"], "followee_id": user_id},
+        {"follower_id": user_id, "followee_id": user["user_id"]},
+    ]})
+    return {"ok": True}
+
+
+@api.delete("/block/{user_id}")
+async def unblock(user_id: str, user=Depends(get_current_user)):
+    await db.blocks.delete_one({"blocker_id": user["user_id"], "blocked_id": user_id})
+    return {"ok": True}
+
+
+@api.post("/mute/{user_id}")
+async def mute(user_id: str, user=Depends(get_current_user)):
+    await db.mutes.update_one(
+        {"muter_id": user["user_id"], "muted_id": user_id},
+        {"$setOnInsert": {"created_at": now_iso()}}, upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.delete("/mute/{user_id}")
+async def unmute(user_id: str, user=Depends(get_current_user)):
+    await db.mutes.delete_one({"muter_id": user["user_id"], "muted_id": user_id})
+    return {"ok": True}
+
+
+# Per-category soft-warning thresholds. Once a target accumulates the given
+# number of DISTINCT reporters flagging it under the same category within the
+# lookback window, an automatic soft-warning is queued (still human-reviewed
+# — this is a *suggestion* to admins, not an automated action). Categories
+# that would already trigger a CSAM lane or hard-block flow use very low
+# thresholds; low-severity issues need more corroboration.
+_REPORT_SOFT_WARNING_THRESHOLDS = {
+    "csam": 1,          # CSAM: single report already triggers hard lane
+    "underage": 2,
+    "harassment": 2,
+    "hate": 2,
+    "self_harm": 2,
+    "inappropriate": 3,
+    "unlabelled_ai": 3,
+    "impersonation": 2,
+    "spam": 5,          # spam gets more benefit of the doubt
+    "other": 5,
+}
+
+
+def _report_reporter_hash(reporter_id: str, target_id: str) -> str:
+    """Deterministic short hash so admins can spot mass-reporting abuse
+    (same reporter blasting one target) without unmasking the reporter to
+    the reviewer. Uses JWT_SECRET as the salt so hashes aren't linkable
+    across environments."""
+    h = hashlib.sha256(f"{reporter_id}|{target_id}|{JWT_SECRET}".encode()).hexdigest()
+    return h[:16]
+
+
+# Anti-abuse thresholds for the reporter side. If a user weaponises the
+# report button, we auto-strike them. The bar is deliberately high so we
+# don't punish good-faith reporters who just happen to see a lot of bad
+# content, but low enough that an obvious brigader trips it.
+_REPORT_ABUSE_WINDOW_DAYS = 7
+_REPORT_ABUSE_MIN_TOTAL = 20        # need this many reports in the window
+_REPORT_ABUSE_MIN_DISMISS_RATE = 0.7  # 70%+ of resolved reports dismissed
+_REPORT_ABUSE_SAME_TARGET_LIMIT = 5    # more than N reports on ONE target
+
+
+async def _check_reporter_abuse(reporter_id: str):
+    """Detect report-button abuse and hit the reporter with an automatic
+    Strike 1 + 48h suspension. Two independent triggers:
+      1. Serial dismissed reporter — 20+ reports in 7d with ≥70% dismissed
+      2. Brigading a single target — 5+ reports on same target in 7d
+    Fires at most once per week per reporter (guarded by an audit event
+    marker) to avoid double-striking. Everything is human-reviewable via
+    the audit log."""
+    # Skip admins so a moderator triaging a swarm doesn't accidentally
+    # trigger the guard.
+    reporter = await db.users.find_one({"user_id": reporter_id}, {"_id": 0})
+    if not reporter or reporter.get("role") == "admin":
+        return
+
+    window_start = (datetime.now(timezone.utc) - timedelta(days=_REPORT_ABUSE_WINDOW_DAYS)).isoformat()
+
+    # Guard: don't strike the same reporter twice in the same window.
+    already = await db.audit_events.find_one({
+        "event": "auto_strike_report_abuse",
+        "target_id": reporter_id,
+        "at": {"$gte": window_start},
+    })
+    if already:
+        return
+
+    # Trigger 1 — brigading one target
+    same_target_agg = db.reports.aggregate([
+        {"$match": {"reporter_id": reporter_id, "created_at": {"$gte": window_start}}},
+        {"$group": {"_id": "$target_id", "n": {"$sum": 1}}},
+        {"$match": {"n": {"$gte": _REPORT_ABUSE_SAME_TARGET_LIMIT}}},
+        {"$limit": 1},
+    ])
+    async for row in same_target_agg:
+        await _auto_strike_report_abuser(
+            reporter_id,
+            f"Filed {row['n']} reports against a single target in {_REPORT_ABUSE_WINDOW_DAYS} days.",
+        )
+        return
+
+    # Trigger 2 — high overall volume + high dismissal rate
+    total = await db.reports.count_documents({
+        "reporter_id": reporter_id, "created_at": {"$gte": window_start},
+    })
+    if total < _REPORT_ABUSE_MIN_TOTAL:
+        return
+    dismissed = await db.reports.count_documents({
+        "reporter_id": reporter_id,
+        "created_at": {"$gte": window_start},
+        "status": "dismissed",
+    })
+    resolved = await db.reports.count_documents({
+        "reporter_id": reporter_id,
+        "created_at": {"$gte": window_start},
+        "status": {"$in": ["dismissed", "actioned"]},
+    })
+    if resolved == 0:
+        return  # nothing reviewed yet
+    dismiss_rate = dismissed / resolved
+    if dismiss_rate >= _REPORT_ABUSE_MIN_DISMISS_RATE:
+        await _auto_strike_report_abuser(
+            reporter_id,
+            f"Filed {total} reports in {_REPORT_ABUSE_WINDOW_DAYS} days with a {int(dismiss_rate * 100)}% dismissal rate.",
+        )
+
+
+async def _auto_strike_report_abuser(reporter_id: str, detail: str):
+    """Apply Strike 1 to a report-abuser and audit-log it."""
+    reason = (
+        f"Automatic Strike 1 for abusing the report system. "
+        f"{detail} If you believe this is wrong, use in-app support to appeal."
+    )
+    await apply_strike(reporter_id, reason, level=1)
+    await db.audit_events.insert_one({
+        "event": "auto_strike_report_abuse",
+        "admin_id": None,
+        "target_type": "user",
+        "target_id": reporter_id,
+        "reason": reason,
+        "at": now_iso(),
+    })
+
+
+@api.post("/reports")
+async def create_report(payload: ReportIn, user=Depends(get_current_user)):
+    rid = f"rep_{uuid.uuid4().hex[:10]}"
+    reporter_hash = _report_reporter_hash(user["user_id"], payload.target_id)
+    doc = {
+        "report_id": rid,
+        # NOTE: reporter_id is stored for the audit trail and for
+        # blocking mass-report abuse, but the admin UI reads
+        # reporter_hash instead so reviewers can't unmask individual
+        # reporters.
+        "reporter_id": user["user_id"],
+        "reporter_hash": reporter_hash,
+        "target_type": payload.target_type,
+        "target_id": payload.target_id,
+        "category": payload.category,
+        "notes": payload.notes[:1000],
+        "status": "pending",
+        "created_at": now_iso(),
+    }
+    await db.reports.insert_one(doc)
+
+    # Anti-abuse: check if the reporter is filing too many reports with a
+    # high dismissal rate. Runs BEFORE the CSAM lane so a serial false-
+    # reporter can't spam the CSAM queue with impunity.
+    await _check_reporter_abuse(user["user_id"])
+
+    # CSAM = immediate quarantine + audit log (CEOP pipeline scaffolded
+    # behind env flag — see handle_csam_report).
+    if payload.category == "csam":
+        await handle_csam_report(payload.target_type, payload.target_id, user["user_id"])
+
+    # Resolve the target user for aggregation. For a post-report, the
+    # target user is the post's author.
+    target_user_id = None
+    if payload.target_type == "user":
+        target_user_id = payload.target_id
+    elif payload.target_type == "post":
+        p = await db.posts.find_one({"post_id": payload.target_id}, {"author_id": 1, "_id": 0})
+        if p:
+            target_user_id = p["author_id"]
+
+    # Auto soft-warning suggestion: fire when the same target hits the
+    # per-category threshold from DISTINCT reporters (dedup by reporter_id)
+    # in the last 30 days. This is a SUGGESTION for admins — the warning is
+    # still human-reviewed via the admin UI.
+    if target_user_id and payload.category != "csam":
+        threshold = _REPORT_SOFT_WARNING_THRESHOLDS.get(payload.category, 3)
+        window_start = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        distinct = await db.reports.distinct(
+            "reporter_id",
+            {
+                "target_id": payload.target_id,
+                "category": payload.category,
+                "created_at": {"$gte": window_start},
+            },
+        )
+        existing_warn = await db.soft_warnings.find_one({
+            "user_id": target_user_id,
+            "target_id": payload.target_id,
+            "source": "auto_report_threshold",
+        })
+        if len(distinct) >= threshold and not existing_warn:
+            await db.soft_warnings.insert_one({
+                "warning_id": f"warn_{uuid.uuid4().hex[:10]}",
+                "user_id": target_user_id,
+                "target_id": payload.target_id,
+                "reason": f"Content reported {len(distinct)} times for {payload.category}. Please review our community guidelines before this becomes a strike.",
+                "issued_by": None,
+                "issued_at": now_iso(),
+                "dismissed": False,
+                "source": "auto_report_threshold",
+                "category": payload.category,
+            })
+
+    return {"report_id": rid}
+
+
+@api.get("/me/reports")
+async def my_reports(user=Depends(get_current_user)):
+    """A reporter's history — shows the reports they've filed with a
+    yes-actioned / not-actioned outcome. Per spec, the actual moderation
+    reason is NEVER surfaced to the reporter; they only see whether their
+    report was reviewed and whether the platform acted on it."""
+    cursor = db.reports.find(
+        {"reporter_id": user["user_id"]},
+        {
+            "_id": 0,
+            "report_id": 1,
+            "target_type": 1,
+            "target_id": 1,
+            "category": 1,
+            "status": 1,
+            "created_at": 1,
+            "actioned_at": 1,
+            "action": 1,
+        },
+    ).sort("created_at", -1).limit(100)
+    out = []
+    async for r in cursor:
+        # Simplify status into three buckets the reporter cares about.
+        status = r.get("status", "pending")
+        actioned = None
+        if status == "pending":
+            outcome = "under_review"
+        elif status == "actioned":
+            outcome = "actioned"
+            actioned = True
+        elif status == "dismissed":
+            outcome = "not_actioned"
+            actioned = False
+        else:
+            outcome = status
+        out.append({
+            "report_id": r["report_id"],
+            "target_type": r["target_type"],
+            "target_id": r["target_id"],
+            "category": r["category"],
+            "created_at": r["created_at"],
+            "outcome": outcome,
+            "actioned": actioned,
+            "reviewed_at": r.get("actioned_at"),
+        })
+    return {"reports": out}
+
+
+async def handle_csam_report(target_type: str, target_id: str, reporter_id: str):
+    """Immediate CSAM handling: quarantine, audit, and external CEOP/NCMEC POST (feature-flagged)."""
+    if target_type == "post":
+        await db.posts.update_one(
+            {"post_id": target_id},
+            {"$set": {"quarantined": True, "quarantined_at": now_iso(), "quarantined_reason": "csam_report"}}
+        )
+    await db.csam_reports.insert_one({
+        "csam_id": f"csam_{uuid.uuid4().hex[:10]}",
+        "target_type": target_type, "target_id": target_id,
+        "reporter_id": reporter_id, "status": "queued",
+        "created_at": now_iso(),
+    })
+    await db.audit_events.insert_one({
+        "event": "csam_report_received",
+        "target_type": target_type, "target_id": target_id,
+        "reporter_id": reporter_id, "at": now_iso(),
+    })
+    # External hook — only fires if CEOP_ENDPOINT env is set (real deploy)
+    ceop_url = os.environ.get("CEOP_ENDPOINT")
+    if ceop_url:
+        try:
+            requests.post(ceop_url, json={
+                "target_type": target_type, "target_id": target_id,
+                "received_at": now_iso(),
+            }, timeout=10)
+            await db.csam_reports.update_one(
+                {"target_id": target_id}, {"$set": {"status": "forwarded"}}
+            )
+        except Exception as e:
+            logging.error(f"CEOP forward failed: {e}")
+            await db.csam_reports.update_one(
+                {"target_id": target_id}, {"$set": {"status": "forward_failed", "error": str(e)[:200]}}
+            )
+
+
+@api.get("/me/warnings")
+async def my_warnings(user=Depends(get_current_user)):
+    cursor = db.soft_warnings.find({"user_id": user["user_id"], "dismissed": False}, {"_id": 0})
+    out = []
+    async for w in cursor:
+        out.append(w)
+    return {"warnings": out}
+
+
+@api.post("/me/warnings/{warning_id}/dismiss")
+async def dismiss_warning(warning_id: str, user=Depends(get_current_user)):
+    await db.soft_warnings.update_one(
+        {"warning_id": warning_id, "user_id": user["user_id"]},
+        {"$set": {"dismissed": True}}
+    )
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Admin (founding team)
+# ------------------------------------------------------------------
+def require_admin(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    return user
+
+
+@api.get("/admin/reports")
+async def admin_list_reports(
+    admin=Depends(require_admin),
+    status: str = "pending",
+    category: Optional[str] = None,
+    grouped: bool = False,
+):
+    """List reports. Two modes:
+      - flat (default): every report as a row, newest first.
+      - grouped: reports collapsed by target_id + category with an
+                 aggregate count so admins see "12 people reported this"
+                 rather than 12 identical rows.
+    Reporter identity is intentionally NOT surfaced — reviewers see a
+    reporter_hash instead so mass-report abuse is detectable without
+    unmasking individual reporters."""
+    q = {"status": status}
+    if category:
+        q["category"] = category
+
+    if grouped:
+        pipeline = [
+            {"$match": q},
+            {"$group": {
+                "_id": {"target_type": "$target_type", "target_id": "$target_id", "category": "$category"},
+                "count": {"$sum": 1},
+                "distinct_reporters": {"$addToSet": "$reporter_id"},
+                "distinct_hashes": {"$addToSet": "$reporter_hash"},
+                "latest": {"$max": "$created_at"},
+                "earliest": {"$min": "$created_at"},
+                "sample_notes": {"$push": "$notes"},
+                "sample_report_ids": {"$push": "$report_id"},
+            }},
+            {"$sort": {"count": -1, "latest": -1}},
+            {"$limit": 200},
+        ]
+        rows = []
+        async for row in db.reports.aggregate(pipeline):
+            key = row["_id"]
+            # Keep the first three note snippets for a quick scan; drop the
+            # rest to keep the response tight.
+            sample_notes = [n for n in row.get("sample_notes", []) if n][:3]
+            rows.append({
+                "target_type": key["target_type"],
+                "target_id": key["target_id"],
+                "category": key["category"],
+                "count": row["count"],
+                "distinct_reporters": len(row.get("distinct_reporters", [])),
+                "reporter_hashes": row.get("distinct_hashes", []),
+                "latest": row["latest"],
+                "earliest": row["earliest"],
+                "sample_notes": sample_notes,
+                "sample_report_ids": row.get("sample_report_ids", [])[:5],
+            })
+        return {"grouped": rows}
+
+    cursor = db.reports.find(q, {"_id": 0, "reporter_id": 0}).sort("created_at", -1).limit(200)
+    out = []
+    async for r in cursor:
+        out.append(r)
+    return {"reports": out}
+
+
+@api.get("/admin/reports/categories")
+async def admin_report_category_counts(admin=Depends(require_admin), status: str = "pending"):
+    """Pending report counts per category so the admin UI can show a tab
+    bar with per-category badges."""
+    pipeline = [
+        {"$match": {"status": status}},
+        {"$group": {"_id": "$category", "count": {"$sum": 1}}},
+    ]
+    counts = {}
+    async for row in db.reports.aggregate(pipeline):
+        counts[row["_id"]] = row["count"]
+    total = sum(counts.values())
+    return {"counts": counts, "total": total}
+
+
+@api.post("/admin/reports/{report_id}/strike")
+async def admin_apply_strike(report_id: str, level: int = 1, reason: str = "", admin=Depends(require_admin)):
+    r = await db.reports.find_one({"report_id": report_id})
+    if not r:
+        raise HTTPException(404, "Not found")
+    # find target user
+    target_user_id = None
+    if r["target_type"] == "user":
+        target_user_id = r["target_id"]
+    elif r["target_type"] == "post":
+        p = await db.posts.find_one({"post_id": r["target_id"]}, {"_id": 0})
+        if p:
+            target_user_id = p["author_id"]
+    if not target_user_id:
+        raise HTTPException(400, "Target user not resolvable")
+    await apply_strike(target_user_id, reason or r.get("category", "Community guidelines"), level=level)
+    await db.reports.update_one({"report_id": report_id}, {"$set": {"status": "actioned", "actioned_at": now_iso(), "actioned_by": admin["user_id"], "action": f"strike_{level}"}})
+    return {"ok": True}
+
+
+@api.post("/admin/reports/{report_id}/dismiss")
+async def admin_dismiss_report(report_id: str, admin=Depends(require_admin)):
+    await db.reports.update_one({"report_id": report_id}, {"$set": {"status": "dismissed", "actioned_at": now_iso(), "actioned_by": admin["user_id"]}})
+    return {"ok": True}
+
+
+@api.get("/admin/stats")
+async def admin_stats(admin=Depends(require_admin)):
+    return {
+        "users": await db.users.count_documents({"deleted": {"$ne": True}}),
+        "posts": await db.posts.count_documents({}),
+        "pending_reports": await db.reports.count_documents({"status": "pending"}),
+        "csam_queue": await db.csam_reports.count_documents({"status": "queued"}),
+        "suspended": await db.users.count_documents({"suspended_until": {"$gt": now_iso()}}),
+        "deleted": await db.users.count_documents({"deleted": True}),
+    }
+
+
+# ------------------------------------------------------------------
+# CEOP / CSAM pipeline (Iteration 8)
+# Quarantined content is invisible to everyone except admins (enforced in
+# can_view_post). The queue below is the human handoff layer. In production
+# CEOP_ENDPOINT triggers an automated POST to NCMEC/IWF; without it, the queue
+# captures every report for manual export.
+# ------------------------------------------------------------------
+@api.get("/admin/csam/queue")
+async def admin_csam_queue(admin=Depends(require_admin), status: str = "queued"):
+    cursor = db.csam_reports.find({"status": status}, {"_id": 0}).sort("created_at", -1).limit(200)
+    out = []
+    async for r in cursor:
+        reporter = await db.users.find_one({"user_id": r["reporter_id"]}, {"_id": 0})
+        target_meta = None
+        if r["target_type"] == "post":
+            p = await db.posts.find_one({"post_id": r["target_id"]}, {"_id": 0})
+            if p:
+                target_meta = {
+                    "author_handle": (await db.users.find_one({"user_id": p["author_id"]}, {"_id": 0, "handle": 1}) or {}).get("handle"),
+                    "media_count": len(p.get("media_paths", [])),
+                    "created_at": p.get("created_at"),
+                    "quarantined": p.get("quarantined", False),
+                }
+        out.append({
+            "csam_id": r["csam_id"],
+            "target_type": r["target_type"],
+            "target_id": r["target_id"],
+            "reporter_handle": reporter.get("handle") if reporter else None,
+            "status": r["status"],
+            "created_at": r["created_at"],
+            "target_meta": target_meta,
+        })
+    return {"queue": out}
+
+
+@api.post("/admin/csam/{csam_id}/confirm")
+async def admin_csam_confirm(csam_id: str, admin=Depends(require_admin)):
+    """Confirm CSAM — escalate: delete content, strike-3 author, log audit, mark handoff complete."""
+    r = await db.csam_reports.find_one({"csam_id": csam_id})
+    if not r:
+        raise HTTPException(404, "Not found")
+    if r["target_type"] == "post":
+        post = await db.posts.find_one({"post_id": r["target_id"]}, {"_id": 0})
+        if post:
+            await db.posts.delete_one({"post_id": r["target_id"]})
+            # immediate strike-3 (permanent deletion path) on the author
+            await apply_strike(post["author_id"], reason="CSAM confirmed", level=3)
+    elif r["target_type"] == "user":
+        await apply_strike(r["target_id"], reason="CSAM confirmed", level=3)
+    await db.csam_reports.update_one(
+        {"csam_id": csam_id},
+        {"$set": {"status": "confirmed", "reviewed_by": admin["user_id"], "reviewed_at": now_iso()}}
+    )
+    await db.audit_events.insert_one({
+        "event": "csam_confirmed",
+        "csam_id": csam_id,
+        "target_type": r["target_type"],
+        "target_id": r["target_id"],
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+@api.post("/admin/csam/{csam_id}/clear")
+async def admin_csam_clear(csam_id: str, admin=Depends(require_admin)):
+    """False alarm — restore content, log audit. Note: keeps full audit trail."""
+    r = await db.csam_reports.find_one({"csam_id": csam_id})
+    if not r:
+        raise HTTPException(404, "Not found")
+    if r["target_type"] == "post":
+        await db.posts.update_one(
+            {"post_id": r["target_id"]},
+            {"$set": {"quarantined": False, "quarantine_cleared_at": now_iso(), "quarantine_cleared_by": admin["user_id"]}}
+        )
+    await db.csam_reports.update_one(
+        {"csam_id": csam_id},
+        {"$set": {"status": "cleared", "reviewed_by": admin["user_id"], "reviewed_at": now_iso()}}
+    )
+    await db.audit_events.insert_one({
+        "event": "csam_cleared",
+        "csam_id": csam_id,
+        "target_type": r["target_type"],
+        "target_id": r["target_id"],
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+@api.get("/admin/audit")
+async def admin_audit_log(admin=Depends(require_admin), limit: int = 100):
+    """Compliance audit trail. Append-only, immutable, admin-only."""
+    cursor = db.audit_events.find({}, {"_id": 0}).sort("at", -1).limit(min(limit, 500))
+    out = []
+    async for e in cursor:
+        out.append(e)
+    return {"events": out}
+
+
+# ------------------------------------------------------------------
+# Admin: promote a user to admin role (one-off bootstrap helper for
+# production where the user wants to swap the seeded admin@clanchat.app
+# for their own real email).
+# ------------------------------------------------------------------
+@api.post("/admin/promote")
+async def admin_promote(payload: dict, admin=Depends(require_admin)):
+    email = (payload.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(400, "email required")
+    target = await db.users.find_one({"email": email})
+    if not target:
+        raise HTTPException(404, "User not found")
+    await db.users.update_one({"user_id": target["user_id"]}, {"$set": {"role": "admin"}})
+    await db.audit_events.insert_one({
+        "event": "admin_promoted", "target_user_id": target["user_id"],
+        "target_email": email, "promoted_by": admin["user_id"], "at": now_iso(),
+    })
+    return {"ok": True, "user_id": target["user_id"]}
+
+
+# ------------------------------------------------------------------
+# Admin: manual account flag overrides (interim — long-term these become
+# automated via age verification + creator application).
+# ------------------------------------------------------------------
+@api.post("/admin/users/{user_id}/mark-minor")
+async def admin_mark_minor(user_id: str, payload: dict, admin=Depends(require_admin)):
+    """Force-lock an account as a minor. Sets is_minor:true regardless of DOB
+    and records minor_locked_by_admin so the user cannot self-unlock. Setting
+    locked:false removes the override (DOB-derived minority still applies)."""
+    locked = bool(payload.get("locked", True))
+    reason = (payload.get("reason") or "").strip()
+    if locked and not reason:
+        raise HTTPException(400, "reason required (audit trail)")
+    target = await db.users.find_one({"user_id": user_id})
+    if not target:
+        raise HTTPException(404, "User not found")
+    # Safety guard — can't simultaneously be a flagged 18+ creator
+    if locked and target.get("nsfw_account"):
+        raise HTTPException(409, "Account is flagged as 18+ creator. Remove that flag first.")
+    update = {
+        "is_minor": locked,
+        "minor_locked_by_admin": locked,
+        "minor_locked_reason": reason if locked else None,
+        "minor_locked_at": now_iso() if locked else None,
+        "minor_locked_by": admin["user_id"] if locked else None,
+    }
+    # When unlocking, restore the DOB-derived flag
+    if not locked:
+        update["is_minor"] = calc_age(target.get("dob", "1900-01-01")) < 18
+    await db.users.update_one({"user_id": user_id}, {"$set": update})
+    await db.audit_events.insert_one({
+        "event": "admin_mark_minor",
+        "target_user_id": user_id,
+        "target_handle": target.get("handle"),
+        "locked": locked,
+        "reason": reason,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "is_minor": update["is_minor"], "minor_locked_by_admin": locked}
+
+
+@api.post("/admin/users/{user_id}/mark-18plus")
+async def admin_mark_18plus(user_id: str, payload: dict, admin=Depends(require_admin)):
+    """Flag an account as a 18+ content creator. NSFW content allowed for them;
+    invisible to minors in search; nsfw_account=true. Setting is_creator:false
+    removes the flag."""
+    is_creator = bool(payload.get("is_creator", True))
+    reason = (payload.get("reason") or "").strip()
+    if is_creator and not reason:
+        raise HTTPException(400, "reason required (audit trail)")
+    target = await db.users.find_one({"user_id": user_id})
+    if not target:
+        raise HTTPException(404, "User not found")
+    # Safety guard — can't simultaneously be a locked minor
+    if is_creator and (target.get("minor_locked_by_admin") or target.get("is_minor")):
+        raise HTTPException(409, "Account is a minor (DOB or admin-locked). Cannot flag as 18+ creator.")
+    update = {
+        "nsfw_account": is_creator,
+        "flagged_18plus_by_admin": is_creator,
+        "flagged_18plus_reason": reason if is_creator else None,
+        "flagged_18plus_at": now_iso() if is_creator else None,
+        "flagged_18plus_by": admin["user_id"] if is_creator else None,
+    }
+    await db.users.update_one({"user_id": user_id}, {"$set": update})
+    await db.audit_events.insert_one({
+        "event": "admin_mark_18plus",
+        "target_user_id": user_id,
+        "target_handle": target.get("handle"),
+        "is_creator": is_creator,
+        "reason": reason,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "nsfw_account": is_creator, "flagged_18plus_by_admin": is_creator}
+
+
+@api.get("/admin/users/by-handle/{handle}")
+async def admin_user_lookup(handle: str, admin=Depends(require_admin)):
+    """Admin lookup for any handle — returns the flag state so the UI can show
+    current minor/18+ status before applying changes."""
+    h = handle.strip().lower().lstrip("#")
+    u = await db.users.find_one({"handle": h}, {"_id": 0, "password_hash": 0})
+    if not u:
+        raise HTTPException(404, "User not found")
+    return {
+        "user_id": u["user_id"],
+        "handle": u["handle"],
+        "display_name": u.get("display_name"),
+        "email": u.get("email"),
+        "dob": u.get("dob"),
+        "is_minor": is_minor(u),
+        "dob_derived_minor": calc_age(u.get("dob", "1900-01-01")) < 18,
+        "minor_locked_by_admin": bool(u.get("minor_locked_by_admin")),
+        "minor_locked_reason": u.get("minor_locked_reason"),
+        "nsfw_account": bool(u.get("nsfw_account")),
+        "flagged_18plus_by_admin": bool(u.get("flagged_18plus_by_admin")),
+        "flagged_18plus_reason": u.get("flagged_18plus_reason"),
+        "role": u.get("role", "user"),
+        "deleted": bool(u.get("deleted")),
+        "suspended_until": u.get("suspended_until"),
+        "strikes": u.get("strikes", 0),
+        "auth_provider": u.get("auth_provider", "password"),
+    }
+
+
+@api.post("/admin/users/{user_id}/reset-password")
+async def admin_reset_password(user_id: str, payload: dict, admin=Depends(require_admin)):
+    """Admin sets a temporary password for a user (support flow — user
+    forgot password and there's no email reset yet). The new password is
+    NOT returned in plaintext anywhere persistent; the admin must read it
+    once from the response and pass it to the user out-of-band. Reason is
+    required and the action is audit-logged."""
+    reason = (payload.get("reason") or "").strip()
+    new_password = (payload.get("new_password") or "").strip()
+    if not reason:
+        raise HTTPException(400, "reason required (audit trail)")
+    if len(new_password) < 8 or len(new_password) > 128:
+        raise HTTPException(400, "new_password must be 8-128 chars")
+    target = await db.users.find_one({"user_id": user_id})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("auth_provider") != "password":
+        raise HTTPException(400, "Account uses Google sign-in — cannot set a password.")
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {"password_hash": hash_password(new_password)}},
+    )
+    await db.audit_events.insert_one({
+        "event": "admin_reset_password",
+        "target_user_id": user_id,
+        "target_handle": target.get("handle"),
+        "reason": reason,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "handle": target.get("handle")}
+
+
+# ------------------------------------------------------------------
+# Admin Watchlist — silent investigative surveillance
+#
+# WHY: When an account has been reported, the admin needs to verify whether
+# the report is warranted (e.g. confirming abuse pattern in DMs) before
+# applying a strike. This tool allows full visibility — posts in every tier,
+# all DMs, group memberships — for accounts the admin has explicitly added.
+#
+# RULES:
+# - Watched users have ZERO indication they're being watched. No notification,
+#   no field on their public profile, no API endpoint they can call to check.
+# - Every add / remove / view is recorded in audit_events (append-only,
+#   immutable). This protects the admin legally: "why was bob123 watched?" has
+#   a documented reason and timestamp.
+# - Only admin role can touch any /admin/watch/* endpoint.
+# - Adding requires a reason (free-text). Encouraged: a report_id or short note.
+# ------------------------------------------------------------------
+async def is_watched(user_id: str) -> bool:
+    return (await db.watchlist.find_one({"target_id": user_id, "active": True})) is not None
+
+
+@api.get("/admin/watch")
+async def admin_watch_list(admin=Depends(require_admin)):
+    out = []
+    async for w in db.watchlist.find({"active": True}, {"_id": 0}).sort("added_at", -1):
+        u = await db.users.find_one({"user_id": w["target_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "email": 1, "user_id": 1})
+        if not u:
+            continue
+        out.append({
+            "watch_id": w["watch_id"],
+            "target": u,
+            "reason": w.get("reason"),
+            "added_at": w["added_at"],
+            "added_by": w["added_by"],
+        })
+    return {"watched": out}
+
+
+@api.post("/admin/watch/{user_id}")
+async def admin_watch_add(user_id: str, payload: dict, admin=Depends(require_admin)):
+    reason = (payload.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "reason required (audit trail)")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "handle": 1, "user_id": 1})
+    if not target:
+        raise HTTPException(404, "User not found")
+    # Re-activate existing entry or insert new
+    existing = await db.watchlist.find_one({"target_id": user_id, "active": True})
+    if existing:
+        # Log the re-add attempt so the paper trail captures repeated escalation
+        # interest in the same target (even though the watch entry itself is unchanged).
+        await db.audit_events.insert_one({
+            "event": "watchlist_readd_attempt",
+            "watch_id": existing["watch_id"],
+            "target_id": user_id,
+            "target_handle": target.get("handle"),
+            "reason": reason,
+            "admin_id": admin["user_id"],
+            "at": now_iso(),
+        })
+        return {"ok": True, "watch_id": existing["watch_id"], "note": "already watched"}
+    watch_id = f"watch_{uuid.uuid4().hex[:12]}"
+    await db.watchlist.insert_one({
+        "watch_id": watch_id,
+        "target_id": user_id,
+        "added_by": admin["user_id"],
+        "added_at": now_iso(),
+        "reason": reason,
+        "active": True,
+    })
+    await db.audit_events.insert_one({
+        "event": "watchlist_add",
+        "watch_id": watch_id,
+        "target_id": user_id,
+        "target_handle": target.get("handle"),
+        "reason": reason,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "watch_id": watch_id}
+
+
+@api.delete("/admin/watch/{user_id}")
+async def admin_watch_remove(user_id: str, admin=Depends(require_admin)):
+    entry = await db.watchlist.find_one({"target_id": user_id, "active": True})
+    if not entry:
+        raise HTTPException(404, "Not on watchlist")
+    await db.watchlist.update_one(
+        {"watch_id": entry["watch_id"]},
+        {"$set": {"active": False, "removed_at": now_iso(), "removed_by": admin["user_id"]}},
+    )
+    await db.audit_events.insert_one({
+        "event": "watchlist_remove",
+        "watch_id": entry["watch_id"],
+        "target_id": user_id,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+@api.get("/admin/watch/{user_id}/overview")
+async def admin_watch_overview(user_id: str, admin=Depends(require_admin)):
+    """All-tiers profile + post + DM + group summary for a watched user.
+    Each call is audit-logged so we know which admin viewed what when.
+    """
+    if not await is_watched(user_id):
+        raise HTTPException(403, "Target is not on the watchlist. Add them first.")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+
+    # Posts — ALL tiers including IC and quarantined
+    posts = []
+    async for p in db.posts.find({"author_id": user_id}, {"_id": 0}).sort("created_at", -1).limit(100):
+        posts.append(p)
+
+    # DMs — both directions, last 200
+    dms_cursor = db.dms.find(
+        {"$or": [{"from_id": user_id}, {"to_id": user_id}]}, {"_id": 0}
+    ).sort("created_at", -1).limit(200)
+    dms = []
+    counterpart_ids = set()
+    async for m in dms_cursor:
+        dms.append(hydrate_dm(m))
+        counterpart_ids.add(m["from_id"] if m["from_id"] != user_id else m["to_id"])
+    # Resolve counterpart handles for the UI
+    counterparts = {}
+    async for u in db.users.find({"user_id": {"$in": list(counterpart_ids)}}, {"_id": 0, "user_id": 1, "handle": 1, "display_name": 1}):
+        counterparts[u["user_id"]] = u
+
+    # Group memberships
+    groups = []
+    async for g in db.group_chats.find({"members": user_id}, {"_id": 0}):
+        groups.append({"group_id": g["group_id"], "name": g.get("name"), "members": len(g.get("members", []))})
+
+    # Inner Circle relationships
+    ic_members = []
+    async for ic in db.inner_circle.find({"owner_id": user_id, "status": "active"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": ic["member_id"]}, {"_id": 0, "handle": 1, "user_id": 1})
+        if u:
+            ic_members.append(u)
+    ic_of = []
+    async for ic in db.inner_circle.find({"member_id": user_id, "status": "active"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": ic["owner_id"]}, {"_id": 0, "handle": 1, "user_id": 1})
+        if u:
+            ic_of.append(u)
+
+    # Follow counts
+    followers_count = await db.follows.count_documents({"followee_id": user_id, "status": "active"})
+    following_count = await db.follows.count_documents({"follower_id": user_id, "status": "active"})
+
+    # Reports filed against this user
+    reports_against = []
+    async for r in db.reports.find({"target_id": user_id}, {"_id": 0}).sort("created_at", -1).limit(50):
+        reports_against.append(r)
+
+    await db.audit_events.insert_one({
+        "event": "watchlist_view_overview",
+        "target_id": user_id,
+        "admin_id": admin["user_id"],
+        "at": now_iso(),
+    })
+
+    return {
+        "target": target,
+        "posts": posts,
+        "post_count": len(posts),
+        "dms": dms,
+        "dm_count": len(dms),
+        "counterparts": counterparts,
+        "groups": groups,
+        "inner_circle_members": ic_members,
+        "inner_circle_of": ic_of,
+        "followers_count": followers_count,
+        "following_count": following_count,
+        "reports_against": reports_against,
+    }
+
+
+# ------------------------------------------------------------------
+# Admin: one-off purge of seeded demo accounts.
+# Wipes alice/bob/teen (+ optionally the seeded admin@clanchat.app) and ALL
+# data they touched: posts, comments, follows, inner-circle, DMs, group chats,
+# boards, wall posts, reports, csam, tag-approvals, warnings, notifications.
+# The calling admin is never purged, even if include_seeded_admin=true.
+# ------------------------------------------------------------------
+DEMO_EMAILS = ["alice@clanchat.app", "bob@clanchat.app", "teen@clanchat.app"]
+SEEDED_ADMIN_EMAIL = "admin@clanchat.app"
+
+
+@api.post("/admin/purge-demo-accounts")
+async def admin_purge_demo(payload: Optional[dict] = None, admin=Depends(require_admin)):
+    payload = payload or {}
+    include_seeded_admin = bool(payload.get("include_seeded_admin", False))
+
+    emails_to_purge = list(DEMO_EMAILS)
+    if include_seeded_admin:
+        emails_to_purge.append(SEEDED_ADMIN_EMAIL)
+
+    # Resolve user_ids and refuse to nuke the calling admin
+    targets = []
+    async for u in db.users.find({"email": {"$in": emails_to_purge}}, {"_id": 0, "user_id": 1, "email": 1, "handle": 1}):
+        if u["user_id"] == admin["user_id"]:
+            continue  # never delete self
+        targets.append(u)
+
+    if not targets:
+        return {"ok": True, "purged": [], "note": "No demo accounts found (already clean)."}
+
+    uids = [t["user_id"] for t in targets]
+
+    # Delete every collection that references these users by any id field.
+    summary = {}
+    summary["posts"] = (await db.posts.delete_many({"author_id": {"$in": uids}})).deleted_count
+    summary["comments"] = (await db.comments.delete_many({"author_id": {"$in": uids}})).deleted_count
+    summary["follows"] = (await db.follows.delete_many({"$or": [{"follower_id": {"$in": uids}}, {"followee_id": {"$in": uids}}]})).deleted_count
+    summary["inner_circle"] = (await db.inner_circle.delete_many({"$or": [{"owner_id": {"$in": uids}}, {"member_id": {"$in": uids}}]})).deleted_count
+    summary["dms"] = (await db.dms.delete_many({"$or": [{"from_id": {"$in": uids}}, {"to_id": {"$in": uids}}]})).deleted_count
+    # group chats: delete groups created by, plus remove from members/pending of others
+    summary["group_chats"] = (await db.group_chats.delete_many({"creator_id": {"$in": uids}})).deleted_count
+    await db.group_chats.update_many({}, {"$pull": {"members": {"$in": uids}, "pending_invites": {"$in": uids}}})
+    summary["group_messages"] = (await db.group_messages.delete_many({"$or": [{"author_id": {"$in": uids}}, {"from_id": {"$in": uids}}]})).deleted_count
+    summary["boards"] = (await db.boards.delete_many({"creator_id": {"$in": uids}})).deleted_count
+    summary["board_posts"] = (await db.board_posts.delete_many({"author_id": {"$in": uids}})).deleted_count
+    summary["wall_posts"] = (await db.wall_posts.delete_many({"$or": [{"owner_id": {"$in": uids}}, {"author_id": {"$in": uids}}]})).deleted_count
+    summary["reports"] = (await db.reports.delete_many({"$or": [{"reporter_id": {"$in": uids}}, {"target_id": {"$in": uids}}]})).deleted_count
+    summary["csam_reports"] = (await db.csam_reports.delete_many({"$or": [{"reporter_id": {"$in": uids}}, {"target_id": {"$in": uids}}]})).deleted_count
+    summary["tags_pending"] = (await db.tags_pending.delete_many({"$or": [{"author_id": {"$in": uids}}, {"tagged_user_id": {"$in": uids}}]})).deleted_count
+    summary["user_warnings"] = (await db.user_warnings.delete_many({"user_id": {"$in": uids}})).deleted_count
+    summary["blocks"] = (await db.blocks.delete_many({"$or": [{"blocker_id": {"$in": uids}}, {"blocked_id": {"$in": uids}}]})).deleted_count
+    summary["mutes"] = (await db.mutes.delete_many({"$or": [{"muter_id": {"$in": uids}}, {"muted_id": {"$in": uids}}]})).deleted_count
+    summary["restricts"] = (await db.restricts.delete_many({"$or": [{"restrictor_id": {"$in": uids}}, {"restricted_id": {"$in": uids}}]})).deleted_count
+    summary["users"] = (await db.users.delete_many({"user_id": {"$in": uids}})).deleted_count
+
+    await db.audit_events.insert_one({
+        "event": "demo_purge",
+        "purged_user_ids": uids,
+        "purged_emails": [t["email"] for t in targets],
+        "summary": summary,
+        "include_seeded_admin": include_seeded_admin,
+        "performed_by": admin["user_id"],
+        "at": now_iso(),
+    })
+    return {"ok": True, "purged": [t["email"] for t in targets], "summary": summary}
+
+
+# ------------------------------------------------------------------
+# Admin: user directory + moderation actions
+#
+# Endpoints:
+#   GET  /admin/users             — paginated list of every account
+#                                    (optional `q` searches email / handle /
+#                                    display_name; `status` filters
+#                                    active/suspended/deleted)
+#   POST /admin/users/{uid}/warn  — soft warning (no suspension)
+#   POST /admin/users/{uid}/strike?level=1|2|3
+#                                 — direct strike (48h / 7d / delete)
+#   POST /admin/users/{uid}/ban   — custom-duration manual ban
+#   POST /admin/users/{uid}/unban — lift suspension + un-delete
+# ------------------------------------------------------------------
+def _user_row(u: dict) -> dict:
+    """Compact user dict for the admin directory."""
+    suspended = False
+    exp = u.get("suspended_until")
+    if exp:
+        try:
+            suspended = datetime.fromisoformat(exp) > datetime.now(timezone.utc)
+        except Exception:
+            suspended = False
+    return {
+        "user_id": u.get("user_id"),
+        "email": u.get("email"),
+        "handle": u.get("handle"),
+        "display_name": u.get("display_name"),
+        "role": u.get("role", "user"),
+        "strikes": u.get("strikes", 0),
+        "is_minor": u.get("is_minor", False),
+        "nsfw_account": u.get("nsfw_account", False),
+        "suspended": suspended,
+        "suspended_until": exp if suspended else None,
+        "deleted": bool(u.get("deleted")),
+        "deleted_at": u.get("deleted_at"),
+        "auth_provider": u.get("auth_provider", "password"),
+        "created_at": u.get("created_at"),
+    }
+
+
+@api.get("/admin/users")
+async def admin_users_list(
+    admin=Depends(require_admin),
+    q: str = "",
+    status: str = "all",  # all | active | suspended | deleted
+    limit: int = 50,
+    skip: int = 0,
+):
+    limit = max(1, min(int(limit or 50), 200))
+    skip = max(0, int(skip or 0))
+    query: dict = {}
+    q = (q or "").strip().lower().lstrip("#").lstrip("@")
+    if q:
+        # Substring match on handle / email / display_name (case-insensitive).
+        # Uses a regex — collection is small enough for the admin surface.
+        rx = {"$regex": re.escape(q), "$options": "i"}
+        query["$or"] = [{"handle": rx}, {"email": rx}, {"display_name": rx}]
+    if status == "active":
+        query["deleted"] = {"$ne": True}
+        query["$and"] = query.get("$and", []) + [{
+            "$or": [
+                {"suspended_until": None},
+                {"suspended_until": {"$lte": now_iso()}},
+            ]
+        }]
+    elif status == "suspended":
+        query["deleted"] = {"$ne": True}
+        query["suspended_until"] = {"$gt": now_iso()}
+    elif status == "deleted":
+        query["deleted"] = True
+    total = await db.users.count_documents(query)
+    cursor = db.users.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit)
+    users = []
+    async for u in cursor:
+        users.append(_user_row(u))
+    return {"users": users, "total": total, "limit": limit, "skip": skip}
+
+
+class AdminActionIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+@api.post("/admin/users/{user_id}/warn")
+async def admin_warn_user(user_id: str, payload: AdminActionIn, admin=Depends(require_admin)):
+    """Soft warning — user sees a dismissable banner via /me/warnings.
+    Does NOT touch strike count or suspension."""
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    wid = f"warn_{uuid.uuid4().hex[:10]}"
+    await db.soft_warnings.insert_one({
+        "warning_id": wid,
+        "user_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "issued_by": admin["user_id"],
+        "issued_at": now_iso(),
+        "dismissed": False,
+        "source": "admin_manual",
+    })
+    await db.audit_events.insert_one({
+        "event": "admin_warn",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "at": now_iso(),
+    })
+    return {"ok": True, "warning_id": wid}
+
+
+@api.post("/admin/users/{user_id}/strike")
+async def admin_direct_strike(
+    user_id: str,
+    payload: AdminActionIn,
+    level: int = 1,
+    admin=Depends(require_admin),
+):
+    """Apply a strike directly to a user without needing an open report.
+    level=1 → 48h, level=2 → 7d, level=3 → account deletion."""
+    if level not in (1, 2, 3):
+        raise HTTPException(400, "level must be 1, 2 or 3")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "admin" and level == 3:
+        raise HTTPException(403, "Cannot delete an admin account via strike — demote first")
+    await apply_strike(user_id, payload.reason.strip(), level=level)
+    await db.audit_events.insert_one({
+        "event": f"admin_strike_{level}",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "at": now_iso(),
+    })
+    return {"ok": True, "level": level}
+
+
+class AdminBanIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    hours: int = Field(default=24, ge=1, le=24 * 365)
+
+
+@api.post("/admin/users/{user_id}/ban")
+async def admin_ban_user(user_id: str, payload: AdminBanIn, admin=Depends(require_admin)):
+    """Manual custom-duration suspension. Does not increment the strike
+    counter — use /strike for that. Useful for holding an account while an
+    investigation runs."""
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(403, "Cannot ban an admin — demote first")
+    until = (datetime.now(timezone.utc) + timedelta(hours=payload.hours)).isoformat()
+    await db.users.update_one({"user_id": user_id}, {"$set": {"suspended_until": until}})
+    await db.audit_events.insert_one({
+        "event": "admin_ban",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "hours": payload.hours,
+        "until": until,
+        "at": now_iso(),
+    })
+    return {"ok": True, "suspended_until": until}
+
+
+@api.post("/admin/users/{user_id}/unban")
+async def admin_unban_user(user_id: str, payload: AdminActionIn, admin=Depends(require_admin)):
+    """Lift a suspension and (if the account was soft-deleted via a level-3
+    strike) restore it. Strike counter is NOT decremented — the history
+    survives even after unban."""
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    update = {"$set": {"suspended_until": None}}
+    if target.get("deleted"):
+        update["$set"]["deleted"] = False
+        update["$set"]["deleted_at"] = None
+        update["$set"]["deleted_reason"] = None
+    await db.users.update_one({"user_id": user_id}, update)
+    await db.audit_events.insert_one({
+        "event": "admin_unban",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+class AdminWipeIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    scope: str = Field(pattern="^(all|wall|gallery)$")
+
+
+@api.post("/admin/users/{user_id}/wipe")
+async def admin_wipe_user_content(user_id: str, payload: AdminWipeIn, admin=Depends(require_admin)):
+    """Destroy a user's content en-masse. Three scopes:
+      all      — every post they've ever made (feed, wall, gallery)
+      wall     — only wall posts (posts pinned to their own profile wall)
+      gallery  — only posts with media (photos/videos/audio)
+    Admin accounts cannot be wiped this way — demote first.
+    Full audit event is logged. The user's account itself is NOT deleted —
+    if you want that, use strike-level=3 or delete via the users panel.
+    """
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(403, "Cannot wipe an admin's content — demote first")
+
+    query = {"author_id": user_id}
+    if payload.scope == "wall":
+        query["is_wall"] = True
+    elif payload.scope == "gallery":
+        query["media_paths"] = {"$exists": True, "$ne": []}
+    # "all" leaves query as {author_id}
+
+    to_delete = []
+    async for p in db.posts.find(query, {"post_id": 1, "_id": 0}):
+        to_delete.append(p["post_id"])
+    posts_deleted = 0
+    likes_deleted = 0
+    comments_deleted = 0
+    if to_delete:
+        res = await db.posts.delete_many({"post_id": {"$in": to_delete}})
+        posts_deleted = res.deleted_count
+        # Cascade — likes and comments referring to the wiped posts.
+        try:
+            r2 = await db.likes.delete_many({"post_id": {"$in": to_delete}})
+            likes_deleted = r2.deleted_count
+        except Exception:
+            pass
+        try:
+            r3 = await db.comments.delete_many({"post_id": {"$in": to_delete}})
+            comments_deleted = r3.deleted_count
+        except Exception:
+            pass
+
+    await db.audit_events.insert_one({
+        "event": f"admin_wipe_{payload.scope}",
+        "admin_id": admin["user_id"],
+        "target_type": "user",
+        "target_id": user_id,
+        "reason": payload.reason.strip()[:500],
+        "scope": payload.scope,
+        "posts_deleted": posts_deleted,
+        "likes_deleted": likes_deleted,
+        "comments_deleted": comments_deleted,
+        "at": now_iso(),
+    })
+    return {
+        "ok": True,
+        "scope": payload.scope,
+        "posts_deleted": posts_deleted,
+        "likes_deleted": likes_deleted,
+        "comments_deleted": comments_deleted,
+    }
+
+
+# ------------------------------------------------------------------
+# Admin: blocked-tag moderation
+#
+# Overlays the hardcoded NSFW filter. Anything added here is filtered from
+# trending in addition to the built-in list. Two match modes:
+#   exact       → tag must equal the entered term (default; safe)
+#   substring   → any tag containing the term is blocked (use with care —
+#                 substrings that collide with real words break trending)
+# ------------------------------------------------------------------
+class BlockedTagIn(BaseModel):
+    tag: str = Field(min_length=1, max_length=64)
+    match: str = Field(default="exact", pattern="^(exact|substring)$")
+    reason: str = Field(default="", max_length=500)
+
+
+@api.get("/admin/moderation/blocked-tags")
+async def admin_blocked_tags_list(admin=Depends(require_admin)):
+    cursor = db.blocked_tags.find({}, {"_id": 0}).sort("added_at", -1)
+    out = []
+    async for row in cursor:
+        out.append(row)
+    return {"tags": out, "builtin_exact": sorted(NSFW_TAG_EXACT), "builtin_substring": sorted(NSFW_TAG_SUBSTRING)}
+
+
+@api.post("/admin/moderation/blocked-tags")
+async def admin_blocked_tag_add(payload: BlockedTagIn, admin=Depends(require_admin)):
+    tag = payload.tag.strip().lower().lstrip("#")
+    if not re.fullmatch(r"[a-z0-9]+", tag):
+        raise HTTPException(400, "Tag must be lowercase letters/digits only")
+    existing = await db.blocked_tags.find_one({"tag": tag})
+    if existing:
+        raise HTTPException(409, "Tag already blocked")
+    doc = {
+        "tag": tag,
+        "match": payload.match,
+        "reason": (payload.reason or "").strip()[:500],
+        "added_by": admin["user_id"],
+        "added_at": now_iso(),
+    }
+    await db.blocked_tags.insert_one(doc)
+    await db.audit_events.insert_one({
+        "event": "moderation_tag_blocked",
+        "admin_id": admin["user_id"],
+        "target_type": "tag",
+        "target_id": tag,
+        "match": payload.match,
+        "reason": doc["reason"],
+        "at": now_iso(),
+    })
+    doc.pop("_id", None)
+    return {"ok": True, "tag": doc}
+
+
+@api.delete("/admin/moderation/blocked-tags/{tag}")
+async def admin_blocked_tag_remove(tag: str, admin=Depends(require_admin)):
+    tag = tag.strip().lower().lstrip("#")
+    res = await db.blocked_tags.delete_one({"tag": tag})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Tag not in the custom block list (built-in terms cannot be removed here)")
+    await db.audit_events.insert_one({
+        "event": "moderation_tag_unblocked",
+        "admin_id": admin["user_id"],
+        "target_type": "tag",
+        "target_id": tag,
+        "at": now_iso(),
+    })
+    return {"ok": True}
+
+
+
+
+# ------------------------------------------------------------------
+# Trending tags (right-rail / discovery)
+# Public posts, last 24h, top 10, exclude banned & non-public
+# ------------------------------------------------------------------
+@api.get("/tags/trending")
+async def trending_tags(viewer=Depends(get_current_user)):
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    # Trending surfaces are always SFW: NSFW-flagged posts are excluded for
+    # every viewer (not just minors), and any tag whose text references NSFW
+    # keywords is filtered out below regardless of the source post's flag.
+    match = {
+        "tier": "public",
+        "quarantined": {"$ne": True},
+        "nsfw": {"$ne": True},
+        "created_at": {"$gte": cutoff},
+        "tags": {"$exists": True, "$ne": []},
+    }
+    # Minor protection: exclude posts authored by minors from the trending
+    # calculation entirely when the viewer is an adult, so a minor's tag
+    # can never surface into an adult's discovery feed.
+    if not is_minor(viewer) and viewer.get("role") != "admin":
+        mins = await minor_author_ids()
+        if mins:
+            match["author_id"] = {"$nin": mins}
+    pipeline = [
+        {"$match": match},
+        {"$unwind": "$tags"},
+        {"$group": {"_id": "$tags", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        # Grab extras so we can drop NSFW-worded tags and still return 10.
+        {"$limit": 60},
+    ]
+    # Overlay admin-managed blocked tags. Cheap: this collection is tiny.
+    custom_exact = set()
+    custom_substr = set()
+    async for row in db.blocked_tags.find({}, {"_id": 0, "tag": 1, "match": 1}):
+        t = (row.get("tag") or "").lower()
+        if not t:
+            continue
+        if row.get("match") == "substring":
+            custom_substr.add(t)
+        else:
+            custom_exact.add(t)
+    out = []
+    async for row in db.posts.aggregate(pipeline):
+        tag = row["_id"]
+        if is_nsfw_tag(tag):
+            continue
+        tl = tag.lower()
+        if tl in custom_exact:
+            continue
+        if any(term in tl for term in custom_substr):
+            continue
+        out.append({"tag": tag, "count": row["count"]})
+        if len(out) >= 10:
+            break
+    return {"trending": out}
+
+
+# ------------------------------------------------------------------
+# Upload
+# ------------------------------------------------------------------
+@api.post("/upload")
+async def upload_file(file: UploadFile = File(...), user=Depends(get_current_user)):
+    ext = (file.filename.split(".")[-1] if file.filename and "." in file.filename else "bin").lower()
+    if ext not in {"jpg", "jpeg", "png", "gif", "webp", "mp4", "webm", "mov", "mp3", "wav", "ogg", "m4a", "aac", "flac"}:
+        raise HTTPException(400, "Unsupported file type")
+    path = f"{APP_NAME}/uploads/{user['user_id']}/{uuid.uuid4().hex}.{ext}"
+    data = await file.read()
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(400, "Max 50MB")
+    ctype = file.content_type or "application/octet-stream"
+    res = put_object(path, data, ctype)
+    await db.files.insert_one({
+        "file_id": f"file_{uuid.uuid4().hex[:10]}",
+        "user_id": user["user_id"],
+        "storage_path": res["path"],
+        "original_filename": file.filename, "content_type": ctype,
+        "size": res.get("size", len(data)), "is_deleted": False,
+        "created_at": now_iso(),
+    })
+    return {"path": res["path"], "content_type": ctype, "size": res.get("size", len(data))}
+
+
+@api.get("/files/{path:path}")
+async def serve_file(path: str, request: Request):
+    # public read for V1 (storage is private, frontend already authenticated)
+    record = await db.files.find_one({"storage_path": path, "is_deleted": False}, {"_id": 0})
+    if not record:
+        raise HTTPException(404, "Not found")
+    data, ctype = get_object(path)
+    return FastResponse(content=data, media_type=record.get("content_type", ctype),
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+
+# ------------------------------------------------------------------
+# Notifications counts (light)
+# ------------------------------------------------------------------
+@api.get("/notifications/counts")
+async def notif_counts(user=Depends(get_current_user)):
+    uid = user["user_id"]
+    last_seen = user.get("notifications_seen_at") or "2000-01-01T00:00:00+00:00"
+    fr = await db.follows.count_documents({"followee_id": uid, "status": "pending"})
+    inv = await db.inner_circle.count_documents({"member_id": uid, "status": "pending"})
+    unread = await db.dms.count_documents({"to_id": uid, "read": False})
+    # New followers since last viewed (covers open-follow accounts)
+    new_followers = await db.follows.count_documents({
+        "followee_id": uid, "status": "active",
+        "created_at": {"$gt": last_seen},
+    })
+    # Pending tag-approval requests addressed to me
+    tag_pending = await db.tags_pending.count_documents({"tagged_user_id": uid, "status": "pending"})
+    # Pending group-chat invites
+    group_invites = await db.group_chats.count_documents({"pending_invites": uid})
+    # Unread strike warnings
+    warnings = await db.user_warnings.count_documents({"user_id": uid, "dismissed": False})
+    total = fr + inv + unread + new_followers + tag_pending + group_invites + warnings
+    return {
+        "follow_requests": fr,
+        "inner_invites": inv,
+        "unread_dms": unread,
+        "new_followers": new_followers,
+        "tag_pending": tag_pending,
+        "group_invites": group_invites,
+        "warnings": warnings,
+        "total": total,
+    }
+
+
+@api.post("/notifications/mark-seen")
+async def notif_mark_seen(user=Depends(get_current_user)):
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"notifications_seen_at": now_iso()}}
+    )
+    return {"ok": True}
+
+
+@api.get("/notifications/new-followers")
+async def notif_new_followers(user=Depends(get_current_user)):
+    """Followers that appeared AFTER the user last saw the Activity tab.
+    Used to render the 'New followers' section on the Activity page for
+    open-follow accounts (where there's no pending request to display)."""
+    uid = user["user_id"]
+    last_seen = user.get("notifications_seen_at") or "1970-01-01T00:00:00+00:00"
+    out = []
+    cursor = db.follows.find(
+        {"followee_id": uid, "status": "active",
+         "created_at": {"$gt": last_seen}},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(50)
+    async for f in cursor:
+        u = await db.users.find_one(
+            {"user_id": f["follower_id"]},
+            {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1}
+        )
+        if u:
+            out.append({**u, "followed_at": f.get("created_at")})
+    return {"followers": out}
+
+
+# ------------------------------------------------------------------
+# Activity Events — chronological feed
+#
+# Every "someone did something FOR YOU" moment writes a row in
+# `activity_events` so the Activity page can render a single unified
+# timeline (likes, comments, follows, invites, tag approvals, group
+# invites, DMs).
+#
+# Schema:
+#   event_id       str
+#   recipient_id   str          — who the event is FOR
+#   actor_id       str | None   — who performed the action (None for system)
+#   kind           str          — see EVENT_KINDS below
+#   ref            dict         — { post_id, comment_id, group_id, follow_id, ... }
+#   read           bool         — dot goes green when tapped
+#   created_at     ISO string
+# ------------------------------------------------------------------
+EVENT_KINDS = {
+    "follow_request", "follow_accepted", "inner_invite",
+    "post_liked", "post_commented", "post_tagged",
+    "tag_pending", "group_invite", "group_message",
+    "dm_received", "warning",
+}
+
+
+async def emit_activity_event(recipient_id: str, kind: str, actor_id: Optional[str] = None,
+                              ref: Optional[dict] = None, push_title: Optional[str] = None,
+                              push_body: Optional[str] = None,
+                              push_data: Optional[dict] = None) -> None:
+    """Write an activity event row and fan out a push notification.
+
+    Failures are swallowed — an activity event MUST never break the
+    business-logic call that emitted it. If the recipient blocks the
+    actor, the event is silently dropped.
+    """
+    if kind not in EVENT_KINDS:
+        logging.warning("emit_activity_event: unknown kind %s", kind)
+        return
+    if actor_id and actor_id == recipient_id:
+        return  # never notify yourself
+    try:
+        # Skip if the actor is blocked by the recipient (or vice versa).
+        if actor_id:
+            blocked = await db.blocks.find_one({
+                "$or": [
+                    {"blocker_id": recipient_id, "blocked_id": actor_id},
+                    {"blocker_id": actor_id, "blocked_id": recipient_id},
+                ]
+            })
+            if blocked:
+                return
+        doc = {
+            "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+            "recipient_id": recipient_id,
+            "actor_id": actor_id,
+            "kind": kind,
+            "ref": ref or {},
+            "read": False,
+            "created_at": now_iso(),
+        }
+        await db.activity_events.insert_one(doc)
+    except Exception as e:
+        logging.warning("emit_activity_event insert failed: %s", e)
+        return
+    # Fan out an FCM push in the background — best-effort, never blocks.
+    try:
+        if push_title:
+            body = (push_body or "")[:180]
+            asyncio.create_task(_maybe_push(recipient_id, push_title, body, push_data or {}))
+    except Exception as e:
+        logging.warning("emit_activity_event push failed: %s", e)
+
+
+async def _maybe_push(user_id: str, title: str, body: str, data: dict) -> None:
+    """Wrapper so we can fire push in the background without importing
+    the fcm module at the top of server.py (keeps circular imports out)."""
+    try:
+        await fcm_push(user_id, title, body, data=data)
+    except Exception as e:
+        logging.warning("push send failed: %s", e)
+
+
+@api.get("/activity/feed")
+async def activity_feed(limit: int = 50, user=Depends(get_current_user)):
+    """Chronological activity feed. Hydrates the actor's public profile
+    on each event and includes a small preview of any post referenced."""
+    uid = user["user_id"]
+    cursor = db.activity_events.find(
+        {"recipient_id": uid}, {"_id": 0}
+    ).sort("created_at", -1).limit(min(max(int(limit or 50), 1), 200))
+    events = []
+    actor_cache = {}
+    async for e in cursor:
+        actor = None
+        aid = e.get("actor_id")
+        if aid:
+            if aid in actor_cache:
+                actor = actor_cache[aid]
+            else:
+                actor = await db.users.find_one(
+                    {"user_id": aid},
+                    {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1}
+                )
+                actor_cache[aid] = actor
+        # Attach a tiny post preview if applicable.
+        post_preview = None
+        pid = (e.get("ref") or {}).get("post_id")
+        if pid:
+            post = await db.posts.find_one(
+                {"post_id": pid},
+                {"_id": 0, "post_id": 1, "content": 1, "media": 1, "tier": 1}
+            )
+            if post:
+                post_preview = {
+                    "post_id": post.get("post_id"),
+                    "content": (post.get("content") or "")[:120],
+                    "media": (post.get("media") or [])[:1],
+                    "tier": post.get("tier"),
+                }
+        events.append({**e, "actor": actor, "post_preview": post_preview})
+    return {"events": events}
+
+
+@api.post("/activity/{event_id}/read")
+async def activity_mark_read(event_id: str, user=Depends(get_current_user)):
+    """Mark one event as read. Called on tap in the Activity feed."""
+    res = await db.activity_events.update_one(
+        {"event_id": event_id, "recipient_id": user["user_id"]},
+        {"$set": {"read": True, "read_at": now_iso()}}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+@api.post("/activity/read-all")
+async def activity_mark_all_read(user=Depends(get_current_user)):
+    """Mark every unread activity event as read."""
+    await db.activity_events.update_many(
+        {"recipient_id": user["user_id"], "read": False},
+        {"$set": {"read": True, "read_at": now_iso()}}
+    )
+    return {"ok": True}
+
+
+@api.delete("/activity/clear-all")
+@api.post("/activity/clear-all")
+async def activity_clear_all(user=Depends(get_current_user)):
+    """Permanently delete every activity event on the caller's timeline.
+    Pending decisions (follow_requests, inner_invites, warnings) live in
+    other collections and are NOT touched — they still need explicit
+    approve/decline/dismiss actions."""
+    res = await db.activity_events.delete_many(
+        {"recipient_id": user["user_id"]}
+    )
+    return {"ok": True, "deleted": res.deleted_count}
+
+
+@api.get("/activity/unread-count")
+async def activity_unread_count(user=Depends(get_current_user)):
+    n = await db.activity_events.count_documents(
+        {"recipient_id": user["user_id"], "read": False}
+    )
+    return {"unread": n}
+
+
+@api.get("/users/me/followers")
+async def my_followers(user=Depends(get_current_user)):
+    """Private list — only the user themselves can see who follows them."""
+    out = []
+    async for f in db.follows.find({"followee_id": user["user_id"], "status": "active"}, {"_id": 0}).sort("created_at", -1).limit(500):
+        u = await db.users.find_one({"user_id": f["follower_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1})
+        if u:
+            out.append({**u, "followed_at": f.get("created_at")})
+    return {"followers": out, "count": len(out)}
+
+
+@api.get("/users/me/following")
+async def my_following(user=Depends(get_current_user)):
+    """Private list — only the user themselves can see who they follow."""
+    out = []
+    async for f in db.follows.find({"follower_id": user["user_id"], "status": "active"}, {"_id": 0}).sort("created_at", -1).limit(500):
+        u = await db.users.find_one({"user_id": f["followee_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1})
+        if u:
+            out.append({**u, "followed_at": f.get("created_at")})
+    return {"following": out, "count": len(out)}
+
+
+@api.get("/connections")
+async def my_connections(user=Depends(get_current_user)):
+    """One-stop shop for the Manage Connections screen.
+    Returns everyone in the user's world grouped by tier:
+      tier_3 → Inner Circle members (invite-accepted)
+      tier_2 → active followers who are NOT in the IC
+      pending_invites_out → IC invites I sent that are still pending
+      pending_follow_requests_in → follow requests waiting on my approval
+      following → people I follow (their tiers depend on THEIR view of me)
+    Tier 1 is "everyone else" and doesn't need enumeration.
+    """
+    uid = user["user_id"]
+
+    # IC members (active only — pending invites listed separately below).
+    ic_members = []
+    ic_member_ids = set()
+    async for m in db.inner_circle.find({"owner_id": uid, "status": "active"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": m["member_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1})
+        if u:
+            ic_member_ids.add(m["member_id"])
+            ic_members.append({**u, "permissions": m.get("permissions", {}), "since": m.get("created_at")})
+
+    # Followers who are NOT in the IC — those are Tier 2.
+    followers = []
+    async for f in db.follows.find({"followee_id": uid, "status": "active"}, {"_id": 0}).sort("created_at", -1):
+        if f["follower_id"] in ic_member_ids:
+            continue
+        u = await db.users.find_one({"user_id": f["follower_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1, "bio": 1})
+        if u:
+            followers.append({**u, "since": f.get("created_at")})
+
+    # IC invites I've sent that haven't been accepted yet.
+    pending_out = []
+    async for inv in db.inner_circle.find({"owner_id": uid, "status": "pending"}, {"_id": 0}):
+        u = await db.users.find_one({"user_id": inv["member_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1})
+        if u:
+            pending_out.append({**u, "invite_id": inv["invite_id"], "sent_at": inv.get("created_at")})
+
+    # Follow requests waiting on my approval (approval-required follow mode).
+    follow_reqs = []
+    async for req in db.follows.find({"followee_id": uid, "status": "pending"}, {"_id": 0}).sort("created_at", -1):
+        u = await db.users.find_one({"user_id": req["follower_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1})
+        if u:
+            follow_reqs.append({**u, "follow_id": req.get("follow_id"), "requested_at": req.get("created_at")})
+
+    # Who I follow (my Tier 2/3 relationship to other people).
+    following = []
+    async for f in db.follows.find({"follower_id": uid, "status": "active"}, {"_id": 0}).sort("created_at", -1):
+        u = await db.users.find_one({"user_id": f["followee_id"]}, {"_id": 0, "handle": 1, "display_name": 1, "avatar_path": 1, "user_id": 1})
+        if u:
+            # Am I in THEIR IC? Then I'm Tier 3 to them.
+            in_their_ic = await db.inner_circle.find_one(
+                {"owner_id": f["followee_id"], "member_id": uid, "status": "active"},
+                {"_id": 1},
+            )
+            following.append({**u, "since": f.get("created_at"), "my_tier_with_them": 3 if in_their_ic else 2})
+
+    return {
+        "tier_3": ic_members,
+        "tier_2": followers,
+        "pending_invites_out": pending_out,
+        "pending_follow_requests_in": follow_reqs,
+        "following": following,
+        "counts": {
+            "tier_3": len(ic_members),
+            "tier_2": len(followers),
+            "pending_out": len(pending_out),
+            "pending_in": len(follow_reqs),
+            "following": len(following),
+        },
+    }
+
+
+# ------------------------------------------------------------------
+# Startup
+# ------------------------------------------------------------------
+async def seed_demo():
+    demo = [
+        ("admin@clanchat.app", "admin123", "admin", "Admin", "1990-01-01", "admin"),
+        ("alice@clanchat.app", "Password123!", "alice", "Alice", "1995-04-12", "user"),
+        ("bob@clanchat.app", "Password123!", "bob", "Bob", "1992-09-01", "user"),
+        ("teen@clanchat.app", "Password123!", "teenager", "Teen", "2012-01-01", "user"),
+    ]
+    for email, pw, handle, name, dob, role in demo:
+        existing = await db.users.find_one({"email": email})
+        if existing:
+            continue
+        age = calc_age(dob)
+        uid = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": uid, "email": email,
+            "password_hash": hash_password(pw),
+            "handle": handle, "display_name": name,
+            "dob": dob, "is_minor": age < 18, "bio": f"Hi, I'm {name}",
+            "avatar_path": None, "links": [], "follow_mode": "open",
+            "settings": default_settings(), "role": role,
+            "auth_provider": "password", "strikes": 0, "suspended_until": None,
+            "created_at": now_iso(),
+        })
+
+
+@app.on_event("startup")
+async def startup_event():
+    await db.users.create_index("email", unique=True)
+    await db.users.create_index("handle", unique=True)
+    await db.posts.create_index([("author_id", 1), ("created_at", -1)])
+    await db.posts.create_index([("created_at", -1)])
+    await db.posts.create_index("tags")
+    await db.follows.create_index([("follower_id", 1), ("followee_id", 1)], unique=True)
+    await db.inner_circle.create_index([("owner_id", 1), ("member_id", 1)], unique=True)
+    await db.dms.create_index([("from_id", 1), ("to_id", 1), ("created_at", -1)])
+    # Demo accounts are only seeded when SEED_DEMO_DATA=1 (preview/dev only).
+    # Production must NOT have alice/bob/teen test users polluting the app.
+    if os.environ.get("SEED_DEMO_DATA") == "1":
+        await seed_demo()
+    init_storage()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    client.close()
+
+
+# ----------------------------------------------------------------------
+# LiveKit voice / video calling
+#
+# Server-side: mints short-lived per-call JWT tokens scoped to a single
+# room. The api key/secret never leave the server — the client only
+# receives the room name, the LiveKit URL, and a join token that expires
+# automatically.
+#
+# Call lifecycle:
+#   1. Caller -> POST /calls/start  (creates room + db row + notification)
+#   2. Recipient polls /calls/incoming/{me}  (every 3s in the UI)
+#   3. Either side -> POST /calls/{id}/answer or /reject
+#   4. Both sides connect to LiveKit using the returned join token
+#   5. POST /calls/{id}/end when hanging up
+#
+# Every call insert + end is audit-logged so the admin panel can show
+# call history for accounts under review.
+# ----------------------------------------------------------------------
+try:
+    from livekit import api as livekit_api  # noqa: F401  (loaded lazily below)
+    _LIVEKIT_URL = os.environ.get("LIVEKIT_URL", "").strip()
+    _LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "").strip()
+    _LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "").strip()
+    _LIVEKIT_OK = bool(_LIVEKIT_URL and _LIVEKIT_API_KEY and _LIVEKIT_API_SECRET)
+    if not _LIVEKIT_OK:
+        logging.warning("LiveKit env vars missing — voice/video calls disabled.")
+except Exception as _e:
+    _LIVEKIT_OK = False
+    logging.warning("LiveKit SDK not available: %s", _e)
+
+
+def _mint_livekit_token(room_name: str, identity: str, display_name: str, ttl_seconds: int = 60 * 60) -> str:
+    """Mint a JWT scoped to one room. TTL defaults to 1h — long enough for
+    a normal call but short enough that a leaked token can't be reused
+    days later."""
+    from livekit import api as _lk
+    from datetime import timedelta as _td
+    at = _lk.AccessToken(_LIVEKIT_API_KEY, _LIVEKIT_API_SECRET)
+    at = at.with_identity(identity).with_name(display_name).with_ttl(_td(seconds=ttl_seconds))
+    at = at.with_grants(_lk.VideoGrants(
+        room_join=True, room=room_name,
+        can_publish=True, can_subscribe=True, can_publish_data=True,
+    ))
+    return at.to_jwt()
+
+
+class CallStartIn(BaseModel):
+    callee_id: str = Field(min_length=1)
+    kind: str = Field(default="video", pattern="^(audio|video)$")
+
+
+@api.post("/calls/start")
+async def call_start(payload: CallStartIn, user=Depends(get_current_user)):
+    """Caller initiates a 1-on-1 call. Re-uses the existing DM tier-gating —
+    if the caller can't DM the callee, they can't call them either."""
+    if not _LIVEKIT_OK:
+        raise HTTPException(503, "Calling is not configured on this server")
+    if payload.callee_id == user["user_id"]:
+        raise HTTPException(400, "Cannot call yourself")
+    callee = await db.users.find_one({"user_id": payload.callee_id}, {"_id": 0})
+    if not callee:
+        raise HTTPException(404, "User not found")
+    # Re-use the DM permission check — same trust gates apply.
+    allow, reason = await can_dm(user, callee)
+    if not allow:
+        raise HTTPException(403, reason or "Cannot call this user")
+
+    call_id = f"call_{uuid.uuid4().hex[:12]}"
+    room_name = f"room_{uuid.uuid4().hex[:14]}"
+    now = now_iso()
+    await db.calls.insert_one({
+        "call_id": call_id, "room_name": room_name,
+        "caller_id": user["user_id"], "callee_id": payload.callee_id,
+        "kind": payload.kind, "status": "ringing",
+        "created_at": now, "ended_at": None,
+    })
+    await db.audit_events.insert_one({
+        "event": "call_start", "call_id": call_id, "caller_id": user["user_id"],
+        "callee_id": payload.callee_id, "kind": payload.kind, "at": now,
+    })
+    token = _mint_livekit_token(room_name, user["user_id"], user.get("display_name") or user["handle"])
+    # Wake the callee's phone with a push so they hear/see the ring even
+    # when ClanChat is backgrounded. The Capacitor APK handles the
+    # `incoming_call` data payload by showing a fullscreen ringer.
+    try:
+        await fcm_push(
+            payload.callee_id,
+            f"Incoming {payload.kind} call",
+            f"#{user.get('handle', 'someone')} is calling",
+            data={"type": "incoming_call", "call_id": call_id, "kind": payload.kind,
+                  "caller_id": user["user_id"], "caller_handle": user.get("handle", "")},
+            notif_type="calls",
+        )
+    except Exception as _e:
+        logging.warning("call push failed: %s", _e)
+    return {
+        "call_id": call_id, "room_name": room_name, "kind": payload.kind,
+        "livekit_url": _LIVEKIT_URL, "token": token,
+    }
+
+
+@api.get("/calls/incoming")
+async def calls_incoming(user=Depends(get_current_user)):
+    """Recipient poll. Returns at most one ringing call so we never overwhelm
+    the UI — calls auto-time-out after 60s if untouched."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    # Auto-expire stale rings without admin intervention.
+    await db.calls.update_many(
+        {"status": "ringing", "created_at": {"$lt": cutoff}},
+        {"$set": {"status": "missed", "ended_at": now_iso()}},
+    )
+    c = await db.calls.find_one(
+        {"callee_id": user["user_id"], "status": "ringing"},
+        {"_id": 0}, sort=[("created_at", -1)],
+    )
+    if not c:
+        return {"call": None}
+    caller = await db.users.find_one({"user_id": c["caller_id"]}, {"_id": 0})
+    return {"call": {**c, "caller": public_user(caller) if caller else None}}
+
+
+@api.post("/calls/{call_id}/answer")
+async def call_answer(call_id: str, user=Depends(get_current_user)):
+    if not _LIVEKIT_OK:
+        raise HTTPException(503, "Calling is not configured on this server")
+    c = await db.calls.find_one({"call_id": call_id}, {"_id": 0})
+    if not c or c["callee_id"] != user["user_id"]:
+        raise HTTPException(404, "Call not found")
+    if c["status"] != "ringing":
+        raise HTTPException(409, f"Call is already {c['status']}")
+    await db.calls.update_one({"call_id": call_id}, {"$set": {"status": "active", "answered_at": now_iso()}})
+    token = _mint_livekit_token(c["room_name"], user["user_id"], user.get("display_name") or user["handle"])
+    return {
+        "call_id": call_id, "room_name": c["room_name"], "kind": c.get("kind", "video"),
+        "livekit_url": _LIVEKIT_URL, "token": token,
+    }
+
+
+@api.post("/calls/{call_id}/reject")
+async def call_reject(call_id: str, user=Depends(get_current_user)):
+    c = await db.calls.find_one({"call_id": call_id}, {"_id": 0})
+    if not c or c["callee_id"] != user["user_id"]:
+        raise HTTPException(404, "Call not found")
+    await db.calls.update_one({"call_id": call_id}, {"$set": {"status": "rejected", "ended_at": now_iso()}})
+    return {"ok": True}
+
+
+@api.post("/calls/{call_id}/end")
+async def call_end(call_id: str, user=Depends(get_current_user)):
+    c = await db.calls.find_one({"call_id": call_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Call not found")
+    if user["user_id"] not in (c["caller_id"], c["callee_id"]):
+        raise HTTPException(403, "Not a participant")
+    if c["status"] not in ("ended", "rejected", "missed"):
+        await db.calls.update_one({"call_id": call_id}, {"$set": {"status": "ended", "ended_at": now_iso()}})
+        await db.audit_events.insert_one({
+            "event": "call_end", "call_id": call_id, "ended_by": user["user_id"], "at": now_iso(),
+        })
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------
+
+
+# include
+# ----------------------------------------------------------------------
+# Push notification endpoints (live here so they're declared after
+# get_current_user). See the FCM init block near the top of the file
+# for the actual sender helper.
+# ----------------------------------------------------------------------
+@api.post("/notifications/register-device")
+async def register_device(payload: DeviceTokenIn, user=Depends(get_current_user)):
+    """Called by the APK after the OS hands us a push token. Idempotent.
+    A given token can only ever belong to one ClanChat account at a time —
+    re-registering steals it from any previously-signed-in user, which
+    is what happens when two people share a phone."""
+    await db.device_tokens.delete_many({"token": payload.token})
+    await db.device_tokens.update_one(
+        {"user_id": user["user_id"], "token": payload.token},
+        {"$set": {"platform": payload.platform, "last_seen": now_iso()},
+         "$setOnInsert": {"user_id": user["user_id"], "token": payload.token, "created_at": now_iso()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.post("/notifications/unregister-device")
+async def unregister_device(payload: DeviceTokenIn, user=Depends(get_current_user)):
+    """Called on logout. Silently no-ops if the token isn't ours."""
+    await db.device_tokens.delete_one({"user_id": user["user_id"], "token": payload.token})
+    return {"ok": True}
+
+
+@api.post("/notifications/prefs")
+async def update_push_prefs(payload: PushPrefsIn, user=Depends(get_current_user)):
+    """Per-category toggles. Default is all-on so users get the
+    safety-relevant pushes without explicit setup."""
+    current = user.get("push_prefs", {}) or {}
+    for k in ("dms", "calls", "follows", "inner_invites"):
+        v = getattr(payload, k)
+        if v is not None:
+            current[k] = bool(v)
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"push_prefs": current}})
+    return {"prefs": current}
+
+
+@api.get("/notifications/prefs")
+async def get_push_prefs(user=Depends(get_current_user)):
+    return {"prefs": user.get("push_prefs", {})}
+
+
+app.include_router(api)
+
+# CORS. Browsers FORBID the wildcard `Access-Control-Allow-Origin: *` on
+# credentialed (cookie-bearing) requests, so we must echo the *specific*
+# request origin. We therefore match known-good origins via regex rather than
+# serving "*". FRONTEND_URL may hold a comma-separated allow-list of exact
+# origins; a bare "*" there is ignored (it would break credentialed CORS).
+_frontend_env = os.environ.get("FRONTEND_URL", "")
+_explicit_origins = [o.strip() for o in _frontend_env.split(",") if o.strip() and o.strip() != "*"]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_explicit_origins,
+    # Emergent preview URLs (*.preview.emergentagent.com), Emergent production
+    # hosts (*.emergent.host), the ClanChat custom domain (clanchat.app / www),
+    # local dev, and the Capacitor APK WebView origins. On Android the bundled
+    # APK serves from `https://localhost` (androidScheme "https" in
+    # capacitor.config.js); `capacitor://localhost` is kept for older builds.
+    allow_origin_regex=(
+        r"https://([a-z0-9-]+\.)*preview\.emergentagent\.com"
+        r"|https://([a-z0-9-]+\.)*emergent\.host"
+        r"|https://([a-z0-9-]+\.)*clanchat\.app"
+        r"|https://localhost(:\d+)?"
+        r"|capacitor://localhost"
+    ),
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
