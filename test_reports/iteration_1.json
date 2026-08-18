@@ -1,0 +1,46 @@
+{
+  "summary": "Verified in-sandbox that the Render/GitHub-Actions deploy fixes for ClanChat frontend are correct. Confirmed config files, ran `yarn install --frozen-lockfile` (the exact Render command) under Node 20 with zero ERESOLVE/engine errors, ran `yarn build` successfully producing a build/ folder, and verified the running frontend loads the ClanChat landing page in the browser with no date-fns / react-day-picker console errors. External CI (GitHub Actions Android APK) and Render.com hosting cannot be triggered from this sandbox and are out of scope; they must be re-run by the user.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "N/A", "issue": "Backend not verified — known pre-existing pip conflict (emergentintegrations/litellm) makes backend unstartable in this sandbox; explicitly out of scope per review request. Frontend API calls returned 502 (Cloudflare host error for backend route), which is consistent with backend being down and NOT caused by this deploy-fix."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verifications_performed": {
+    "package_json_engines_node": "20.x  -> OK",
+    "package_json_date_fns": "^3.6.0  -> OK",
+    "yarn_lock_exists": true,
+    "yarn_lock_date_fns_resolved_version": "3.6.0  -> OK",
+    "node_version_file": "/app/frontend/.node-version contains '20'  -> OK",
+    "workflow_setup_node_step": ".github/workflows/android-apk.yml Setup Node step uses node-version: '20' (label 'Setup Node 20')  -> OK, consistent with engines field",
+    "runtime_node_version_in_sandbox": "v20.20.2",
+    "yarn_install_frozen_lockfile": "SUCCESS ('Already up-to-date.'), no ERESOLVE/peer errors, no engine incompatibility",
+    "yarn_build": "SUCCESS in 13.08s, build/ produced (main.js 388.21 kB gzip). Only harmless eslint react-hooks/exhaustive-deps warnings — unrelated to this fix",
+    "frontend_runtime_load": "Landing page 'ClanChat — Your Personal Clubhouse' renders correctly at REACT_APP_BACKEND_URL preview host after `supervisorctl restart frontend`",
+    "date_fns_or_day_picker_console_errors": "NONE"
+  },
+  "test_report_links": [],
+  "action_items": [
+    "User must externally trigger a fresh GitHub Actions 'Build Android APK' run — sandbox cannot verify CI, but the workflow's Setup Node step is now correctly pinned to node-version '20' matching package.json engines '20.x', so the previous engine-mismatch failure should be resolved.",
+    "User must externally trigger a fresh Render.com static site redeploy — sandbox cannot verify Render, but locally running the exact `yarn install --frozen-lockfile && yarn build` on Node 20 completes with no ERESOLVE and no engine errors, so the previous Render failure should be resolved.",
+    "(Out of scope for this fix) Backend has a pre-existing emergentintegrations/litellm pip conflict preventing it from serving /api/* — main agent should address separately if end-to-end app testing is needed."
+  ],
+  "critical_code_review_comments": [
+    "Minor: frontend/src/components/ui/calendar.jsx wraps react-day-picker v8 and is currently unused in the app; safe today but if it's ever wired up, note react-day-picker v8 is compatible with date-fns v3 (which is what's now pinned), so the fix is internally consistent.",
+    "Minor: multiple `react-hooks/exhaustive-deps` warnings in Admin.jsx / BoardView.jsx / Messages.jsx / Profile.jsx during build — pre-existing, not caused by this fix, but worth cleaning up.",
+    "Observation: supervisor frontend process was in FATAL state on arrival due to missing cross-spawn in node_modules; running `yarn install --frozen-lockfile` restored it and `supervisorctl restart frontend` brought it back up cleanly. Node_modules state on the sandbox had drifted; not a code issue."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (out of scope)", "frontend": "100%"},
+  "test_credentials": "Not needed — no auth flow tested",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The Render + Android-CI deploy config for ClanChat frontend is now internally consistent (Node 20 everywhere, date-fns pinned to 3.6.0, yarn.lock present). In-sandbox `yarn install --frozen-lockfile && yarn build` under Node 20.20.2 succeeds. Actual Render.com deploy and GitHub Actions APK build must be verified by the user outside this environment. Backend is a known-broken pre-existing pip conflict (emergentintegrations/litellm) — do not treat backend 502s as a regression.",
+  "rca of the issue": "The GitHub Actions workflow had a hardcoded `node-version: '22'` in its actions/setup-node step, while frontend/package.json declared `\"engines\": {\"node\": \"20.x\"}`. yarn v1 enforces engines strictly, so `yarn install` failed with 'engine node incompatible ... Expected 20.x. Got 22.23.2'. Fix: align the workflow to `node-version: '20'`. Verified in-sandbox by running the exact CI command chain on Node 20 — install + build both pass with zero engine/ERESOLVE errors."
+}
