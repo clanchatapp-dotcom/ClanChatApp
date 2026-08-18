@@ -1,0 +1,43 @@
+{
+  "summary": "Frontend regression testing after aggressive dead-code cleanup (deletion of ~41/43 shadcn ui components, ~40 npm packages, hooks/use-toast, and 2 backend helpers). Full end-to-end web flow was exercised: Landing → Register (2-step) → Login → Feed → Compose post → Delete post with AlertDialog confirmation → navigation across all protected pages. ALL PASSED. No 'Module not found', no runtime page errors, no broken UI. The one retained shadcn component (alert-dialog.jsx) still renders and works correctly in PostCard's delete confirmation. Sonner toasts render correctly ('Deleted' toast confirmed on post deletion). Backend /health returns 200 on the preview URL. APK / Google Sign-In on native mobile was NOT tested (no device/emulator, out of scope).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/health", "issue": "GET /api/health returns 404 (only unprefixed /health at 200). Not a regression — the review request said the /health endpoint is intentionally at root for k8s readiness probe. Just noting that clients that expect /api/health won't find it."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verifications_performed": {
+    "grep_stale_imports": "grep across frontend/src for imports from components/ui/*, hooks/use-toast, date-fns, dayjs, react-day-picker, react-hook-form, @hookform, zod, framer-motion, lodash, recharts, swr, cmdk, next-themes, vaul, embla-carousel, input-otp -> ONLY 1 match: components/ui/alert-dialog.jsx importing components/ui/button — both kept files, no stale references remain.",
+    "public_pages_load": "/, /login, /register, /forgot-password, /install all render (title 'ClanChat — Your Personal Clubhouse', no page errors).",
+    "protected_pages_redirect": "/feed, /messages, /me, /settings, /notifications, /search, /groups, /connections, /admin all correctly redirect to /login when unauthed; no module-not-found console errors.",
+    "register_step1_to_step2": "Email+password → Continue → Step 2 renders handle, display name, DOB (native date input).",
+    "register_creates_account": "Create account → auto-signs-in → redirected to /feed with sidebar populated (handle #tu1787093291, display name 'Test User').",
+    "login_flow_reauth": "Logout+re-login with the created creds succeeds, lands on /feed.",
+    "protected_pages_authed_load": "/feed, /messages, /me, /settings, /notifications, /search, /groups, /connections all render with content while authed (body lengths 162–1758 chars, sidebar visible everywhere).",
+    "compose_post": "/compose renders with all fields (post-content, upload-input, tag-input, tier buttons, AI labels, submit-post). Submitting creates the post; feed shows it with data-testid post_XXXX.",
+    "alertdialog_delete_confirmation": "PASSED — Clicking [data-testid=del-btn-post_*] opens a role=alertdialog containing 'Delete this post? This cannot be undone.' with [data-testid=confirm-cancel] and [data-testid=confirm-delete]. Clicking confirm-delete removes the post from feed and shows a sonner 'Deleted' toast.",
+    "sonner_toasts_work": "'Deleted' toast rendered on post deletion (visible in screenshot), confirming Toaster from 'sonner' still works after the removal of components/ui/toast.jsx and hooks/use-toast.js.",
+    "backend_health_endpoint": "curl https://render-deploy-fix-4.preview.emergentagent.com/health -> 200 OK.",
+    "console_errors_review": "Only 401 responses observed (expected on unauthed API polls for notifications/feed); zero 'Module not found', zero uncaught page errors."
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "The dead-code deletion is clean — a repo-wide grep confirms no source file still references any of the removed packages/components/hooks except the two retained shadcn files (alert-dialog + button), which correctly reference each other. No orphan imports.",
+    "Minor (pre-existing, not caused by this cleanup): App.js renders <Toaster theme='dark' …/> at the root AND useOAuthReturn() imports getSupabase both statically (line 5) and dynamically (line 93) in the same file — cosmetic only.",
+    "Observation: onboarding modal ('Three tiers. One simple rule.') pops on first login and can obscure the feed until Skip is pressed. Not a regression; noting for UX awareness."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (only /health smoke-checked per scope)", "frontend": "100%"},
+  "test_credentials": "Registered fresh test account for this run: email=testuser1787093291@clanchattest.com, password=TestPass123!, handle=tu1787093291, DOB=1995-05-15. Written to /app/memory/test_credentials.md is NOT done automatically — main agent can persist if desired.",
+  "seed_data_creation": "Created one test user (tu1787093291) via the real Register flow and one test post which was subsequently deleted. Net data change: 1 residual user account, 0 posts.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Dead-code cleanup regression PASSED. If retesting, the credentials above still exist. APK / native Google Sign-In cannot be verified inside this sandbox — that must be validated by the user on a real device against the production Render deployment (which is now believed healthy after JWT_SECRET + /health fixes).",
+  "rca of the issue": "N/A — no regressions found. The user's reported 'APK network error' bug is very likely explained by the backend crash-loop (missing JWT_SECRET) on the production Render deployment, as the review request already hypothesized; that is a deployment-env issue outside sandbox testability."
+}
