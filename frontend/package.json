@@ -2,6 +2,9 @@
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "20.x"
+  },
   "dependencies": {
     "@capacitor-community/privacy-screen": "6.1.0",
     "@capacitor/android": "^7",
@@ -51,7 +54,7 @@
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "cra-template": "1.2.0",
-    "date-fns": "4.1.0",
+    "date-fns": "^3.6.0",
     "dayjs": "1.11.13",
     "embla-carousel-react": "8.6.0",
     "firebase": "^12.16.0",
