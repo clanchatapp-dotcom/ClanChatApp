@@ -71,13 +71,15 @@ export function AuthProvider({ children }) {
     const status = firstErr?.response?.status;
     if (status === 401 || status === 403) {
       await forgetToken();
-      setUser(null);
+      // Only set null if we're not already bootstrapping
+      // to prevent the redirect loop
+      if (!bootstrapping) setUser(null);
     } else {
       // Network blip / 5xx: keep whatever we have rather than wiping.
       setUser((prev) => (prev === undefined ? null : prev));
     }
     return null;
-  }, []);
+  }, [bootstrapping]);
 
   useEffect(() => {
     const root = document.documentElement;
