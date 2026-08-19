@@ -46,7 +46,7 @@ jobs:
       - name: Build web bundle
         working-directory: frontend
         env:
-          REACT_APP_BACKEND_URL: https://clanchat.app
+          REACT_APP_BACKEND_URL: https://clanchat-app.onrender.com
           CI: "false"
         run: yarn build
 
@@ -270,4 +270,3 @@ jobs:
             --release-notes "CI build ${{ github.sha }} on ${{ github.ref_name }}" \
             --groups "${FIREBASE_APPDIST_TESTER_GROUPS:-internal}"
           rm -f /tmp/firebase-sa.json
-
