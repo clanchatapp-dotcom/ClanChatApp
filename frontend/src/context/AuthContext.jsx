@@ -199,6 +199,11 @@ export function AuthProvider({ children }) {
           await exchangeSupabaseToken();
         } catch (e) {
           console.warn("supabase -> clanchat exchange failed", e);
+          // Clear the broken Supabase session before falling back
+          try {
+            const supa = await getSupabase();
+            await supa.auth.signOut();
+          } catch { /* ignore */ }
           if (!cancelled) await checkAuth();
         }
       } else {
@@ -333,4 +338,3 @@ export function AuthProvider({ children }) {
 }
 
 export const useAuth = () => useContext(AuthContext);
-
