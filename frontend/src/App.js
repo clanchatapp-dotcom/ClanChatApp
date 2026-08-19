@@ -1,9 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
-import { useEffect, useRef } from "react";
 import "./App.css";
 import { AuthProvider, useAuth } from "./context/AuthContext";
-import { getSupabase } from "./lib/supabase";
-import { toast } from "sonner";
 import AppShell from "./components/AppShell";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
@@ -35,84 +32,45 @@ import Install from "./pages/Install";
 import CompleteProfile from "./pages/CompleteProfile";
 import { Toaster } from "sonner";
 
-// True while a Google OAuth redirect is mid-flight (?code= still in the URL).
-const oauthCodePending = () => {
-  try { return new URLSearchParams(window.location.search).has("code"); }
-  catch { return false; }
-};
-
+// Route guard.
+//
+// Two states now block a redirect instead of one:
+//   * bootstrapping  – AuthContext's single startup sequence (OAuth code
+//                      exchange -> Supabase session -> /auth/me) hasn't
+//                      finished, so `user` is not yet trustworthy.
+//   * user === undefined – nothing hydrated yet.
+//
+// The old version redirected as soon as `user` was null, which happened
+// mid-OAuth and mid-/auth/me, producing the /feed -> /login -> /feed
+// flicker. It also sniffed `?code=` from the URL, but the code was stripped
+// by the exchange before this ever ran, so the guard silently stopped
+// working. `bootstrapping` is state, not a URL read, so it can't go stale.
 function Protected({ children }) {
-  const { user } = useAuth();
+  const { user, bootstrapping } = useAuth();
   const loc = useLocation();
-  if (user === undefined) return <div className="p-10 text-zinc-500 text-sm">Loading…</div>;
-  // Don't bounce to /login while we're still exchanging an OAuth ?code= that
-  // landed on this protected route — that bounce was dropping the code and
-  // causing the Google sign-in loop. Wait for the exchange to set the user.
-  if (!user && oauthCodePending()) {
-    return <div className="p-10 text-zinc-500 text-sm">Signing you in…</div>;
+  if (bootstrapping || user === undefined) {
+    return <div className="p-10 text-zinc-500 text-sm">Loading…</div>;
   }
   if (!user) return <Navigate to="/login" state={{ from: loc.pathname }} replace />;
   return children;
 }
 
-// Root-level handler for the Google OAuth web redirect. Google returns to
-// /feed?code=… (PKCE); we exchange it here at the app root so it works no
-// matter which route it lands on, then clean the URL. AuthContext's
-// onSupabaseAuth picks up SIGNED_IN and swaps the session for a ClanChat JWT.
-// On a bad/expired verifier we surface an error and restart the flow once.
-function useOAuthReturn() {
-  const ran = useRef(false);
-  useEffect(() => {
-    if (ran.current) return;
-    ran.current = true;
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("code");
-    const oauthError = params.get("error_description") || params.get("error");
-    const clean = () => {
-      try { window.history.replaceState({}, "", window.location.pathname); } catch { /* ignore */ }
-    };
-    if (oauthError) { clean(); toast.error(`Google sign-in failed: ${oauthError}`); return; }
-    if (!code) return;
-    (async () => {
-      try {
-        const supa = await getSupabase();
-        await supa.auth.exchangeCodeForSession(code);
-        clean();
-        sessionStorage.removeItem("cc_oauth_retry");
-      } catch (e) {
-        clean();
-        const msg = (e?.message || "").toLowerCase();
-        const verifierIssue =
-          msg.includes("verifier") || msg.includes("pkce") ||
-          msg.includes("code challenge") || msg.includes("invalid request") ||
-          msg.includes("auth code and code verifier");
-        if (verifierIssue && !sessionStorage.getItem("cc_oauth_retry")) {
-          sessionStorage.setItem("cc_oauth_retry", "1");
-          toast.message("Reconnecting to Google…");
-          try {
-            const { getSupabase: gs } = await import("./lib/supabase");
-            const s = await gs();
-            const { data } = await s.auth.signInWithOAuth({
-              provider: "google",
-              options: { redirectTo: `${window.location.origin}/feed` },
-            });
-            if (data?.url) window.location.href = data.url;
-            return;
-          } catch { /* fall through */ }
-        }
-        sessionStorage.removeItem("cc_oauth_retry");
-        toast.error("Google sign-in didn't complete. Please tap Continue with Google again.");
-      }
-    })();
-  }, []);
-}
-
 function AppRouter() {
-  const { pendingProfile } = useAuth();
-  useOAuthReturn();
+  const { pendingProfile, bootstrapping } = useAuth();
   // Sync session_id handler at the top level (synchronous detection)
   if (typeof window !== "undefined" && window.location.hash?.includes("session_id=")) {
     return <AuthCallback />;
+  }
+  // Hold the whole tree on one stable splash until auth has settled. Without
+  // this the public routes (Landing / Login) mount, then unmount the instant
+  // the session lands — that mount/unmount pair is the flicker users saw
+  // right after tapping "Continue with Google".
+  if (bootstrapping) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-zinc-500 text-sm">
+        <div className="animate-pulse">Loading…</div>
+      </div>
+    );
   }
   return (
     <>
