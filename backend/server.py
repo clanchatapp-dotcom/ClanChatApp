@@ -36,11 +36,6 @@ db = client[os.environ["DB_NAME"]]
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
 APP_NAME = os.environ.get("APP_NAME", "clanchat")
-EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
-STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
-EMERGENT_AUTH_SESSION_DATA_URL = (
-    "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
-)
 
 BANNED_WORDS = {
     # representative starter list — covers slurs/hate; expand on review

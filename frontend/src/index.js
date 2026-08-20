@@ -6,10 +6,9 @@ import App from "@/App";
 
 // Canonicalize the web host to https://www.clanchat.app BEFORE anything
 // else. PKCE OAuth must start and finish on the SAME origin (the
-// code-verifier is stored per-origin), so users on the bare apex domain or
-// the *.emergent.host alias must be moved to the canonical host before
-// signing in — else the verifier written on one host can't be read on the
-// other and Google sign-in fails.
+// code-verifier is stored per-origin), so users on the bare apex domain
+// must be moved to the canonical host before signing in — else the verifier
+// written on one host can't be read on the other and Google sign-in fails.
 //
 // IMPORTANT: this must match the DOMAIN-LEVEL redirect direction, not the
 // other way round. The edge/CDN 308-redirects the bare apex (clanchat.app)
@@ -17,11 +16,10 @@ import App from "@/App";
 // hop. An earlier version of this redirected www -> apex, which combined
 // with the edge's apex -> www redirect produced an infinite reload loop
 // (www loads JS -> JS sends to apex -> edge sends back to www -> repeat).
-// Preview (*.preview.emergentagent.com) is left untouched.
 (function canonicalizeHost() {
   try {
     const h = window.location.hostname;
-    if (h === "clanchat.app" || h.endsWith(".emergent.host")) {
+    if (h === "clanchat.app") {
       window.location.replace(
         "https://www.clanchat.app" + window.location.pathname + window.location.search + window.location.hash
       );
