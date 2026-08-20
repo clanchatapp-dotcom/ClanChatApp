@@ -268,14 +268,25 @@ export function AuthProvider({ children }) {
         const hash = hIndex >= 0 ? url.slice(hIndex + 1) : "";
         const params = new URLSearchParams(query || hash);
         const hashParams = new URLSearchParams(hash);
+        
+        // FIX: Check for error FIRST before attempting to process auth params
         const err = params.get("error") || hashParams.get("error");
         if (err) {
-          toast.error(`Google sign-in failed: ${params.get("error_description") || hashParams.get("error_description") || err}`);
+          const desc = params.get("error_description") || hashParams.get("error_description") || err;
+          console.error("Google OAuth error:", desc);
+          toast.error(`Google sign-in failed: ${desc}`);
           return;
         }
+        
         const access = params.get("access_token") || hashParams.get("access_token");
         const refresh = params.get("refresh_token") || hashParams.get("refresh_token");
         const code = params.get("code");
+        
+        // FIX: Add diagnostic logging if code/token missing
+        if (!code && !access) {
+          console.warn("OAuth callback missing code/access_token. Query:", query, "Hash:", hash);
+        }
+        
         if (code) {
           await supa.auth.exchangeCodeForSession(code); // single use, never retried
         } else if (access && refresh) {
@@ -284,20 +295,31 @@ export function AuthProvider({ children }) {
           toast.error("Google returned no sign-in code. Please try again.");
           return;
         }
+        
+        // FIX: Implement exponential backoff retry with proper error handling
         let lastErr;
         for (let attempt = 0; attempt < 3; attempt++) {
-          try { await exchangeSupabaseToken(); lastErr = null; break; }
+          try { 
+            await exchangeSupabaseToken(); 
+            lastErr = null; 
+            break; 
+          }
           catch (retryErr) {
             lastErr = retryErr;
+            // Only retry on 5xx errors (transient); fail fast on 4xx (auth issues)
             if (retryErr?.response?.status && retryErr.response.status < 500) break;
-            if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+            if (attempt < 2) {
+              const delay = 500 * Math.pow(2, attempt); // 500ms, 1s, 2s
+              console.log(`Retry attempt ${attempt + 1}/3 after ${delay}ms`, retryErr?.message);
+              await new Promise((r) => setTimeout(r, delay));
+            }
           }
         }
         if (lastErr) throw lastErr;
       } catch (e) {
         const msg = e?.response?.data?.detail || e?.message || String(e);
+        console.error("Google deep-link auth failed:", msg, e);
         toast.error(`Couldn't finish Google sign-in: ${typeof msg === "string" ? msg : "unknown error"}`);
-        console.warn("google deep-link auth failed", e);
       }
     };
 
