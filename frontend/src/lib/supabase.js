@@ -11,7 +11,7 @@ let _clientPromise = null;
  * without a frontend rebuild) and return an initialised client.
  * Idempotent: always returns the same promise.
  */
-async function getSupabase() {
+export async function getSupabase() {
   if (_clientPromise) return _clientPromise;
   const p = (async () => {
     let cfg;
