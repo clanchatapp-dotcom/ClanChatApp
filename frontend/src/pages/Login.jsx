@@ -3,31 +3,43 @@ import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { formatApiError } from "../lib/api";
 import { toast } from "sonner";
-import { Eye, EyeOff } from "lucide-react"; // Or use emoji ("👁️"/"🙈") if you prefer no icon imports
+import { Eye, EyeOff } from "lucide-react";
 
 /**
- * Firebase-powered Google button — replaces the old Emergent OAuth flow.
+ * Enhanced Google button with better error handling and retry logic.
  *
  * On desktop this opens a popup; on mobile / Capacitor it runs a redirect
  * flow whose result is picked up by AuthContext on the next load via
- * getRedirectResult.
+ * the deep-link handler.
  */
 function GoogleButton({ extra }) {
   const { loginWithSupabaseGoogle } = useAuth();
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  
   const onClick = async () => {
     setBusy(true);
+    setError(""); // Clear previous errors
     try {
-      // Supabase OAuth kicks a redirect; on return, AuthContext's onMount
-      // effect exchanges the session for a ClanChat JWT automatically.
       await loginWithSupabaseGoogle();
+      // On native, this returns immediately; the result lands via deep-link
+      // On web, redirect happens automatically
     } catch (e) {
       const msg = e?.message || "Google sign-in failed";
+      console.error("Google sign-in error:", e);
+      
+      // FIX: Provide specific error messages based on error type
+      let displayMsg = msg;
       if (msg.toLowerCase().includes("provider is not enabled")) {
-        toast.error("Google sign-in is not enabled in the Supabase dashboard yet");
-      } else {
-        toast.error(msg);
+        displayMsg = "Google sign-in is not enabled in the Supabase dashboard yet";
+      } else if (msg.toLowerCase().includes("network") || msg.toLowerCase().includes("fetch")) {
+        displayMsg = "Network error. Check your connection and try again.";
+      } else if (msg.toLowerCase().includes("cancelled")) {
+        displayMsg = "Sign-in was cancelled.";
       }
+      
+      setError(displayMsg);
+      toast.error(displayMsg);
     } finally {
       // On native, loginWithSupabaseGoogle() only kicks off the Chrome
       // Custom Tab redirect and returns immediately — the real result
@@ -37,21 +49,29 @@ function GoogleButton({ extra }) {
       setBusy(false);
     }
   };
+  
   return (
-    <button
-      data-testid="google-login-btn"
-      onClick={onClick}
-      disabled={busy}
-      className="w-full cc-btn-secondary flex items-center justify-center gap-3 disabled:opacity-50"
-    >
-      <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
-        <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.5 6.5 29.5 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5 43.5 34.8 43.5 24c0-1.2-.1-2.3-.4-3.5z"/>
-        <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 13 24 13c3 0 5.8 1.1 7.9 3l5.7-5.7C34.5 6.5 29.5 4.5 24 4.5 16.3 4.5 9.7 8.9 6.3 14.7z"/>
-        <path fill="#4CAF50" d="M24 43.5c5.4 0 10.3-2 14-5.3l-6.5-5.3C29.4 34.4 26.8 35.5 24 35.5c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.5 39 16.2 43.5 24 43.5z"/>
-        <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.2-4 5.5l6.5 5.3C41.5 35.7 43.5 30.2 43.5 24c0-1.2-.1-2.3-.4-3.5z"/>
-      </svg>
-      <span>{busy ? "Opening Google…" : (extra || "Continue with Google")}</span>
-    </button>
+    <>
+      <button
+        data-testid="google-login-btn"
+        onClick={onClick}
+        disabled={busy}
+        className="w-full cc-btn-secondary flex items-center justify-center gap-3 disabled:opacity-50"
+      >
+        <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+          <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.5 6.5 29.5 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5 43.5 34.8 43.5 24c0-1.2-.1-2.3-.4-3.5z"/>
+          <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 13 24 13c3 0 5.8 1.1 7.9 3l5.7-5.7C34.5 6.5 29.5 4.5 24 4.5 16.3 4.5 9.7 8.9 6.3 14.7z"/>
+          <path fill="#4CAF50" d="M24 43.5c5.4 0 10.3-2 14-5.3l-6.5-5.3C29.4 34.4 26.8 35.5 24 35.5c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.5 39 16.2 43.5 24 43.5z"/>
+          <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.2-4 5.5l6.5 5.3C41.5 35.7 43.5 30.2 43.5 24c0-1.2-.1-2.3-.4-3.5z"/>
+        </svg>
+        <span>{busy ? "Opening Google…" : (extra || "Continue with Google")}</span>
+      </button>
+      {error && (
+        <div className="text-sm text-red-400 mt-2 text-center" data-testid="google-error">
+          {error}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -185,4 +205,3 @@ export default function Login() {
 }
 
 export { GoogleButton };
-
