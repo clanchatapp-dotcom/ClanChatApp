@@ -1212,9 +1212,19 @@ class SupabaseLoginIn(BaseModel):
 
 @api.post("/auth/supabase-login")
 async def supabase_login(payload: SupabaseLoginIn, response: Response):
-    from supabase_helpers import verify_access_token
+    # Import inside the handler so we can catch missing runtime deps / misconfig.
+    try:
+        from supabase_helpers import verify_access_token, SupabaseConfigError
+    except Exception as e:
+        # Import failed — likely supabase package missing or helper raised SupabaseConfigError.
+        logging.error("supabase client import failed: %s", e)
+        raise HTTPException(500, "Supabase misconfigured: server-side dependency missing") from e
+
     try:
         info = verify_access_token(payload.access_token)
+    except SupabaseConfigError as e:
+        logging.error("supabase misconfiguration: %s", e)
+        raise HTTPException(500, f"Supabase misconfigured: {e}") from e
     except Exception as e:
         logging.warning("supabase token verify failed: %s", e)
         raise HTTPException(401, "Invalid Supabase token") from e
@@ -1244,8 +1254,7 @@ async def supabase_login(payload: SupabaseLoginIn, response: Response):
         user = await db.users.find_one({"user_id": uid}, {"_id": 0})
         new_user = False
     else:
-        # Brand-new Supabase account → require DOB + handle so minor
-        # protections are enforced from the very first record.
+        # Brand-new Supabase account → require DOB + handle so minor protections are enforced.
         if not payload.dob:
             return {"needs_profile": True, "supabase_email": email, "supabase_name": name}
         try:
