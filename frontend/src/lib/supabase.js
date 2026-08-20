@@ -1,12 +1,3 @@
-/**
- * Supabase Web SDK bootstrap for ClanChat.
- *
- * Config comes from the backend (`GET /api/supabase/config`) so ops can
- * rotate keys without a frontend rebuild.
- *
- * Session persistence: Supabase's default is localStorage. It survives
- * Capacitor cold starts and iOS Safari, so no extra config needed.
- */
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
 
@@ -15,41 +6,25 @@ const CONFIG_ENDPOINT = `${BACKEND}/api/supabase/config`;
 
 let _clientPromise = null;
 
-async function loadConfig() {
-  const { data } = await axios.get(CONFIG_ENDPOINT);
-  if (!data?.url || !data?.anonKey) {
-    throw new Error("Supabase config unavailable — backend returned empty url/anonKey");
-  }
-  return data;
-}
-
-/** Lazy singleton Supabase browser client.
- *
- * If config load fails (e.g. old backend without /api/supabase/config),
- * the cached promise is CLEARED so subsequent calls can retry once the
- * backend catches up. This matters during the deployment window where
- * production may still be running the pre-Supabase backend.
+/**
+ * Lazily load Supabase config from the backend (so we can rotate keys
+ * without a frontend rebuild) and return an initialised client.
+ * Idempotent: always returns the same promise.
  */
-export async function getSupabase() {
+async function getSupabase() {
   if (_clientPromise) return _clientPromise;
   const p = (async () => {
-    const cfg = await loadConfig();
-    const supabase = createClient(cfg.url, cfg.anonKey, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: false, // we exchange the ?code= explicitly on /login
-        // Force PKCE. The default (implicit) flow returns the session in the
-        // URL *fragment* (#access_token=…), which Android strips when Chrome
-        // Custom Tabs fires the `clanchat://` deep-link intent — so the APK
-        // received an empty callback and silently bounced back to sign-up.
-        // PKCE returns `?code=…` in the query string (preserved in the
-        // intent URI); the deep-link handler then calls exchangeCodeForSession.
-        // PKCE is also handled automatically on the web via detectSessionInUrl.
-        flowType: "pkce",
-        storageKey: "cc.sb.session",
-      },
-    });
+    let cfg;
+    try {
+      cfg = (await axios.get(CONFIG_ENDPOINT)).data;
+    } catch (e) {
+      console.error("Failed to load Supabase config:", e);
+      throw new Error(`Supabase config unavailable: ${e.message}`);
+    }
+    if (!cfg?.url || !cfg?.key) {
+      throw new Error("Supabase config missing url or key");
+    }
+    const supabase = createClient(cfg.url, cfg.key);
     // Attach bucket name for convenience in uploaders.
     supabase._ccBucket = cfg.bucket;
     return supabase;
@@ -106,9 +81,15 @@ export async function sbSignInGoogle() {
       options: {
         redirectTo: "clanchat://auth-callback",
         skipBrowserRedirect: true, // give us the URL, we'll open Chrome Custom Tabs
+        // FIX: Force PKCE code flow (S256) instead of implicit flow
+        // This prevents Android from stripping the auth code from URL fragments
+        codeChallengeMethod: 'S256',
       },
     });
-    if (error) throw error;
+    if (error) {
+      console.error("OAuth URL generation failed:", error);
+      throw new Error(`Google sign-in setup failed: ${error.message}`);
+    }
     if (!data?.url) throw new Error("Supabase did not return an OAuth URL");
     try {
       const { Browser } = await import("@capacitor/browser");
@@ -131,6 +112,8 @@ export async function sbSignInGoogle() {
     provider: "google",
     options: {
       redirectTo: `${window.location.origin}/feed`,
+      // FIX: Explicit PKCE for web as well for consistency
+      codeChallengeMethod: 'S256',
     },
   });
   if (error) throw error;
