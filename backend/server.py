@@ -5310,3 +5310,17 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+# ------------------------------------------------------------------
+# Serve static frontend build
+# ------------------------------------------------------------------
+from fastapi.staticfiles import StaticFiles
+import os.path
+
+# Mount the React build as static files. This serves index.html for SPA routing.
+frontend_build_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "build")
+if os.path.isdir(frontend_build_path):
+    app.mount("/", StaticFiles(directory=frontend_build_path, html=True), name="static")
+    logging.info(f"Frontend static files mounted from {frontend_build_path}")
+else:
+    logging.warning(f"Frontend build directory not found at {frontend_build_path} — SPA routing will not work")
