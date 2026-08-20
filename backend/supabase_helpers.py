@@ -15,9 +15,7 @@ Exposed helpers
 ---------------
 - `client()` — singleton Supabase client.
 - `verify_access_token(token)` — verify a Supabase Auth JWT locally
-  (via HS256 + the JWT secret published by Supabase) and return the
-  decoded claims. Same shape as `verify_id_token` used to have for
-  Firebase, so the auth-bridge endpoint keeps its structure.
+  (via the Supabase admin SDK) and return the decoded claims.
 - `signed_upload_url(path, ...)` — returns a signed URL + token the
   client can use to POST/PUT bytes directly to Supabase Storage.
 - `signed_download_url(path, expires_seconds)` — for private objects.
@@ -30,7 +28,23 @@ import logging
 import os
 from typing import Optional
 
-from supabase import Client, create_client
+# Guard the optional runtime dependency so a missing package produces a
+# clear, diagnosable error instead of an uncaught ImportError that
+# surfaces as a confusing 500.
+try:
+    from supabase import Client, create_client
+except Exception as e:  # pragma: no cover - runtime guard
+    class SupabaseConfigError(RuntimeError):
+        """Raised when the supabase client lib is missing or env is misconfigured."""
+        pass
+
+    # Fail fast with a clear error type the server can catch and map to 500.
+    raise SupabaseConfigError("Supabase client library not installed: please pip install supabase==2.31.0") from e
+else:
+    # If import succeeded, expose the exception name so callers can import it.
+    class SupabaseConfigError(RuntimeError):
+        """Raised when the supabase client lib is missing or env is misconfigured."""
+        pass
 
 log = logging.getLogger("clanchat.supabase")
 
@@ -45,7 +59,8 @@ def client() -> Client:
     url = os.environ.get("SUPABASE_URL", "").strip()
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     if not url or not key:
-        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing")
+        # Distinguish misconfiguration from an invalid token.
+        raise SupabaseConfigError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing")
     _CLIENT = create_client(url, key)
     log.info("Supabase client initialised for %s", url)
     return _CLIENT
@@ -60,32 +75,50 @@ def bucket_name() -> str:
 # ---------------------------------------------------------------
 def verify_access_token(access_token: str) -> dict:
     """Verify a Supabase-issued access token by asking Supabase to look it
-    up. Slower than local HS256 decode but works on all Supabase project
-    ages (old shared-secret + new JWKS) without extra config.
-
-    Called ONCE per login (frontend then uses our own JWT for subsequent
-    calls), so the network hop is not on the hot path.
+    up. Called ONCE per login (frontend then uses our own JWT for subsequent
+    calls), so the network hop is acceptable.
 
     Returns a dict shaped like:
         { "id": "<uuid>", "email": "...", "email_verified": bool,
           "provider": "email" | "google" | ..., "name": "...", "picture": "..." }
 
-    Raises HTTPException(401) equivalent errors on failure — caller wraps.
+    Raises:
+      - SupabaseConfigError on server misconfiguration (missing client/env).
+      - RuntimeError on token rejection / verification failure.
     """
-    supa = client()
+    supa = client()  # may raise SupabaseConfigError
     try:
         resp = supa.auth.get_user(access_token)
     except Exception as e:
         raise RuntimeError(f"Supabase token rejected: {e}") from e
+
+    # SDK returns either a model-like object with attributes or a dict.
     user = getattr(resp, "user", None) or (resp.get("user") if isinstance(resp, dict) else None)
     if not user:
         raise RuntimeError("Supabase returned no user for token")
-    # Normalise both SDK response shapes (pydantic model vs dict).
+
+    # Helper to read from either an object-with-attrs or a dict.
     def g(obj, key, default=None):
-        return getattr(obj, key, None) if not isinstance(obj, dict) else obj.get(key, default)
+        if not isinstance(obj, dict):
+            return getattr(obj, key, default)
+        return obj.get(key, default)
+
     md = g(user, "user_metadata") or {}
     identities = g(user, "identities") or []
-    provider = (identities[0].get("provider") if identities and isinstance(identities[0], dict) else None) or g(user, "app_metadata", {}).get("provider", "email") if isinstance(g(user, "app_metadata"), dict) else "email"
+
+    # Determine provider in a robust way.
+    provider = None
+    if identities and isinstance(identities[0], dict):
+        provider = identities[0].get("provider")
+    if not provider:
+        app_meta = g(user, "app_metadata") or {}
+        try:
+            provider = app_meta.get("provider") if isinstance(app_meta, dict) else getattr(app_meta, "provider", None)
+        except Exception:
+            provider = None
+    if not provider:
+        provider = "email"
+
     return {
         "id": g(user, "id"),
         "email": (g(user, "email") or "").lower(),
@@ -101,19 +134,11 @@ def verify_access_token(access_token: str) -> dict:
 # ---------------------------------------------------------------
 def signed_upload_url(path: str) -> dict:
     """Create a v1 signed upload URL. The client PUTs bytes to `signed_url`
-    directly. Returns:
-
-        {
-          "path": "u/user123/post/abc.jpg",
-          "signed_url": "https://.../object/upload/sign/<bucket>/<path>?token=...",
-          "token": "...",           # some clients need this separately
-          "public_url": "https://.../object/public/<bucket>/<path>"
-        }
+    directly. Returns a dict with path, signed_url, token, public_url.
     """
     b = bucket_name()
     supa = client()
     resp = supa.storage.from_(b).create_signed_upload_url(path)
-    # supabase-py returns keys camelCased in newer versions; normalise.
     signed_url = (
         resp.get("signedUrl")
         or resp.get("signed_url")
@@ -146,9 +171,7 @@ def public_url(path: str) -> str:
 
 
 def upload_bytes(path: str, data: bytes, content_type: str) -> str:
-    """Direct server-side upload — used by the migration script + admin
-    tooling. Returns the public URL of the uploaded object.
-    """
+    """Direct server-side upload — used by the migration script + admin tooling."""
     b = bucket_name()
     supa = client()
     supa.storage.from_(b).upload(
