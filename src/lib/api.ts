@@ -44,6 +44,16 @@ export const api = {
   activity: () => req('/activity'),
   livekitToken: (room: string) => req('/livekit/token', { method: 'POST', body: j({ room }) }),
   upload: (file: File) => { const fd = new FormData(); fd.append('file', file); return req('/upload', { method: 'POST', body: fd }) },
+  report: (target_type: string, target_id: string, category: string, note = '') =>
+    req('/report', { method: 'POST', body: j({ target_type, target_id, category, note }) }),
+  adminStats: () => req('/admin/stats'),
+  adminReports: (status = 'open') => req(`/admin/reports?status=${status}`),
+  adminAction: (id: string, action: string, reason = '') => req(`/admin/reports/${id}/action`, { method: 'POST', body: j({ action, reason }) }),
+  adminCsam: () => req('/admin/csam'),
+  adminUsers: (q = '') => req(`/admin/users?q=${encodeURIComponent(q)}`),
+  adminStrike: (handle: string, reason: string, stage?: string) => req(`/admin/users/${handle}/strike`, { method: 'POST', body: j({ reason, stage }) }),
+  adminUnsuspend: (handle: string) => req(`/admin/users/${handle}/unsuspend`, { method: 'POST' }),
+  adminAudit: () => req('/admin/audit'),
 }
 
 export function wsDmUrl(handle: string, token: string) {

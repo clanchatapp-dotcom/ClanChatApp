@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { Home, Search, MessageCircle, Bell, User, LogOut, Sparkles, PenSquare } from 'lucide-react'
+import { Home, Search, MessageCircle, Bell, User, LogOut, Sparkles, PenSquare, Shield } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 import { api } from '../lib/api'
 import { Avatar } from '../lib/ui'
@@ -35,6 +35,9 @@ export default function Layout() {
           </NavLink>
         ))}
         <NavLink to={`/u/${user?.handle}`} className={({ isActive }) => linkCls(isActive)}><User className="h-5 w-5" />My Profile</NavLink>
+        {user?.is_admin && (
+          <NavLink to="/admin" className={({ isActive }) => linkCls(isActive)}><Shield className="h-5 w-5" />Admin</NavLink>
+        )}
         <button onClick={() => nav('/?compose=1')} className="mt-3 flex items-center justify-center gap-2 bg-gradient-to-r from-brand to-violet-600 rounded-xl py-3 font-semibold hover:opacity-95">
           <PenSquare className="h-4 w-4" /> New Post
         </button>

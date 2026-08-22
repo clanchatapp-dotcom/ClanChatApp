@@ -1,12 +1,16 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Heart, Trash2 } from 'lucide-react'
+import { Heart, Trash2, Flag } from 'lucide-react'
 import { api } from '../lib/api'
 import { Avatar, TIER, TierKey, timeAgo } from '../lib/ui'
+
+const REPORT_CATS = ['harassment', 'hate', 'inappropriate', 'unlabelled_ai', 'impersonation', 'spam', 'csam', 'other']
 
 export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id: string) => void }) {
   const [liked, setLiked] = useState(post.liked)
   const [count, setCount] = useState(post.like_count)
+  const [showReport, setShowReport] = useState(false)
+  const [reported, setReported] = useState(false)
   const tier = TIER[(post.tier as TierKey)] || TIER.public
   const TierIcon = tier.icon
   const a = post.author || { id: '', handle: 'unknown', display_name: 'Unknown' }
@@ -45,9 +49,25 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
                 <Heart className={`h-4 w-4 ${liked ? 'fill-rose-400' : ''}`} /> {count > 0 && count}
               </button>
             ) : <span className="text-xs text-slate-600">Likes off for this tier</span>}
-            {post.is_mine && onDelete && (
-              <button onClick={() => onDelete(post.id)} className="ml-auto text-slate-500 hover:text-rose-400"><Trash2 className="h-4 w-4" /></button>
-            )}
+            <div className="ml-auto flex items-center gap-3 relative">
+              {post.is_mine && onDelete && (
+                <button onClick={() => onDelete(post.id)} className="text-slate-500 hover:text-rose-400"><Trash2 className="h-4 w-4" /></button>
+              )}
+              {!post.is_mine && (
+                reported ? <span className="text-xs text-emerald-400">Reported</span> : (
+                  <button onClick={() => setShowReport(s => !s)} className="text-slate-500 hover:text-amber-400"><Flag className="h-4 w-4" /></button>
+                )
+              )}
+              {showReport && (
+                <div className="absolute bottom-8 right-0 z-20 w-44 bg-panel2 border border-edge rounded-xl p-1 shadow-xl">
+                  <div className="text-xs text-slate-500 px-2 py-1">Report post</div>
+                  {REPORT_CATS.map(c => (
+                    <button key={c} onClick={async () => { try { await api.report('post', post.id, c); setReported(true) } catch {} setShowReport(false) }}
+                      className="w-full text-left text-sm px-2 py-1.5 rounded-lg hover:bg-white/5 capitalize">{c.replace('_', ' ')}</button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

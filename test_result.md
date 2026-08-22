@@ -238,7 +238,35 @@ backend:
         -agent: "testing"
         -comment: "✅ LIVEKIT TOKEN WORKING (2/2). Without auth correctly returns 401. With auth returns server_url (wss://clanchat-rlnieg0m.livekit.cloud), participant_token (JWT with 3 segments), and room name. Token format correct."
 
+  - task: "Admin & reporting: /api/report + /api/admin/* (admin-gated, three-strike, CSAM auto-quarantine, audit)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Admin identity via ADMIN_EMAILS env (default admin@sandbox.clanchat). Dev-login name 'Admin' -> email admin@sandbox.clanchat -> is_admin true. POST /api/report {target_type,target_id,category,note}; csam/underage auto-quarantine the post (removed from feed) + separate csam_reports. Admin endpoints (require is_admin else 403): GET /api/admin/stats, GET /api/admin/reports?status=open, POST /api/admin/reports/{id}/action {action: dismiss|remove_content|warn_user|strike_user}, GET /api/admin/csam, GET /api/admin/users?q=, POST /api/admin/users/{handle}/strike {reason,stage?}, POST /api/admin/users/{handle}/unsuspend, GET /api/admin/audit. Three-strike: strike1=48h suspend, strike2=7d, strike3=banned. Audit log records every admin action."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ ALL 45 ADMIN & REPORTING TESTS PASSED (100% success). Comprehensive testing completed: (1) ADMIN GATING: All 16 tests passed - 401 without token, 403 with regular user token, 200 with admin token for all endpoints (GET /admin/stats, /admin/reports, /admin/csam, /admin/users, /admin/audit, POST /admin/users/{handle}/strike). (2) REPORTING: Valid category (harassment) returns 200 with ok=true, invalid category returns 400. (3) CSAM AUTO-QUARANTINE: CSAM-reported post correctly hidden from victim's own feed AND profile posts, appears in admin CSAM queue. (4) ADMIN STATS: Returns numeric counts - users=8, posts=7, open_reports>=1, csam_reports>=1. (5) ADMIN REPORTS + ACTIONS: Harassment report shows target_user.handle=victim with post text preview. All 4 actions working: 'dismiss' changes status to dismissed, 'remove_content' quarantines post (hidden from feed), 'warn_user' returns stage='soft_warning', 'strike_user' returns stage='strike_1_48h' and increments strikes. (6) STRIKE ESCALATION: Strike 1 -> strike_1_48h, Strike 2 -> strike_2_7d, Strike 3 -> strike_3_permanent (banned). Unsuspend resets strikes to 0 and banned to false. (7) AUDIT LOG: Returns non-empty list with admin_handle, action, and target fields. Admin system is production-ready."
+
+
 frontend:
+  - task: "Admin panel UI (/admin) — reports, csam, users, audit"
+    implemented: true
+    working: "NA"
+    file: "src/pages/Admin.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Admin nav item shows only when user.is_admin. Not agent-tested yet."
+
   - task: "Session persistence / token refresh (no logout when leaving & returning)"
     implemented: true
     working: true
@@ -260,11 +288,12 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "2.1"
-  test_sequence: 3
-  run_ui: true
+  test_sequence: 4
+  run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Admin & reporting: /api/report + /api/admin/* (admin-gated, three-strike, CSAM auto-quarantine, audit)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -276,3 +305,5 @@ agent_communication:
     -message: "🎉 BACKEND TESTING COMPLETE - ALL 39 TESTS PASSED (100% success rate). Comprehensive testing performed with Alpha & Beta users across all 8 backend tasks. KEY VALIDATIONS: (1) Auth: JWT validation working perfectly, 401 for invalid tokens. (2) Three-tier visibility: Server-side enforcement PERFECT - Beta sees only public posts initially, then public+followers after follow, then all tiers after inner circle acceptance. (3) Follows: Both open and approval modes working. (4) Inner Circle: Invite/accept flow working. (5) DMs: Tier-gating enforced, AES-256-GCM encryption VERIFIED at rest via MongoDB (content_enc is base64 ciphertext, NOT plaintext), WebSocket real-time delivery working. (6) Likes: Public-only enforcement working (400 for non-public). (7) Search/Trending/Activity: No privacy leaks, only public posts in search. (8) Storage: Supabase upload working, signed URLs accessible. (9) LiveKit: Token generation working with correct wss:// URL and 3-segment JWT. NO MAJOR ISSUES FOUND. Backend is production-ready."
     -agent: "testing"
     -message: "✅ SESSION PERSISTENCE BUG FIX VERIFIED - ALL TESTS PASSED. Comprehensive testing of the session persistence fix in src/lib/auth.tsx completed successfully. All 5 test scenarios passed: (1) Login with dev account works correctly, (2) CORE BUG FIX: Full page reload maintains session - user stays logged in, (3) Navigation through app (Messages → Activity → Feed) + reload maintains session, (4) New tab/window opens with session persisted via localStorage, (5) Logout works correctly and removes token. No console errors, no network errors. The user-reported bug 'leaving the app and coming back logs you straight out' has been RESOLVED. Frontend session persistence is now production-ready."
+    -agent: "testing"
+    -message: "✅ ADMIN & REPORTING BACKEND TESTING COMPLETE - ALL 45 TESTS PASSED (100% success). Focused testing on admin/moderation system as requested. RESULTS: (1) Admin Gating: Perfect - all endpoints return 401 without token, 403 for regular users, 200 for admin users. (2) Reporting: Valid categories accepted (harassment), invalid categories rejected (400). (3) CSAM Auto-Quarantine: CSAM-reported posts immediately hidden from ALL feeds including author's own feed and profile, correctly appear in admin CSAM queue. (4) Admin Stats: Returns correct numeric counts for users, posts, open_reports, csam_reports. (5) Admin Reports + Actions: All 4 actions working perfectly - dismiss (changes status to dismissed), remove_content (quarantines post), warn_user (soft_warning stage, no strike increment), strike_user (strike_1_48h stage, increments strikes). (6) Strike Escalation: Three-strike system working perfectly - Strike 1 (48h), Strike 2 (7d), Strike 3 (permanent ban), Unsuspend (resets strikes to 0, banned to false). (7) Audit Log: All admin actions logged with admin_handle, action, and target fields. NO ISSUES FOUND. Admin & reporting system is production-ready."

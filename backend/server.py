@@ -35,6 +35,14 @@ DM_KEY = base64.b64decode(os.environ['DM_ENC_KEY'])
 LIVEKIT_URL = os.environ.get('LIVEKIT_URL', '')
 LIVEKIT_API_KEY = os.environ.get('LIVEKIT_API_KEY', '')
 LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
+ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get('ADMIN_EMAILS', 'admin@sandbox.clanchat').split(',') if e.strip()}
+
+REPORT_CATEGORIES = {'csam', 'underage', 'harassment', 'hate', 'self_harm',
+                     'inappropriate', 'unlabelled_ai', 'impersonation', 'spam', 'other'}
+
+
+def is_admin_user(prof: dict) -> bool:
+    return bool(prof.get('is_admin')) or (prof.get('email') or '').lower() in ADMIN_EMAILS
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -118,6 +126,8 @@ async def in_inner(owner: str, member: str) -> bool:
     return bool(await db.inner.find_one({'owner_id': owner, 'member_id': member, 'status': 'accepted'}))
 
 async def can_view(viewer: str, post: dict) -> bool:
+    if post.get('quarantined'):
+        return False
     if post['author_id'] == viewer:
         return True
     t = post['tier']
@@ -170,6 +180,8 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         out['real_name'] = prof.get('real_name')
         out['email'] = prof.get('email')
         out['followers_count'] = followers_count  # private: owner only
+        out['is_admin'] = is_admin_user(prof)
+        out['strikes'] = prof.get('strikes', 0)
     return out
 
 async def post_out(p: dict, viewer_id: str) -> dict:
@@ -616,3 +628,176 @@ async def ws_dm(ws: WebSocket, handle: str):
         manager.disconnect(room, ws)
     except Exception:
         manager.disconnect(room, ws)
+
+
+# ----------------------------- Reporting & Admin -----------------------------
+
+class ReportIn(BaseModel):
+    target_type: str  # post | user | message
+    target_id: str
+    category: str
+    note: Optional[str] = ''
+
+class ActionIn(BaseModel):
+    action: str  # dismiss | remove_content | warn_user | strike_user
+    reason: Optional[str] = ''
+
+class StrikeIn(BaseModel):
+    reason: str
+    stage: Optional[str] = None  # soft | strike (auto-increments if 'strike')
+
+
+async def require_admin(u: dict = Depends(get_current_user)) -> dict:
+    if not is_admin_user(u):
+        raise HTTPException(403, 'Admin access required')
+    return u
+
+async def audit(admin: dict, action: str, target: str, detail: str = ''):
+    await db.audit.insert_one({
+        'id': str(uuid.uuid4()), 'admin_handle': admin['handle'], 'admin_id': admin['id'],
+        'action': action, 'target': target, 'detail': detail,
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    })
+
+async def _resolve_target_user(target_type: str, target_id: str) -> Optional[dict]:
+    if target_type == 'user':
+        return await db.profiles.find_one({'$or': [{'id': target_id}, {'handle': target_id}]}, {'_id': 0})
+    if target_type == 'post':
+        p = await db.posts.find_one({'id': target_id})
+        if p:
+            return await db.profiles.find_one({'id': p['author_id']}, {'_id': 0})
+    return None
+
+async def apply_strike(prof: dict, reason: str, admin: dict, soft: bool = False):
+    now = datetime.now(timezone.utc)
+    if soft:
+        await add_activity(prof['id'], 'soft_warning', admin, f'Soft warning: {reason}')
+        await audit(admin, 'soft_warning', prof['handle'], reason)
+        return {'strikes': prof.get('strikes', 0), 'stage': 'soft_warning'}
+    strikes = prof.get('strikes', 0) + 1
+    upd = {'strikes': strikes, 'last_reason': reason}
+    if strikes == 1:
+        upd['suspended_until'] = (now + timedelta(hours=48)).isoformat(); stage = 'strike_1_48h'
+    elif strikes == 2:
+        upd['suspended_until'] = (now + timedelta(days=7)).isoformat(); stage = 'strike_2_7d'
+    else:
+        upd['banned'] = True; stage = 'strike_3_permanent'
+    await db.profiles.update_one({'id': prof['id']}, {'$set': upd})
+    await add_activity(prof['id'], 'strike', admin, f'{stage}: {reason}')
+    await audit(admin, stage, prof['handle'], reason)
+    return {'strikes': strikes, 'stage': stage}
+
+
+@app.post('/api/report')
+async def create_report(body: ReportIn, u: dict = Depends(get_current_user)):
+    if body.category not in REPORT_CATEGORIES:
+        raise HTTPException(400, 'Invalid category')
+    doc = {
+        'id': str(uuid.uuid4()), 'target_type': body.target_type, 'target_id': body.target_id,
+        'category': body.category, 'note': (body.note or '')[:500],
+        'reporter_id': u['id'], 'reporter_handle': u['handle'],
+        'status': 'open', 'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    await db.reports.insert_one(dict(doc))
+    # CSAM / underage -> auto-quarantine content + separate queue (law-enforcement matter)
+    if body.category in ('csam', 'underage'):
+        await db.csam_reports.insert_one({**doc})
+        if body.target_type == 'post':
+            await db.posts.update_one({'id': body.target_id}, {'$set': {'quarantined': True}})
+    return {'ok': True, 'id': doc['id']}
+
+
+@app.get('/api/admin/stats')
+async def admin_stats(a: dict = Depends(require_admin)):
+    return {
+        'users': await db.profiles.count_documents({}),
+        'posts': await db.posts.count_documents({}),
+        'open_reports': await db.reports.count_documents({'status': 'open'}),
+        'csam_reports': await db.csam_reports.count_documents({}),
+        'suspended': await db.profiles.count_documents({'suspended_until': {'$exists': True}}),
+        'banned': await db.profiles.count_documents({'banned': True}),
+    }
+
+@app.get('/api/admin/reports')
+async def admin_reports(status: str = 'open', a: dict = Depends(require_admin)):
+    q = {} if status == 'all' else {'status': status}
+    out = []
+    async for r in db.reports.find(q, {'_id': 0}).sort('created_at', -1).limit(100):
+        target_user = await _resolve_target_user(r['target_type'], r['target_id'])
+        preview = None
+        if r['target_type'] == 'post':
+            p = await db.posts.find_one({'id': r['target_id']}, {'_id': 0})
+            preview = {'text': (p.get('text') if p else '(deleted)'), 'media_url': p.get('media_url') if p else None,
+                       'tier': p.get('tier') if p else None, 'quarantined': p.get('quarantined') if p else None}
+        out.append({**r, 'target_user': {'handle': target_user['handle'], 'display_name': target_user['display_name']} if target_user else None,
+                    'preview': preview})
+    return out
+
+@app.post('/api/admin/reports/{report_id}/action')
+async def admin_action(report_id: str, body: ActionIn, a: dict = Depends(require_admin)):
+    r = await db.reports.find_one({'id': report_id})
+    if not r:
+        raise HTTPException(404, 'Report not found')
+    result = {'action': body.action}
+    if body.action == 'dismiss':
+        await db.reports.update_one({'id': report_id}, {'$set': {'status': 'dismissed'}})
+        await audit(a, 'dismiss_report', report_id, body.reason or '')
+    elif body.action == 'remove_content':
+        if r['target_type'] == 'post':
+            await db.posts.update_one({'id': r['target_id']}, {'$set': {'quarantined': True}})
+        await db.reports.update_one({'id': report_id}, {'$set': {'status': 'actioned'}})
+        await audit(a, 'remove_content', r['target_id'], body.reason or '')
+    elif body.action in ('warn_user', 'strike_user'):
+        prof = await _resolve_target_user(r['target_type'], r['target_id'])
+        if not prof:
+            raise HTTPException(404, 'Target user not found')
+        result.update(await apply_strike(prof, body.reason or r['category'], a, soft=(body.action == 'warn_user')))
+        await db.reports.update_one({'id': report_id}, {'$set': {'status': 'actioned'}})
+    else:
+        raise HTTPException(400, 'Unknown action')
+    return {'ok': True, **result}
+
+@app.get('/api/admin/csam')
+async def admin_csam(a: dict = Depends(require_admin)):
+    out = []
+    async for r in db.csam_reports.find({}, {'_id': 0}).sort('created_at', -1).limit(100):
+        out.append(r)
+    return out
+
+@app.get('/api/admin/users')
+async def admin_users(q: str = '', a: dict = Depends(require_admin)):
+    query = {}
+    if q:
+        query = {'$or': [{'handle': {'$regex': q, '$options': 'i'}}, {'display_name': {'$regex': q, '$options': 'i'}}]}
+    out = []
+    async for p in db.profiles.find(query, {'_id': 0}).sort('created_at', -1).limit(100):
+        out.append({'id': p['id'], 'handle': p['handle'], 'display_name': p['display_name'],
+                    'email': p.get('email'), 'account_type': p.get('account_type', 'standard'),
+                    'strikes': p.get('strikes', 0), 'suspended_until': p.get('suspended_until'),
+                    'banned': p.get('banned', False), 'is_admin': is_admin_user(p),
+                    'created_at': p.get('created_at')})
+    return out
+
+@app.post('/api/admin/users/{handle}/strike')
+async def admin_strike(handle: str, body: StrikeIn, a: dict = Depends(require_admin)):
+    prof = await db.profiles.find_one({'handle': handle}, {'_id': 0})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    return {'ok': True, **await apply_strike(prof, body.reason, a, soft=(body.stage == 'soft'))}
+
+@app.post('/api/admin/users/{handle}/unsuspend')
+async def admin_unsuspend(handle: str, a: dict = Depends(require_admin)):
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    await db.profiles.update_one({'id': prof['id']}, {'$set': {'strikes': 0, 'banned': False},
+                                                       '$unset': {'suspended_until': '', 'last_reason': ''}})
+    await audit(a, 'unsuspend', handle, '')
+    return {'ok': True}
+
+@app.get('/api/admin/audit')
+async def admin_audit(a: dict = Depends(require_admin)):
+    out = []
+    async for r in db.audit.find({}, {'_id': 0}).sort('created_at', -1).limit(100):
+        out.append(r)
+    return out

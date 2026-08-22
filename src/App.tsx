@@ -7,6 +7,7 @@ import Profile from './pages/Profile'
 import Messages from './pages/Messages'
 import SearchPage from './pages/Search'
 import Activity from './pages/Activity'
+import Admin from './pages/Admin'
 import AuthCallback from './pages/AuthCallback'
 import { Loader2 } from 'lucide-react'
 
@@ -27,6 +28,7 @@ export default function App() {
           <Route path="/messages" element={<Messages />} />
           <Route path="/messages/:handle" element={<Messages />} />
           <Route path="/activity" element={<Activity />} />
+          <Route path="/admin" element={<Admin />} />
           <Route path="/u/:handle" element={<Profile />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
