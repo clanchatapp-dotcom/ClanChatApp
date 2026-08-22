@@ -96,30 +96,14 @@
 # END - Testing Protocol - DO NOT EDIT OR REMOVE THIS SECTION
 #====================================================================================================
 
-
-
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
-user_problem_statement: "ClanChat rebuild — React(Vite+TS) SPA + FastAPI backend, Supabase Google auth, Supabase JWT-protected API, Supabase Storage media, real-time group chat. Firebase removed."
+
+user_problem_statement: "ClanChat v4.0 core — React(Vite+TS) SPA + FastAPI. Three-tier privacy (Public/Followers/Inner Circle), chronological My Feed, #handle profiles, follows (open/approval) + Inner Circle invites, tier-gated AES-256-GCM encrypted DMs with realtime, likes (public only, anonymous), search + trending tags, activity, Supabase Storage media, LiveKit call tokens. Auth via Supabase (dev-login mints real HS256 JWT for testing)."
 
 backend:
-  - task: "Health check GET /api/"
-    implemented: true
-    working: true
-    file: "backend/server.py"
-    stuck_count: 0
-    priority: "low"
-    needs_retesting: false
-    status_history:
-        -working: "NA"
-        -agent: "main"
-        -comment: "Returns ok/service/time."
-        -working: true
-        -agent: "testing"
-        -comment: "✅ PASS - Returns {ok:true, service:'clanchat', time:ISO8601}. Status 200."
-
-  - task: "Sandbox dev login POST /api/dev/token"
+  - task: "Auth: dev login + Supabase JWT dependency + /api/me"
     implemented: true
     working: true
     file: "backend/server.py"
@@ -129,12 +113,12 @@ backend:
     status_history:
         -working: "NA"
         -agent: "main"
-        -comment: "Mints a real Supabase-compatible HS256 JWT signed with SUPABASE_JWT_SECRET. Body {name}. Returns access_token + user. Deterministic user id per email (uuid5). Use this token as Bearer for all protected routes."
+        -comment: "POST /api/dev/token {name} -> {access_token,user{handle}}; profiles get auto unique #handle. GET /api/me returns own profile (followers_count only visible to self). 401 for missing/bad token. Same name/email -> same user id (uuid5)."
         -working: true
         -agent: "testing"
-        -comment: "✅ PASS - Returns access_token (367 chars JWT) + user object. Deterministic: same name returns same user id (e9c356f8-edcd-5ac3-b95b-9a5d97193bf5 for 'Tester'). Token is valid HS256 JWT with aud=authenticated."
+        -comment: "✅ ALL AUTH TESTS PASSED (7/7). Created Alpha & Beta users with deterministic UUIDs. JWT validation working: valid tokens return profile, missing/malformed/wrong-signature tokens correctly return 401. Same name returns same user id (uuid5 deterministic)."
 
-  - task: "Supabase JWT auth dependency (GET /api/me)"
+  - task: "Three-tier posts + feed visibility (can_view enforced server-side)"
     implemented: true
     working: true
     file: "backend/server.py"
@@ -144,12 +128,12 @@ backend:
     status_history:
         -working: "NA"
         -agent: "main"
-        -comment: "HS256, aud=authenticated. Must 200 with valid token from /api/dev/token; must 401 for missing header, malformed token, and wrong/garbage signature."
+        -comment: "POST /api/posts {tier:public|followers|inner,text,tags,media_url}. GET /api/feed?scope=general|followers. CRITICAL: a 'followers' post must NOT appear to a non-follower; an 'inner' post must NOT appear to a non-inner-member; author always sees own. Use two dev users (UserA, UserB) to verify: B cannot see A's followers/inner posts until A approves follow / accepts B into inner. inner posts have tags stripped."
         -working: true
         -agent: "testing"
-        -comment: "✅ PASS - All scenarios tested: (a) Valid token -> 200 with user profile, (b) No Authorization header -> 401 'Missing Bearer token', (c) Malformed token 'abc.def.ghi' -> 401 'Invalid token', (d) Valid format but wrong signature -> 401 'Signature verification failed'."
+        -comment: "✅ THREE-TIER VISIBILITY PERFECT (7/7). Server-side enforcement working correctly: Beta (non-follower) sees ONLY Alpha's public post. After follow approval, Beta sees public+followers (NOT inner). After inner circle acceptance, Beta sees all three tiers. Inner posts correctly have empty tags array. Feed visibility matrix fully enforced."
 
-  - task: "Clans: list/create/join-by-code/join-by-id"
+  - task: "Follows (open/approval) + follow requests + accept"
     implemented: true
     working: true
     file: "backend/server.py"
@@ -159,12 +143,12 @@ backend:
     status_history:
         -working: "NA"
         -agent: "main"
-        -comment: "GET /api/clans (seeded General+Announcements). POST /api/clans creates + returns code. POST /api/clans/join {code}. POST /api/clans/{id}/join. member_count/is_member flags."
+        -comment: "POST /api/follow/{handle} -> status 'approved' if target follow_mode open (default) else 'pending'. Set follow_mode via PUT /api/profile {follow_mode:'approval'}. GET /api/follow-requests (incoming pending). POST /api/follow-requests/{followerHandle}/accept. DELETE /api/follow/{handle}."
         -working: true
         -agent: "testing"
-        -comment: "✅ PASS - All scenarios tested: (a) GET /api/clans returns seeded 'General' and 'Announcements' with member_count and is_member fields, (b) POST /api/clans creates clan with 6-char code (e.g., 'EFC3A3'), (c) POST /api/clans/join with valid code joins successfully (is_member=true), (d) POST /api/clans/{id}/join joins by id successfully, (e) Invalid code returns 404 'No clan with that code'."
+        -comment: "✅ FOLLOW MODES WORKING (4/4). Open mode: Beta follows Alpha -> auto-approved. Approval mode: Beta sets follow_mode='approval', Alpha follows Beta -> pending status. Beta sees Alpha in follow-requests. Beta accepts -> approved. Both modes working correctly."
 
-  - task: "Messages: history + send + auto-join on open"
+  - task: "Inner Circle invites (owner invites; member accepts)"
     implemented: true
     working: true
     file: "backend/server.py"
@@ -174,12 +158,12 @@ backend:
     status_history:
         -working: "NA"
         -agent: "main"
-        -comment: "GET /api/clans/{id}/messages returns history (and auto-joins caller). POST /api/clans/{id}/messages {text} persists + broadcasts. Empty message -> 400."
+        -comment: "POST /api/inner/invite/{handle} (owner->pending). POST /api/inner/accept/{ownerHandle} (member accepts -> accepted). GET /api/inner lists accepted members. After accept, member can see owner's inner-tier posts."
         -working: true
         -agent: "testing"
-        -comment: "✅ PASS - All scenarios tested: (a) GET /api/clans/{id}/messages returns message array and auto-joins caller, (b) POST /api/clans/{id}/messages with text creates message with id/user_name/created_at fields, (c) POST with empty text and no media_url returns 400 'Empty message'."
+        -comment: "✅ INNER CIRCLE FLOW WORKING (2/2). Alpha invites Beta -> status 'pending'. Beta accepts -> status 'accepted'. After acceptance, Beta can see Alpha's inner-tier posts (verified in three-tier visibility tests)."
 
-  - task: "Supabase Storage upload POST /api/upload"
+  - task: "Tier-gated AES-256-GCM encrypted DMs + realtime WS"
     implemented: true
     working: true
     file: "backend/server.py"
@@ -189,12 +173,12 @@ backend:
     status_history:
         -working: "NA"
         -agent: "main"
-        -comment: "Multipart file -> uploads to Supabase bucket clanchat-media (service role) -> returns {path, signed_url}. signed_url should be an HTTPS URL that returns the file (GET 200). Requires auth."
+        -comment: "can_dm rule: allowed if in each other's Inner Circle (either direction) OR (target.dm_open AND viewer is approved follower). POST /api/dms/{handle} 403 if not allowed, else stores encrypted. GET /api/dms/{handle} returns decrypted messages + can_dm + peer. GET /api/dms thread list. VERIFY ENCRYPTION AT REST: connect pymongo to mongodb://localhost:27017 db 'clanchat' collection 'dms' and confirm the 'content_enc' field is base64 ciphertext, NOT the plaintext message. WS: /api/ws/dm/{handle}?token=JWT rejects without token; when one user POSTs a DM, the other's socket receives {type:'dm',message:{text,...}}."
         -working: true
         -agent: "testing"
-        -comment: "✅ PASS - All scenarios tested: (a) POST /api/upload without auth returns 401, (b) POST /api/upload with auth and PNG file returns {path, signed_url} where signed_url is HTTPS URL, (c) GET signed_url returns 200 with file content (70 bytes PNG verified). Real Supabase Storage integration working."
+        -comment: "✅ DMs + ENCRYPTION + WEBSOCKET ALL WORKING (6/6). Tier-gating: Alpha<->Beta DMs allowed (inner circle). POST /api/dms sends encrypted message. GET /api/dms/{handle} returns decrypted messages with can_dm=true. GET /api/dms lists threads. ENCRYPTION VERIFIED: MongoDB inspection confirms content_enc field contains base64 ciphertext (NNnbPoG+jnRhVftB0e3k...), NOT plaintext. WebSocket: connection without token rejected, with valid token receives real-time DM broadcasts {type:'dm',message:{text:...}}."
 
-  - task: "WebSocket /api/ws/{clan_id} realtime broadcast"
+  - task: "Likes (public tier only, anonymous count)"
     implemented: true
     working: true
     file: "backend/server.py"
@@ -204,28 +188,73 @@ backend:
     status_history:
         -working: "NA"
         -agent: "main"
-        -comment: "Connect with ?token=JWT. Rejects (close 1008) without/with invalid token. On POST message to a clan, all connected sockets for that clan receive {type:message, message:{...}}."
+        -comment: "POST /api/posts/{id}/like toggles like on PUBLIC posts only (returns {liked,like_count}); liking a followers/inner post -> 400."
         -working: true
         -agent: "testing"
-        -comment: "✅ PASS - All scenarios tested: (a) Connection without token is rejected/closed, (b) Connection with invalid token is rejected/closed, (c) Connection with valid token succeeds and receives broadcast when message is posted via REST API. Broadcast format: {type:'message', message:{id, text, user_name, created_at}}. WebSocket accessible through ingress at wss://.../api/ws/{clan_id}."
+        -comment: "✅ LIKES WORKING (3/3). Beta likes Alpha's public post -> liked=true, like_count=1. Like again -> toggles off (liked=false, like_count=0). Attempting to like followers-tier post correctly returns 400. Public-only enforcement working."
+
+  - task: "Search + trending tags + activity + follow-requests"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "GET /api/search?q= returns {users,posts} (only PUBLIC posts by tag, handle/name match). GET /api/trending top public tags last 24h. GET /api/activity events (like/follow/inner). Search must never leak followers/inner posts."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ SEARCH/TRENDING/ACTIVITY WORKING (4/4). Search by handle finds Alpha. Search by tag returns ONLY public posts (no followers/inner leakage). Trending returns top tags (welcome, clanchat, privacy, tiers, test). Activity feed shows events (like, follow, follow_accepted, inner_accepted). No privacy leaks detected."
+
+  - task: "Supabase Storage upload /api/upload"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Multipart image/video -> Supabase bucket clanchat-media -> {path,signed_url,media_type}. signed_url must GET 200. 401 without auth."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ STORAGE UPLOAD WORKING (3/3). Upload without auth correctly returns 401. Upload with auth returns path, signed_url (https://...), and media_type. Signed URL is accessible (GET 200, 70 bytes). Supabase Storage integration working."
+
+  - task: "LiveKit call token /api/livekit/token"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "POST /api/livekit/token {room} (auth required) -> {server_url(wss://),participant_token(JWT with 3 segments),room}. 401 without auth."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ LIVEKIT TOKEN WORKING (2/2). Without auth correctly returns 401. With auth returns server_url (wss://clanchat-rlnieg0m.livekit.cloud), participant_token (JWT with 3 segments), and room name. Token format correct."
 
 frontend:
-  - task: "Login + Google/dev auth + real-time Chat UI"
+  - task: "ClanChat v4 UI (feed/profile/messages/search/activity, new black+indigo theme)"
     implemented: true
     working: "NA"
-    file: "src/pages/Chat.tsx"
+    file: "src/pages/Feed.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: false
     status_history:
         -working: "NA"
         -agent: "main"
-        -comment: "Not yet tested by agent (awaiting user go-ahead)."
+        -comment: "Rendered & verified via screenshot (feed, composer, nav, trending). Not yet agent-tested; awaiting user go-ahead for automated frontend tests."
 
 metadata:
   created_by: "main_agent"
-  version: "1.0"
-  test_sequence: 1
+  version: "2.0"
+  test_sequence: 2
   run_ui: false
 
 test_plan:
@@ -236,6 +265,6 @@ test_plan:
 
 agent_communication:
     -agent: "main"
-    -message: "Backend is FastAPI on :8001, proxied at /api via the external URL. To authenticate: POST /api/dev/token {name:'Tester'} -> use returned access_token as 'Authorization: Bearer'. Please test all backend tasks incl. the real Supabase Storage upload (verify signed_url is fetchable) and the WebSocket broadcast."
+    -message: "Iteration 2: full ClanChat v4 social core. Auth via POST /api/dev/token {name} -> Bearer access_token (real HS256 Supabase-compatible JWT). Create TWO users (e.g. names 'Alpha' and 'Beta') to test the social graph. FOCUS on the server-side tier visibility matrix (followers/inner posts must be invisible to non-members), Inner-Circle invite/accept flow, DM tier-gating + AES-256-GCM encryption AT REST (inspect dms.content_enc via pymongo), and the DM realtime websocket. Also verify LiveKit token endpoint returns a wss server_url + JWT."
     -agent: "testing"
-    -message: "✅ ALL BACKEND TESTS PASSED (20/20). Tested: health check, dev token (deterministic), JWT auth (all scenarios), clans (list/create/join by code/join by id/bad code), messages (history/send/auto-join/empty validation), Supabase Storage upload (with/without auth, signed URL verified), WebSocket (no token/invalid token/valid token with broadcast). All endpoints working correctly. Real Supabase Storage integration confirmed. WebSocket realtime broadcast working through ingress. Backend is production-ready."
+    -message: "🎉 BACKEND TESTING COMPLETE - ALL 39 TESTS PASSED (100% success rate). Comprehensive testing performed with Alpha & Beta users across all 8 backend tasks. KEY VALIDATIONS: (1) Auth: JWT validation working perfectly, 401 for invalid tokens. (2) Three-tier visibility: Server-side enforcement PERFECT - Beta sees only public posts initially, then public+followers after follow, then all tiers after inner circle acceptance. (3) Follows: Both open and approval modes working. (4) Inner Circle: Invite/accept flow working. (5) DMs: Tier-gating enforced, AES-256-GCM encryption VERIFIED at rest via MongoDB (content_enc is base64 ciphertext, NOT plaintext), WebSocket real-time delivery working. (6) Likes: Public-only enforcement working (400 for non-public). (7) Search/Trending/Activity: No privacy leaks, only public posts in search. (8) Storage: Supabase upload working, signed URLs accessible. (9) LiveKit: Token generation working with correct wss:// URL and 3-segment JWT. NO MAJOR ISSUES FOUND. Backend is production-ready."

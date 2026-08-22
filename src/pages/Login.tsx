@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
-import { MessageCircle, Zap, Users, ShieldCheck } from 'lucide-react'
+import { MessageCircle, Lock, Users, Sparkles } from 'lucide-react'
 
 export default function Login() {
   const { loginDev, loginGoogle } = useAuth()
@@ -21,38 +21,36 @@ export default function Login() {
 
   return (
     <div className="min-h-full grid lg:grid-cols-2">
-      {/* Left hero */}
       <div className="hidden lg:flex flex-col justify-between p-12 relative overflow-hidden">
         <div className="flex items-center gap-3">
-          <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-indigo-400 to-fuchsia-500 grid place-items-center shadow-lg shadow-indigo-900/40">
+          <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-brand to-violet-600 grid place-items-center shadow-lg shadow-violet-900/40">
             <MessageCircle className="h-6 w-6 text-white" />
           </div>
           <span className="text-2xl font-extrabold tracking-tight">ClanChat</span>
         </div>
         <div className="space-y-6 max-w-md">
           <h1 className="text-5xl font-extrabold leading-tight">
-            Where your <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-fuchsia-400">clan</span> comes alive.
+            Your personal <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand to-violet-400">clubhouse</span>.
           </h1>
-          <p className="text-slate-300 text-lg">Real-time group chat with instant media sharing. Sign in and jump straight into the conversation.</p>
+          <p className="text-slate-300 text-lg">No algorithm. No ads in your feed. No toxic metrics. Your circle. Your rules. No bullshit.</p>
           <div className="space-y-3 pt-2">
-            {[[Zap, 'Live messages the instant they are sent'], [Users, 'Create clans or join with a code'], [ShieldCheck, 'Secure Supabase auth & storage']].map(([Icon, t]: any, i) => (
+            {[[Users, 'Three tiers: Public, Followers & Inner Circle'], [Lock, 'Tier-gated, encrypted DMs & calls'], [Sparkles, 'Chronological feed — never an algorithm']].map(([Icon, t]: any, i) => (
               <div key={i} className="flex items-center gap-3 text-slate-200">
-                <div className="h-9 w-9 rounded-xl bg-white/5 border border-edge grid place-items-center"><Icon className="h-4.5 w-4.5 text-indigo-300" /></div>
+                <div className="h-9 w-9 rounded-xl bg-white/5 border border-edge grid place-items-center"><Icon className="h-4 w-4 text-brand" /></div>
                 <span>{t}</span>
               </div>
             ))}
           </div>
         </div>
         <div className="text-slate-500 text-sm">app.clanchat.mobile · web + android</div>
-        <div className="absolute -bottom-24 -right-24 h-80 w-80 rounded-full bg-fuchsia-600/20 blur-3xl" />
-        <div className="absolute -top-24 -left-16 h-72 w-72 rounded-full bg-indigo-600/20 blur-3xl" />
+        <div className="absolute -bottom-24 -right-24 h-80 w-80 rounded-full bg-violet-600/20 blur-3xl" />
+        <div className="absolute -top-24 -left-16 h-72 w-72 rounded-full bg-brand/20 blur-3xl" />
       </div>
 
-      {/* Right card */}
       <div className="flex items-center justify-center p-6">
-        <div className="w-full max-w-sm bg-panel/80 backdrop-blur border border-edge rounded-3xl p-8 shadow-2xl shadow-black/40">
+        <div className="w-full max-w-sm bg-panel/80 backdrop-blur border border-edge rounded-3xl p-8 shadow-2xl shadow-black/50">
           <div className="lg:hidden flex items-center gap-3 mb-6">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-indigo-400 to-fuchsia-500 grid place-items-center"><MessageCircle className="h-5 w-5 text-white" /></div>
+            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-brand to-violet-600 grid place-items-center"><MessageCircle className="h-5 w-5 text-white" /></div>
             <span className="text-xl font-extrabold">ClanChat</span>
           </div>
           <h2 className="text-2xl font-bold">Welcome back</h2>
@@ -71,9 +69,9 @@ export default function Login() {
           <form onSubmit={dev} className="space-y-3">
             <label className="text-xs text-slate-400">Quick sandbox sign-in (testing)</label>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="Your display name"
-              className="w-full bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-indigo-400 transition" />
+              className="w-full bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand transition" />
             <button disabled={busy}
-              className="w-full bg-gradient-to-r from-indigo-500 to-fuchsia-500 font-semibold rounded-xl py-3 hover:opacity-95 transition disabled:opacity-60">
+              className="w-full bg-gradient-to-r from-brand to-violet-600 font-semibold rounded-xl py-3 hover:opacity-95 transition disabled:opacity-60">
               {busy ? 'Please wait…' : 'Enter ClanChat'}
             </button>
           </form>

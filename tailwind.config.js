@@ -3,18 +3,18 @@ export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
-      fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-      },
+      fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
       colors: {
-        ink: '#0b1020',
-        panel: '#121933',
-        edge: '#232c4d',
+        ink: '#050507',
+        panel: '#0d0d13',
+        panel2: '#14141c',
+        edge: '#20212e',
+        brand: { DEFAULT: '#6d5efc', 600: '#5b4df0', 700: '#4a3dd6' },
       },
       keyframes: {
-        pop: { '0%': { transform: 'scale(.96)', opacity: '0' }, '100%': { transform: 'scale(1)', opacity: '1' } },
+        pop: { '0%': { transform: 'translateY(4px) scale(.98)', opacity: '0' }, '100%': { transform: 'translateY(0) scale(1)', opacity: '1' } },
       },
-      animation: { pop: 'pop .15s ease-out' },
+      animation: { pop: 'pop .18s ease-out' },
     },
   },
   plugins: [],
