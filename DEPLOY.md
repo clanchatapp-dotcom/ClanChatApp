@@ -57,3 +57,19 @@ Open in Android Studio instead if you prefer: `npx cap open android`.
 
 ## 3. GitHub
 `.gitignore` already excludes `.env*` (keeps `.env.example`), `*.keystore`, built assets, and Android generated/machine files. Safe to push.
+
+## 4. CI: auto-build the APK (GitHub Actions)
+Workflow: `.github/workflows/android-apk.yml` — runs on push to main/master (and manual "Run workflow"). It builds the web app, `cap sync`, builds the **debug APK**, and uploads it as an artifact `clanchat-debug-apk` (download from the Actions run page).
+
+Add these under **GitHub repo → Settings → Secrets and variables → Actions**:
+- `REACT_APP_API_URL` — your deployed backend URL (required, baked into the build).
+- `REACT_APP_SUPABASE_ANON_KEY` — Supabase anon key.
+- `ANDROID_KEYSTORE_BASE64` — base64 of your ONE shared `debug.keystore` (keeps SHA-1 stable so Google sign-in keeps working). Generate once locally:
+  ```bash
+  keytool -genkey -v -keystore debug.keystore -storepass android -keypass android \
+    -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=ClanChat Debug,O=ClanChat,C=GB"
+  base64 -w0 debug.keystore    # copy the output into the secret (macOS: base64 -i debug.keystore | pbcopy)
+  ```
+- Optional overrides (else public defaults are used): `REACT_APP_SUPABASE_URL`, `REACT_APP_GOOGLE_WEB_CLIENT_ID`.
+
+If `ANDROID_KEYSTORE_BASE64` is not set, the build still runs but uses a random keystore (Google sign-in won't work until its SHA-1 is registered) — the workflow prints a warning. Register the keystore's SHA-1 on the Android OAuth client in Google Cloud Console.
