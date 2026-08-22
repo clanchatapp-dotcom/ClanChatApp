@@ -1,531 +1,496 @@
 #!/usr/bin/env python3
 """
-FOCUSED REGRESSION TEST for ClanChat deploy-prep changes
-Tests: Auth, Three-tier visibility, Encrypted DMs, Likes, Admin gating
+Backend test for Admin: flag suspicious accounts + discreet encrypted-DM review
+Tests the NEW admin feature for flagging accounts and reviewing their encrypted DMs.
 """
-import os
+import requests
+import json
 import sys
-import httpx
-import asyncio
-from motor.motor_asyncio import AsyncIOMotorClient
-from dotenv import load_dotenv
 
-# Load environment
-load_dotenv('/app/.env')
+# Base URL from .env
+BASE_URL = "https://auth-consolidation-3.preview.emergentagent.com/api"
 
-BASE_URL = os.getenv('NEXT_PUBLIC_BASE_URL', 'http://localhost:3000')
-API_URL = f"{BASE_URL}/api"
-MONGO_URL = os.getenv('MONGO_URL', 'mongodb://localhost:27017')
-DB_NAME = os.getenv('DB_NAME', 'clanchat')
+def print_test(name, passed, details=""):
+    status = "✅ PASS" if passed else "❌ FAIL"
+    print(f"{status}: {name}")
+    if details:
+        print(f"  → {details}")
+    if not passed:
+        sys.exit(1)
 
-print(f"🔧 Testing against: {API_URL}")
-print(f"🔧 MongoDB: {MONGO_URL}/{DB_NAME}")
+def create_user(name):
+    """Create a dev user and return (token, user_data)"""
+    resp = requests.post(f"{BASE_URL}/dev/token", json={"name": name})
+    if resp.status_code != 200:
+        print(f"❌ FAIL: Could not create user {name}: {resp.status_code} {resp.text}")
+        sys.exit(1)
+    data = resp.json()
+    return data['access_token'], data['user']
 
-# Test counters
-tests_passed = 0
-tests_failed = 0
+def headers(token):
+    """Return auth headers"""
+    return {"Authorization": f"Bearer {token}"}
 
-def test_result(name: str, passed: bool, detail: str = ""):
-    global tests_passed, tests_failed
-    if passed:
-        tests_passed += 1
-        print(f"✅ {name}")
-        if detail:
-            print(f"   {detail}")
-    else:
-        tests_failed += 1
-        print(f"❌ {name}")
-        if detail:
-            print(f"   {detail}")
+print("\n" + "="*80)
+print("ADMIN FLAG + DISCREET DM REVIEW TESTS")
+print("="*80 + "\n")
 
-async def main():
-    global tests_passed, tests_failed
+# ============================================================================
+# SETUP: Create users
+# ============================================================================
+print("SETUP: Creating users...")
+admin_token, admin_user = create_user("Admin")
+suspect_token, suspect_user = create_user("Suspect")
+contact_token, contact_user = create_user("Contact")
+
+print(f"  Admin: {admin_user['handle']} (email: admin@sandbox.clanchat)")
+print(f"  Suspect: {suspect_user['handle']}")
+print(f"  Contact: {contact_user['handle']}")
+
+# Verify admin has is_admin=true
+me_resp = requests.get(f"{BASE_URL}/me", headers=headers(admin_token))
+if me_resp.status_code == 200:
+    me_data = me_resp.json()
+    is_admin = me_data.get('is_admin', False)
+    print_test("Admin user has is_admin=true", is_admin, f"is_admin={is_admin}")
+else:
+    print_test("Admin user verification", False, f"GET /me failed: {me_resp.status_code}")
+
+# ============================================================================
+# SETUP: Create DM conversation between Suspect and Contact
+# ============================================================================
+print("\nSETUP: Creating DM conversation between Suspect and Contact...")
+
+# Step 1: Suspect invites Contact to inner circle
+invite_resp = requests.post(
+    f"{BASE_URL}/inner/invite/{contact_user['handle']}",
+    headers=headers(suspect_token)
+)
+print_test(
+    "Suspect invites Contact to inner circle",
+    invite_resp.status_code == 200,
+    f"Status: {invite_resp.status_code}"
+)
+
+# Step 2: Contact accepts Suspect's inner circle invite
+accept_resp = requests.post(
+    f"{BASE_URL}/inner/accept/{suspect_user['handle']}",
+    headers=headers(contact_token)
+)
+print_test(
+    "Contact accepts Suspect's inner circle invite",
+    accept_resp.status_code == 200,
+    f"Status: {accept_resp.status_code}"
+)
+
+# Step 3: Suspect sends DM to Contact
+dm1_resp = requests.post(
+    f"{BASE_URL}/dms/{contact_user['handle']}",
+    headers=headers(suspect_token),
+    json={"text": "secret plan alpha"}
+)
+print_test(
+    "Suspect sends DM 'secret plan alpha' to Contact",
+    dm1_resp.status_code == 200,
+    f"Status: {dm1_resp.status_code}"
+)
+
+# Step 4: Contact sends DM to Suspect
+dm2_resp = requests.post(
+    f"{BASE_URL}/dms/{suspect_user['handle']}",
+    headers=headers(contact_token),
+    json={"text": "roger that bravo"}
+)
+print_test(
+    "Contact sends DM 'roger that bravo' to Suspect",
+    dm2_resp.status_code == 200,
+    f"Status: {dm2_resp.status_code}"
+)
+
+print("\n" + "="*80)
+print("TEST 1: ADMIN GATING")
+print("="*80 + "\n")
+
+# Test 1a: Regular user (Contact) tries to flag - should get 403
+flag_regular_resp = requests.post(
+    f"{BASE_URL}/admin/users/{suspect_user['handle']}/flag",
+    headers=headers(contact_token),
+    json={"reason": "test"}
+)
+print_test(
+    "Regular user (Contact) POST /admin/users/{handle}/flag → 403",
+    flag_regular_resp.status_code == 403,
+    f"Status: {flag_regular_resp.status_code}"
+)
+
+# Test 1b: Regular user tries to view DMs - should get 403
+dm_regular_resp = requests.get(
+    f"{BASE_URL}/admin/dms/{suspect_user['handle']}",
+    headers=headers(contact_token)
+)
+print_test(
+    "Regular user (Contact) GET /admin/dms/{handle} → 403",
+    dm_regular_resp.status_code == 403,
+    f"Status: {dm_regular_resp.status_code}"
+)
+
+# Test 1c: No token - should get 401
+flag_noauth_resp = requests.post(
+    f"{BASE_URL}/admin/users/{suspect_user['handle']}/flag",
+    json={"reason": "test"}
+)
+print_test(
+    "No token POST /admin/users/{handle}/flag → 401",
+    flag_noauth_resp.status_code == 401,
+    f"Status: {flag_noauth_resp.status_code}"
+)
+
+dm_noauth_resp = requests.get(
+    f"{BASE_URL}/admin/dms/{suspect_user['handle']}"
+)
+print_test(
+    "No token GET /admin/dms/{handle} → 401",
+    dm_noauth_resp.status_code == 401,
+    f"Status: {dm_noauth_resp.status_code}"
+)
+
+# Test 1d: Admin user - should be allowed
+flag_admin_test_resp = requests.get(
+    f"{BASE_URL}/admin/stats",
+    headers=headers(admin_token)
+)
+print_test(
+    "Admin user GET /admin/stats → 200",
+    flag_admin_test_resp.status_code == 200,
+    f"Status: {flag_admin_test_resp.status_code}"
+)
+
+print("\n" + "="*80)
+print("TEST 2: DM REVIEW REQUIRES FLAG")
+print("="*80 + "\n")
+
+# Test 2: Admin tries to view DMs BEFORE flagging - should get 403
+dm_before_flag_resp = requests.get(
+    f"{BASE_URL}/admin/dms/{suspect_user['handle']}",
+    headers=headers(admin_token)
+)
+print_test(
+    "Admin GET /admin/dms/{handle} BEFORE flagging → 403",
+    dm_before_flag_resp.status_code == 403,
+    f"Status: {dm_before_flag_resp.status_code}, Message: {dm_before_flag_resp.text}"
+)
+
+# Verify the error message mentions flagging requirement
+if dm_before_flag_resp.status_code == 403:
+    error_text = dm_before_flag_resp.text.lower()
+    has_flag_message = 'flag' in error_text or 'suspicious' in error_text
+    print_test(
+        "Error message mentions flagging requirement",
+        has_flag_message,
+        f"Error text contains 'flag' or 'suspicious': {has_flag_message}"
+    )
+
+print("\n" + "="*80)
+print("TEST 3: FLAG USER")
+print("="*80 + "\n")
+
+# Test 3a: Admin flags Suspect
+flag_resp = requests.post(
+    f"{BASE_URL}/admin/users/{suspect_user['handle']}/flag",
+    headers=headers(admin_token),
+    json={"reason": "suspicious activity"}
+)
+print_test(
+    "Admin POST /admin/users/{handle}/flag → 200",
+    flag_resp.status_code == 200,
+    f"Status: {flag_resp.status_code}"
+)
+
+if flag_resp.status_code == 200:
+    flag_data = flag_resp.json()
+    print_test(
+        "Flag response contains ok=true and flagged=true",
+        flag_data.get('ok') == True and flag_data.get('flagged') == True,
+        f"Response: {flag_data}"
+    )
+
+# Test 3b: Verify user appears in admin users list with flagged=true
+users_resp = requests.get(
+    f"{BASE_URL}/admin/users?q=suspect",
+    headers=headers(admin_token)
+)
+print_test(
+    "Admin GET /admin/users?q=suspect → 200",
+    users_resp.status_code == 200,
+    f"Status: {users_resp.status_code}"
+)
+
+if users_resp.status_code == 200:
+    users_data = users_resp.json()
+    suspect_in_list = None
+    for user in users_data:
+        if user['handle'] == suspect_user['handle']:
+            suspect_in_list = user
+            break
     
-    print("\n" + "="*80)
-    print("FOCUSED REGRESSION TEST - Deploy-Prep Changes")
-    print("="*80 + "\n")
+    print_test(
+        "Suspect user found in admin users list",
+        suspect_in_list is not None,
+        f"Found: {suspect_in_list is not None}"
+    )
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    if suspect_in_list:
+        print_test(
+            "Suspect user has flagged=true",
+            suspect_in_list.get('flagged') == True,
+            f"flagged={suspect_in_list.get('flagged')}"
+        )
+        print_test(
+            "Suspect user has flag_reason='suspicious activity'",
+            suspect_in_list.get('flag_reason') == 'suspicious activity',
+            f"flag_reason='{suspect_in_list.get('flag_reason')}'"
+        )
+
+# Test 3c: Verify admin stats shows flagged count >= 1
+stats_resp = requests.get(
+    f"{BASE_URL}/admin/stats",
+    headers=headers(admin_token)
+)
+if stats_resp.status_code == 200:
+    stats_data = stats_resp.json()
+    print_test(
+        "Admin stats shows flagged >= 1",
+        stats_data.get('flagged', 0) >= 1,
+        f"flagged={stats_data.get('flagged', 0)}"
+    )
+
+print("\n" + "="*80)
+print("TEST 4: DISCREET DM REVIEW")
+print("="*80 + "\n")
+
+# Test 4: Admin views DMs of flagged user
+dm_review_resp = requests.get(
+    f"{BASE_URL}/admin/dms/{suspect_user['handle']}",
+    headers=headers(admin_token)
+)
+print_test(
+    "Admin GET /admin/dms/{handle} AFTER flagging → 200",
+    dm_review_resp.status_code == 200,
+    f"Status: {dm_review_resp.status_code}"
+)
+
+if dm_review_resp.status_code == 200:
+    dm_data = dm_review_resp.json()
+    
+    # Verify structure
+    print_test(
+        "Response contains 'user' and 'threads' fields",
+        'user' in dm_data and 'threads' in dm_data,
+        f"Keys: {list(dm_data.keys())}"
+    )
+    
+    # Verify user info
+    if 'user' in dm_data:
+        user_info = dm_data['user']
+        print_test(
+            "User info contains handle and flag_reason",
+            user_info.get('handle') == suspect_user['handle'] and 
+            user_info.get('flag_reason') == 'suspicious activity',
+            f"handle={user_info.get('handle')}, flag_reason={user_info.get('flag_reason')}"
+        )
+    
+    # Verify threads
+    if 'threads' in dm_data:
+        threads = dm_data['threads']
+        print_test(
+            "At least one thread exists",
+            len(threads) > 0,
+            f"Thread count: {len(threads)}"
+        )
         
-        # ============================================================
-        # 1. AUTH TESTS
-        # ============================================================
-        print("\n📋 TEST SUITE 1: AUTH")
-        print("-" * 80)
-        
-        # Test 1.1: Create RegA user
-        try:
-            r = await client.post(f"{API_URL}/dev/token", json={"name": "RegA"})
-            if r.status_code == 200:
-                data = r.json()
-                rega_token = data.get('access_token')
-                rega_handle = data['user']['handle']
-                test_result("AUTH-1.1: POST /api/dev/token (RegA)", True, 
-                           f"Token received, handle={rega_handle}")
-            else:
-                test_result("AUTH-1.1: POST /api/dev/token (RegA)", False, 
-                           f"Status {r.status_code}: {r.text}")
-                return
-        except Exception as e:
-            test_result("AUTH-1.1: POST /api/dev/token (RegA)", False, str(e))
-            return
-        
-        # Test 1.2: GET /api/me with valid token
-        try:
-            r = await client.get(f"{API_URL}/me", 
-                                headers={"Authorization": f"Bearer {rega_token}"})
-            if r.status_code == 200:
-                data = r.json()
-                has_handle = 'handle' in data
-                test_result("AUTH-1.2: GET /api/me (valid token)", True, 
-                           f"Profile returned, handle={data.get('handle')}")
-            else:
-                test_result("AUTH-1.2: GET /api/me (valid token)", False, 
-                           f"Status {r.status_code}: {r.text}")
-        except Exception as e:
-            test_result("AUTH-1.2: GET /api/me (valid token)", False, str(e))
-        
-        # Test 1.3: GET /api/me without token (should be 401)
-        try:
-            r = await client.get(f"{API_URL}/me")
-            if r.status_code == 401:
-                test_result("AUTH-1.3: GET /api/me (no token)", True, "Correctly returned 401")
-            else:
-                test_result("AUTH-1.3: GET /api/me (no token)", False, 
-                           f"Expected 401, got {r.status_code}")
-        except Exception as e:
-            test_result("AUTH-1.3: GET /api/me (no token)", False, str(e))
-        
-        # Test 1.4: GET /api/me with malformed token (should be 401)
-        try:
-            r = await client.get(f"{API_URL}/me", 
-                                headers={"Authorization": "Bearer invalid.token.here"})
-            if r.status_code == 401:
-                test_result("AUTH-1.4: GET /api/me (malformed token)", True, 
-                           "Correctly returned 401")
-            else:
-                test_result("AUTH-1.4: GET /api/me (malformed token)", False, 
-                           f"Expected 401, got {r.status_code}")
-        except Exception as e:
-            test_result("AUTH-1.4: GET /api/me (malformed token)", False, str(e))
-        
-        # ============================================================
-        # 2. THREE-TIER VISIBILITY TESTS
-        # ============================================================
-        print("\n📋 TEST SUITE 2: THREE-TIER VISIBILITY")
-        print("-" * 80)
-        
-        # Create Alpha2 and Beta2 users
-        try:
-            r = await client.post(f"{API_URL}/dev/token", json={"name": "Alpha2"})
-            alpha2_token = r.json()['access_token']
-            alpha2_handle = r.json()['user']['handle']
-            test_result("VISIBILITY-2.1: Create Alpha2 user", r.status_code == 200, 
-                       f"handle={alpha2_handle}")
-        except Exception as e:
-            test_result("VISIBILITY-2.1: Create Alpha2 user", False, str(e))
-            return
-        
-        try:
-            r = await client.post(f"{API_URL}/dev/token", json={"name": "Beta2"})
-            beta2_token = r.json()['access_token']
-            beta2_handle = r.json()['user']['handle']
-            test_result("VISIBILITY-2.2: Create Beta2 user", r.status_code == 200, 
-                       f"handle={beta2_handle}")
-        except Exception as e:
-            test_result("VISIBILITY-2.2: Create Beta2 user", False, str(e))
-            return
-        
-        # Alpha2 creates public, followers, inner posts
-        post_ids = {}
-        for tier in ['public', 'followers', 'inner']:
-            try:
-                r = await client.post(f"{API_URL}/posts", 
-                    json={"tier": tier, "text": f"Alpha2 {tier} post for regression test", 
-                          "tags": ["regression", "test"]},
-                    headers={"Authorization": f"Bearer {alpha2_token}"})
-                if r.status_code == 200:
-                    post_ids[tier] = r.json()['id']
-                    test_result(f"VISIBILITY-2.3.{tier}: Alpha2 creates {tier} post", True, 
-                               f"post_id={post_ids[tier]}")
-                else:
-                    test_result(f"VISIBILITY-2.3.{tier}: Alpha2 creates {tier} post", False, 
-                               f"Status {r.status_code}")
-            except Exception as e:
-                test_result(f"VISIBILITY-2.3.{tier}: Alpha2 creates {tier} post", False, str(e))
-        
-        # Beta2 (not following) should see ONLY public post
-        try:
-            r = await client.get(f"{API_URL}/feed?scope=general", 
-                                headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 200:
-                posts = r.json()
-                alpha_posts = [p for p in posts if p['author']['handle'] == alpha2_handle]
-                visible_tiers = [p['tier'] for p in alpha_posts]
-                if visible_tiers == ['public']:
-                    test_result("VISIBILITY-2.4: Beta2 sees ONLY public (not following)", True, 
-                               f"Visible tiers: {visible_tiers}")
-                else:
-                    test_result("VISIBILITY-2.4: Beta2 sees ONLY public (not following)", False, 
-                               f"Expected ['public'], got {visible_tiers}")
-            else:
-                test_result("VISIBILITY-2.4: Beta2 sees ONLY public (not following)", False, 
-                           f"Status {r.status_code}")
-        except Exception as e:
-            test_result("VISIBILITY-2.4: Beta2 sees ONLY public (not following)", False, str(e))
-        
-        # Beta2 follows Alpha2 (open mode -> auto-approved)
-        try:
-            r = await client.post(f"{API_URL}/follow/{alpha2_handle}", 
-                                 headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 200 and r.json().get('status') == 'approved':
-                test_result("VISIBILITY-2.5: Beta2 follows Alpha2 (auto-approved)", True)
-            else:
-                test_result("VISIBILITY-2.5: Beta2 follows Alpha2 (auto-approved)", False, 
-                           f"Status {r.status_code}, response: {r.text}")
-        except Exception as e:
-            test_result("VISIBILITY-2.5: Beta2 follows Alpha2 (auto-approved)", False, str(e))
-        
-        # Beta2 should now see public + followers (NOT inner)
-        try:
-            r = await client.get(f"{API_URL}/feed?scope=general", 
-                                headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 200:
-                posts = r.json()
-                alpha_posts = [p for p in posts if p['author']['handle'] == alpha2_handle]
-                visible_tiers = sorted([p['tier'] for p in alpha_posts])
-                expected = ['followers', 'public']
-                if visible_tiers == expected:
-                    test_result("VISIBILITY-2.6: Beta2 sees public+followers (NOT inner)", True, 
-                               f"Visible tiers: {visible_tiers}")
-                else:
-                    test_result("VISIBILITY-2.6: Beta2 sees public+followers (NOT inner)", False, 
-                               f"Expected {expected}, got {visible_tiers}")
-            else:
-                test_result("VISIBILITY-2.6: Beta2 sees public+followers (NOT inner)", False, 
-                           f"Status {r.status_code}")
-        except Exception as e:
-            test_result("VISIBILITY-2.6: Beta2 sees public+followers (NOT inner)", False, str(e))
-        
-        # Alpha2 invites Beta2 to inner circle
-        try:
-            r = await client.post(f"{API_URL}/inner/invite/{beta2_handle}", 
-                                 headers={"Authorization": f"Bearer {alpha2_token}"})
-            if r.status_code == 200 and r.json().get('status') == 'pending':
-                test_result("VISIBILITY-2.7: Alpha2 invites Beta2 to inner circle", True)
-            else:
-                test_result("VISIBILITY-2.7: Alpha2 invites Beta2 to inner circle", False, 
-                           f"Status {r.status_code}")
-        except Exception as e:
-            test_result("VISIBILITY-2.7: Alpha2 invites Beta2 to inner circle", False, str(e))
-        
-        # Beta2 accepts inner circle invite
-        try:
-            r = await client.post(f"{API_URL}/inner/accept/{alpha2_handle}", 
-                                 headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 200 and r.json().get('status') == 'accepted':
-                test_result("VISIBILITY-2.8: Beta2 accepts inner circle invite", True)
-            else:
-                test_result("VISIBILITY-2.8: Beta2 accepts inner circle invite", False, 
-                           f"Status {r.status_code}")
-        except Exception as e:
-            test_result("VISIBILITY-2.8: Beta2 accepts inner circle invite", False, str(e))
-        
-        # Beta2 should now see ALL three tiers
-        try:
-            r = await client.get(f"{API_URL}/feed?scope=general", 
-                                headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 200:
-                posts = r.json()
-                alpha_posts = [p for p in posts if p['author']['handle'] == alpha2_handle]
-                visible_tiers = sorted([p['tier'] for p in alpha_posts])
-                expected = ['followers', 'inner', 'public']
-                if visible_tiers == expected:
-                    test_result("VISIBILITY-2.9: Beta2 sees ALL tiers (public+followers+inner)", True, 
-                               f"Visible tiers: {visible_tiers}")
-                else:
-                    test_result("VISIBILITY-2.9: Beta2 sees ALL tiers (public+followers+inner)", False, 
-                               f"Expected {expected}, got {visible_tiers}")
-            else:
-                test_result("VISIBILITY-2.9: Beta2 sees ALL tiers (public+followers+inner)", False, 
-                           f"Status {r.status_code}")
-        except Exception as e:
-            test_result("VISIBILITY-2.9: Beta2 sees ALL tiers (public+followers+inner)", False, str(e))
-        
-        # ============================================================
-        # 3. ENCRYPTED DM TESTS
-        # ============================================================
-        print("\n📋 TEST SUITE 3: ENCRYPTED DMs")
-        print("-" * 80)
-        
-        # Alpha2 sends DM to Beta2
-        dm_text = "reg check"
-        dm_id = None
-        try:
-            r = await client.post(f"{API_URL}/dms/{beta2_handle}", 
-                                 json={"text": dm_text},
-                                 headers={"Authorization": f"Bearer {alpha2_token}"})
-            if r.status_code == 200:
-                dm_id = r.json()['id']
-                test_result("DM-3.1: Alpha2 sends DM to Beta2", True, f"dm_id={dm_id}")
-            else:
-                test_result("DM-3.1: Alpha2 sends DM to Beta2", False, 
-                           f"Status {r.status_code}: {r.text}")
-        except Exception as e:
-            test_result("DM-3.1: Alpha2 sends DM to Beta2", False, str(e))
-        
-        # Beta2 retrieves DM and verifies decryption
-        try:
-            r = await client.get(f"{API_URL}/dms/{alpha2_handle}", 
-                                headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 200:
-                data = r.json()
-                messages = data.get('messages', [])
-                can_dm = data.get('can_dm', False)
+        if len(threads) > 0:
+            # Find thread with Contact
+            contact_thread = None
+            for thread in threads:
+                if thread.get('peer', {}).get('handle') == contact_user['handle']:
+                    contact_thread = thread
+                    break
+            
+            print_test(
+                "Thread with Contact exists",
+                contact_thread is not None,
+                f"Found: {contact_thread is not None}"
+            )
+            
+            if contact_thread:
+                messages = contact_thread.get('messages', [])
+                print_test(
+                    "Thread contains messages",
+                    len(messages) >= 2,
+                    f"Message count: {len(messages)}"
+                )
                 
-                if messages and messages[-1]['text'] == dm_text and can_dm:
-                    test_result("DM-3.2: Beta2 retrieves decrypted DM", True, 
-                               f"Text='{dm_text}', can_dm={can_dm}")
-                else:
-                    test_result("DM-3.2: Beta2 retrieves decrypted DM", False, 
-                               f"Expected text='{dm_text}', got messages={messages}, can_dm={can_dm}")
-            else:
-                test_result("DM-3.2: Beta2 retrieves decrypted DM", False, 
-                           f"Status {r.status_code}")
-        except Exception as e:
-            test_result("DM-3.2: Beta2 retrieves decrypted DM", False, str(e))
-        
-        # Verify encryption at rest in MongoDB
-        try:
-            mongo_client = AsyncIOMotorClient(MONGO_URL)
-            db = mongo_client[DB_NAME]
-            
-            if dm_id:
-                dm_doc = await db.dms.find_one({'id': dm_id})
-                if dm_doc:
-                    content_enc = dm_doc.get('content_enc', '')
-                    # Check that content_enc is NOT the plaintext
-                    if content_enc and content_enc != dm_text and len(content_enc) > 20:
-                        # Check if it looks like base64 ciphertext
-                        is_base64_like = all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' 
-                                            for c in content_enc)
-                        if is_base64_like:
-                            test_result("DM-3.3: MongoDB encryption at rest verified", True, 
-                                       f"content_enc is base64 ciphertext (not plaintext), length={len(content_enc)}")
-                        else:
-                            test_result("DM-3.3: MongoDB encryption at rest verified", False, 
-                                       f"content_enc doesn't look like base64: {content_enc[:50]}")
-                    else:
-                        test_result("DM-3.3: MongoDB encryption at rest verified", False, 
-                                   f"content_enc is plaintext or empty: {content_enc}")
-                else:
-                    test_result("DM-3.3: MongoDB encryption at rest verified", False, 
-                               "DM document not found in MongoDB")
-            else:
-                test_result("DM-3.3: MongoDB encryption at rest verified", False, 
-                           "No dm_id to verify")
-            
-            mongo_client.close()
-        except Exception as e:
-            test_result("DM-3.3: MongoDB encryption at rest verified", False, str(e))
-        
-        # ============================================================
-        # 4. LIKES TESTS
-        # ============================================================
-        print("\n📋 TEST SUITE 4: LIKES (public-only enforcement)")
-        print("-" * 80)
-        
-        # Beta2 likes Alpha2's public post
-        try:
-            r = await client.post(f"{API_URL}/posts/{post_ids['public']}/like", 
-                                 headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 200:
-                data = r.json()
-                if data.get('liked') == True:
-                    test_result("LIKES-4.1: Beta2 likes Alpha2's public post", True, 
-                               f"liked={data['liked']}, like_count={data.get('like_count')}")
-                else:
-                    test_result("LIKES-4.1: Beta2 likes Alpha2's public post", False, 
-                               f"Expected liked=True, got {data}")
-            else:
-                test_result("LIKES-4.1: Beta2 likes Alpha2's public post", False, 
-                           f"Status {r.status_code}")
-        except Exception as e:
-            test_result("LIKES-4.1: Beta2 likes Alpha2's public post", False, str(e))
-        
-        # Beta2 tries to like Alpha2's followers post (should be 400)
-        try:
-            r = await client.post(f"{API_URL}/posts/{post_ids['followers']}/like", 
-                                 headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 400:
-                test_result("LIKES-4.2: Beta2 cannot like followers post (400)", True, 
-                           "Correctly returned 400")
-            else:
-                test_result("LIKES-4.2: Beta2 cannot like followers post (400)", False, 
-                           f"Expected 400, got {r.status_code}")
-        except Exception as e:
-            test_result("LIKES-4.2: Beta2 cannot like followers post (400)", False, str(e))
-        
-        # Beta2 tries to like Alpha2's inner post (should be 400)
-        try:
-            r = await client.post(f"{API_URL}/posts/{post_ids['inner']}/like", 
-                                 headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 400:
-                test_result("LIKES-4.3: Beta2 cannot like inner post (400)", True, 
-                           "Correctly returned 400")
-            else:
-                test_result("LIKES-4.3: Beta2 cannot like inner post (400)", False, 
-                           f"Expected 400, got {r.status_code}")
-        except Exception as e:
-            test_result("LIKES-4.3: Beta2 cannot like inner post (400)", False, str(e))
-        
-        # ============================================================
-        # 5. ADMIN GATING + ONE ACTION TESTS
-        # ============================================================
-        print("\n📋 TEST SUITE 5: ADMIN GATING + REPORTING")
-        print("-" * 80)
-        
-        # Create Admin user
-        try:
-            r = await client.post(f"{API_URL}/dev/token", json={"name": "Admin"})
-            admin_token = r.json()['access_token']
-            admin_handle = r.json()['user']['handle']
-            
-            # Verify admin status
-            r2 = await client.get(f"{API_URL}/me", 
-                                 headers={"Authorization": f"Bearer {admin_token}"})
-            is_admin = r2.json().get('is_admin', False)
-            
-            if r.status_code == 200 and is_admin:
-                test_result("ADMIN-5.1: Create Admin user (is_admin=true)", True, 
-                           f"handle={admin_handle}, is_admin={is_admin}")
-            else:
-                test_result("ADMIN-5.1: Create Admin user (is_admin=true)", False, 
-                           f"is_admin={is_admin}")
-        except Exception as e:
-            test_result("ADMIN-5.1: Create Admin user (is_admin=true)", False, str(e))
-            return
-        
-        # Regular user tries to access admin stats (should be 403)
-        try:
-            r = await client.get(f"{API_URL}/admin/stats", 
-                                headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 403:
-                test_result("ADMIN-5.2: Regular user GET /admin/stats (403)", True, 
-                           "Correctly returned 403")
-            else:
-                test_result("ADMIN-5.2: Regular user GET /admin/stats (403)", False, 
-                           f"Expected 403, got {r.status_code}")
-        except Exception as e:
-            test_result("ADMIN-5.2: Regular user GET /admin/stats (403)", False, str(e))
-        
-        # No token tries to access admin stats (should be 401)
-        try:
-            r = await client.get(f"{API_URL}/admin/stats")
-            if r.status_code == 401:
-                test_result("ADMIN-5.3: No token GET /admin/stats (401)", True, 
-                           "Correctly returned 401")
-            else:
-                test_result("ADMIN-5.3: No token GET /admin/stats (401)", False, 
-                           f"Expected 401, got {r.status_code}")
-        except Exception as e:
-            test_result("ADMIN-5.3: No token GET /admin/stats (401)", False, str(e))
-        
-        # Admin user accesses admin stats (should be 200)
-        try:
-            r = await client.get(f"{API_URL}/admin/stats", 
-                                headers={"Authorization": f"Bearer {admin_token}"})
-            if r.status_code == 200:
-                stats = r.json()
-                test_result("ADMIN-5.4: Admin GET /admin/stats (200)", True, 
-                           f"users={stats.get('users')}, posts={stats.get('posts')}")
-            else:
-                test_result("ADMIN-5.4: Admin GET /admin/stats (200)", False, 
-                           f"Expected 200, got {r.status_code}")
-        except Exception as e:
-            test_result("ADMIN-5.4: Admin GET /admin/stats (200)", False, str(e))
-        
-        # Regular user reports Alpha2's public post
-        report_id = None
-        try:
-            r = await client.post(f"{API_URL}/report", 
-                                 json={"target_type": "post", 
-                                      "target_id": post_ids['public'],
-                                      "category": "spam",
-                                      "note": "Regression test report"},
-                                 headers={"Authorization": f"Bearer {beta2_token}"})
-            if r.status_code == 200:
-                report_id = r.json().get('id')
-                test_result("ADMIN-5.5: Beta2 reports Alpha2's public post", True, 
-                           f"report_id={report_id}")
-            else:
-                test_result("ADMIN-5.5: Beta2 reports Alpha2's public post", False, 
-                           f"Status {r.status_code}")
-        except Exception as e:
-            test_result("ADMIN-5.5: Beta2 reports Alpha2's public post", False, str(e))
-        
-        # Admin retrieves open reports
-        try:
-            r = await client.get(f"{API_URL}/admin/reports?status=open", 
-                                headers={"Authorization": f"Bearer {admin_token}"})
-            if r.status_code == 200:
-                reports = r.json()
-                matching_report = None
-                for rep in reports:
-                    if rep.get('id') == report_id:
-                        matching_report = rep
-                        break
+                # Verify DECRYPTED messages
+                message_texts = [msg.get('text', '') for msg in messages]
+                has_alpha = 'secret plan alpha' in message_texts
+                has_bravo = 'roger that bravo' in message_texts
                 
-                if matching_report:
-                    test_result("ADMIN-5.6: Admin GET /admin/reports shows report", True, 
-                               f"Found report, target_user={matching_report.get('target_user', {}).get('handle')}")
-                else:
-                    test_result("ADMIN-5.6: Admin GET /admin/reports shows report", False, 
-                               f"Report {report_id} not found in {len(reports)} reports")
-            else:
-                test_result("ADMIN-5.6: Admin GET /admin/reports shows report", False, 
-                           f"Status {r.status_code}")
-        except Exception as e:
-            test_result("ADMIN-5.6: Admin GET /admin/reports shows report", False, str(e))
-        
-        # Admin dismisses the report
-        if report_id:
-            try:
-                r = await client.post(f"{API_URL}/admin/reports/{report_id}/action", 
-                                     json={"action": "dismiss", "reason": "Regression test"},
-                                     headers={"Authorization": f"Bearer {admin_token}"})
-                if r.status_code == 200 and r.json().get('ok'):
-                    test_result("ADMIN-5.7: Admin dismisses report", True, 
-                               f"action=dismiss, ok={r.json().get('ok')}")
-                else:
-                    test_result("ADMIN-5.7: Admin dismisses report", False, 
-                               f"Status {r.status_code}, response: {r.text}")
-            except Exception as e:
-                test_result("ADMIN-5.7: Admin dismisses report", False, str(e))
-        else:
-            test_result("ADMIN-5.7: Admin dismisses report", False, "No report_id to dismiss")
-    
-    # ============================================================
-    # FINAL SUMMARY
-    # ============================================================
-    print("\n" + "="*80)
-    print("REGRESSION TEST SUMMARY")
-    print("="*80)
-    print(f"✅ PASSED: {tests_passed}")
-    print(f"❌ FAILED: {tests_failed}")
-    print(f"📊 TOTAL:  {tests_passed + tests_failed}")
-    
-    if tests_failed == 0:
-        print("\n🎉 ALL REGRESSION TESTS PASSED - NO REGRESSIONS DETECTED")
-        print("✅ Deploy-prep changes (dotenv refactor) did NOT introduce any regressions")
-    else:
-        print(f"\n⚠️  {tests_failed} TEST(S) FAILED - REGRESSION DETECTED")
-        print("❌ Deploy-prep changes may have introduced regressions")
-    
-    print("="*80 + "\n")
-    
-    return tests_failed == 0
+                print_test(
+                    "DECRYPTED message 'secret plan alpha' found",
+                    has_alpha,
+                    f"Found: {has_alpha}, Messages: {message_texts}"
+                )
+                
+                print_test(
+                    "DECRYPTED message 'roger that bravo' found",
+                    has_bravo,
+                    f"Found: {has_bravo}, Messages: {message_texts}"
+                )
+                
+                # Verify from_flagged field
+                for msg in messages:
+                    if msg.get('text') == 'secret plan alpha':
+                        print_test(
+                            "Message 'secret plan alpha' has from_flagged=true",
+                            msg.get('from_flagged') == True,
+                            f"from_flagged={msg.get('from_flagged')}"
+                        )
+                    elif msg.get('text') == 'roger that bravo':
+                        print_test(
+                            "Message 'roger that bravo' has from_flagged=false",
+                            msg.get('from_flagged') == False,
+                            f"from_flagged={msg.get('from_flagged')}"
+                        )
 
-if __name__ == '__main__':
-    success = asyncio.run(main())
-    sys.exit(0 if success else 1)
+print("\n" + "="*80)
+print("TEST 5: DISCREET = NO NOTIFICATION, BUT AUDITED")
+print("="*80 + "\n")
+
+# Test 5a: Verify Suspect is NOT notified
+activity_resp = requests.get(
+    f"{BASE_URL}/activity",
+    headers=headers(suspect_token)
+)
+print_test(
+    "Suspect GET /activity → 200",
+    activity_resp.status_code == 200,
+    f"Status: {activity_resp.status_code}"
+)
+
+if activity_resp.status_code == 200:
+    activity_data = activity_resp.json()
+    # Check for any 'view_dms' or similar notification
+    has_dm_view_notification = any(
+        'view_dms' in str(act).lower() or 'watched' in str(act).lower() or 'reviewed' in str(act).lower()
+        for act in activity_data
+    )
+    print_test(
+        "Suspect has NO notification about DM review",
+        not has_dm_view_notification,
+        f"Has DM view notification: {has_dm_view_notification}, Activity count: {len(activity_data)}"
+    )
+
+# Test 5b: Verify audit log contains view_dms entry
+audit_resp = requests.get(
+    f"{BASE_URL}/admin/audit",
+    headers=headers(admin_token)
+)
+print_test(
+    "Admin GET /admin/audit → 200",
+    audit_resp.status_code == 200,
+    f"Status: {audit_resp.status_code}"
+)
+
+if audit_resp.status_code == 200:
+    audit_data = audit_resp.json()
+    
+    # Find view_dms entry
+    view_dms_entry = None
+    for entry in audit_data:
+        if entry.get('action') == 'view_dms' and entry.get('target') == suspect_user['handle']:
+            view_dms_entry = entry
+            break
+    
+    print_test(
+        "Audit log contains 'view_dms' entry for Suspect",
+        view_dms_entry is not None,
+        f"Found: {view_dms_entry is not None}"
+    )
+    
+    if view_dms_entry:
+        print_test(
+            "view_dms entry has admin_handle",
+            view_dms_entry.get('admin_handle') == admin_user['handle'],
+            f"admin_handle={view_dms_entry.get('admin_handle')}"
+        )
+    
+    # Find flag_user entry
+    flag_user_entry = None
+    for entry in audit_data:
+        if entry.get('action') == 'flag_user' and entry.get('target') == suspect_user['handle']:
+            flag_user_entry = entry
+            break
+    
+    print_test(
+        "Audit log contains 'flag_user' entry for Suspect",
+        flag_user_entry is not None,
+        f"Found: {flag_user_entry is not None}"
+    )
+
+print("\n" + "="*80)
+print("TEST 6: UNFLAG")
+print("="*80 + "\n")
+
+# Test 6a: Admin unflags Suspect
+unflag_resp = requests.post(
+    f"{BASE_URL}/admin/users/{suspect_user['handle']}/unflag",
+    headers=headers(admin_token)
+)
+print_test(
+    "Admin POST /admin/users/{handle}/unflag → 200",
+    unflag_resp.status_code == 200,
+    f"Status: {unflag_resp.status_code}"
+)
+
+if unflag_resp.status_code == 200:
+    unflag_data = unflag_resp.json()
+    print_test(
+        "Unflag response contains ok=true and flagged=false",
+        unflag_data.get('ok') == True and unflag_data.get('flagged') == False,
+        f"Response: {unflag_data}"
+    )
+
+# Test 6b: Verify DM review is blocked after unflagging
+dm_after_unflag_resp = requests.get(
+    f"{BASE_URL}/admin/dms/{suspect_user['handle']}",
+    headers=headers(admin_token)
+)
+print_test(
+    "Admin GET /admin/dms/{handle} AFTER unflagging → 403",
+    dm_after_unflag_resp.status_code == 403,
+    f"Status: {dm_after_unflag_resp.status_code}"
+)
+
+# Test 6c: Verify user appears in admin users list with flagged=false
+users_after_unflag_resp = requests.get(
+    f"{BASE_URL}/admin/users?q=suspect",
+    headers=headers(admin_token)
+)
+if users_after_unflag_resp.status_code == 200:
+    users_data = users_after_unflag_resp.json()
+    suspect_in_list = None
+    for user in users_data:
+        if user['handle'] == suspect_user['handle']:
+            suspect_in_list = user
+            break
+    
+    if suspect_in_list:
+        print_test(
+            "Suspect user has flagged=false after unflagging",
+            suspect_in_list.get('flagged') == False,
+            f"flagged={suspect_in_list.get('flagged')}"
+        )
+
+print("\n" + "="*80)
+print("ALL TESTS PASSED ✅")
+print("="*80 + "\n")

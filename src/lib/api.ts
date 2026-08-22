@@ -58,6 +58,9 @@ export const api = {
   adminUsers: (q = '') => req(`/admin/users?q=${encodeURIComponent(q)}`),
   adminStrike: (handle: string, reason: string, stage?: string) => req(`/admin/users/${handle}/strike`, { method: 'POST', body: j({ reason, stage }) }),
   adminUnsuspend: (handle: string) => req(`/admin/users/${handle}/unsuspend`, { method: 'POST' }),
+  adminFlag: (handle: string, reason: string) => req(`/admin/users/${handle}/flag`, { method: 'POST', body: j({ reason }) }),
+  adminUnflag: (handle: string) => req(`/admin/users/${handle}/unflag`, { method: 'POST' }),
+  adminUserDms: (handle: string) => req(`/admin/dms/${handle}`),
   adminAudit: () => req('/admin/audit'),
 }
 

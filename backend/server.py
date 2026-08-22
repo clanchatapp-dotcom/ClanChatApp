@@ -720,6 +720,7 @@ async def admin_stats(a: dict = Depends(require_admin)):
         'csam_reports': await db.csam_reports.count_documents({}),
         'suspended': await db.profiles.count_documents({'suspended_until': {'$exists': True}}),
         'banned': await db.profiles.count_documents({'banned': True}),
+        'flagged': await db.profiles.count_documents({'flagged': True}),
     }
 
 @app.get('/api/admin/reports')
@@ -779,6 +780,7 @@ async def admin_users(q: str = '', a: dict = Depends(require_admin)):
                     'email': p.get('email'), 'account_type': p.get('account_type', 'standard'),
                     'strikes': p.get('strikes', 0), 'suspended_until': p.get('suspended_until'),
                     'banned': p.get('banned', False), 'is_admin': is_admin_user(p),
+                    'flagged': p.get('flagged', False), 'flag_reason': p.get('flag_reason'),
                     'created_at': p.get('created_at')})
     return out
 
@@ -805,3 +807,63 @@ async def admin_audit(a: dict = Depends(require_admin)):
     async for r in db.audit.find({}, {'_id': 0}).sort('created_at', -1).limit(100):
         out.append(r)
     return out
+
+
+# ----------------------------- Admin: flag accounts & discreet DM review -----------------------------
+
+class FlagIn(BaseModel):
+    reason: Optional[str] = ''
+
+
+@app.post('/api/admin/users/{handle}/flag')
+async def admin_flag(handle: str, body: FlagIn, a: dict = Depends(require_admin)):
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    await db.profiles.update_one({'id': prof['id']}, {'$set': {
+        'flagged': True, 'flag_reason': (body.reason or 'suspicious activity')[:300],
+        'flagged_by': a['handle'], 'flagged_at': datetime.now(timezone.utc).isoformat()}})
+    await audit(a, 'flag_user', handle, body.reason or 'suspicious activity')
+    return {'ok': True, 'flagged': True}
+
+
+@app.post('/api/admin/users/{handle}/unflag')
+async def admin_unflag(handle: str, a: dict = Depends(require_admin)):
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    await db.profiles.update_one({'id': prof['id']},
+                                 {'$set': {'flagged': False}, '$unset': {'flag_reason': '', 'flagged_by': '', 'flagged_at': ''}})
+    await audit(a, 'unflag_user', handle, '')
+    return {'ok': True, 'flagged': False}
+
+
+@app.get('/api/admin/dms/{handle}')
+async def admin_view_dms(handle: str, a: dict = Depends(require_admin)):
+    """Discreet DM review for accounts flagged as suspicious. Server holds the DM
+    encryption key so messages are decrypted here for moderation. The reviewed user
+    is NOT notified; every access is written to the admin audit log for accountability."""
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    if not prof.get('flagged'):
+        raise HTTPException(403, 'Account must be flagged for suspicious activity before DMs can be reviewed')
+
+    threads: dict[str, list] = {}
+    async for m in db.dms.find({'participants': prof['id']}).sort('created_at', 1):
+        peer = next((pid for pid in m['participants'] if pid != prof['id']), prof['id'])
+        threads.setdefault(peer, []).append({
+            'sender_id': m['sender_id'], 'text': dec(m['content_enc']),
+            'created_at': m['created_at'], 'from_flagged': m['sender_id'] == prof['id']})
+
+    out = []
+    for peer_id, msgs in threads.items():
+        peer = await db.profiles.find_one({'id': peer_id}, {'_id': 0})
+        out.append({'peer': {'handle': peer['handle'], 'display_name': peer['display_name']} if peer else {'handle': 'unknown', 'display_name': 'Unknown'},
+                    'messages': msgs})
+    out.sort(key=lambda t: t['messages'][-1]['created_at'] if t['messages'] else '', reverse=True)
+
+    await audit(a, 'view_dms', handle, f'discreet review of {len(out)} thread(s)')
+    return {'user': {'handle': prof['handle'], 'display_name': prof['display_name'],
+                     'flag_reason': prof.get('flag_reason'), 'flagged_by': prof.get('flagged_by')},
+            'threads': out}

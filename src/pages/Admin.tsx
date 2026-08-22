@@ -3,7 +3,7 @@ import { Navigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { timeAgo } from '../lib/ui'
-import { Shield, Flag, AlertTriangle, Users, ScrollText, Ban, Loader2, Check, Trash2 } from 'lucide-react'
+import { Shield, Flag, AlertTriangle, Users, ScrollText, Ban, Loader2, Check, Trash2, Eye, X, Lock } from 'lucide-react'
 
 const TABS = [
   { key: 'reports', label: 'Reports', icon: Flag },
@@ -28,6 +28,8 @@ export default function Admin() {
   const [data, setData] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
+  const [dm, setDm] = useState<any>(null)
+  const [dmLoading, setDmLoading] = useState(false)
 
   const loadStats = () => api.adminStats().then(setStats).catch(() => {})
   const load = async () => {
@@ -55,6 +57,16 @@ export default function Admin() {
     await api.adminStrike(handle, reason, soft ? 'soft' : undefined); await load(); await loadStats()
   }
   const unsuspend = async (handle: string) => { await api.adminUnsuspend(handle); await load(); await loadStats() }
+  const flag = async (handle: string) => {
+    const r = window.prompt('Flag reason (marks account as suspicious):', 'suspicious activity')
+    if (r === null) return
+    await api.adminFlag(handle, r || 'suspicious activity'); await load(); await loadStats()
+  }
+  const unflag = async (handle: string) => { await api.adminUnflag(handle); await load(); await loadStats() }
+  const viewDms = async (handle: string) => {
+    setDm({ loading: true }); setDmLoading(true)
+    try { setDm(await api.adminUserDms(handle)) } catch (e: any) { alert(e.message); setDm(null) } finally { setDmLoading(false) }
+  }
 
   return (
     <div>
@@ -71,6 +83,7 @@ export default function Admin() {
           <Stat label="CSAM queue" value={stats.csam_reports} danger />
           <Stat label="Suspended" value={stats.suspended} />
           <Stat label="Banned" value={stats.banned} />
+          <Stat label="Flagged" value={stats.flagged} danger />
         </div>
 
         <div className="flex gap-1 bg-panel border border-edge rounded-xl p-1 w-fit">
@@ -123,15 +136,20 @@ export default function Admin() {
             ))}
 
             {tab === 'users' && data.map(u => (
-              <div key={u.id} className="bg-panel border border-edge rounded-2xl p-3 flex items-center gap-3">
+              <div key={u.id} className="bg-panel border border-edge rounded-2xl p-3 flex items-center gap-3 flex-wrap">
                 <div className="min-w-0 flex-1">
                   <div className="font-medium truncate flex items-center gap-2">{u.display_name}
                     {u.is_admin && <Shield className="h-3.5 w-3.5 text-brand" />}
+                    {u.flagged && <span className="text-xs bg-rose-500/20 text-rose-300 px-1.5 rounded flex items-center gap-1"><Flag className="h-3 w-3" />flagged</span>}
                     {u.banned && <span className="text-xs bg-rose-500/20 text-rose-300 px-1.5 rounded">banned</span>}
                     {u.suspended_until && !u.banned && <span className="text-xs bg-amber-500/20 text-amber-300 px-1.5 rounded">suspended</span>}
                   </div>
-                  <div className="text-xs text-slate-500">#{u.handle} · {u.account_type} · strikes: {u.strikes}</div>
+                  <div className="text-xs text-slate-500">#{u.handle} · {u.account_type} · strikes: {u.strikes}{u.flag_reason ? ` · ${u.flag_reason}` : ''}</div>
                 </div>
+                {u.flagged
+                  ? <button onClick={() => unflag(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Unflag</button>
+                  : <button onClick={() => flag(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 text-rose-300 text-xs flex items-center gap-1"><Flag className="h-3 w-3" />Flag</button>}
+                {u.flagged && <button onClick={() => viewDms(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-brand/15 text-brand text-xs flex items-center gap-1"><Eye className="h-3 w-3" />View DMs</button>}
                 <button onClick={() => strike(u.handle, true)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Warn</button>
                 <button onClick={() => strike(u.handle, false)} className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 text-xs">Strike</button>
                 {(u.suspended_until || u.banned) && <button onClick={() => unsuspend(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 text-xs flex items-center gap-1"><Check className="h-3 w-3" />Restore</button>}
@@ -149,6 +167,41 @@ export default function Admin() {
           </div>
         )}
       </div>
+
+      {dm && (
+        <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4" onClick={() => setDm(null)}>
+          <div className="bg-panel border border-edge rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2 p-4 border-b border-edge">
+              <Eye className="h-5 w-5 text-brand" />
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold">Discreet DM review</div>
+                <div className="text-xs text-slate-500 truncate">
+                  {dm.loading ? 'Loading…' : <>#{dm.user?.handle} · reason: {dm.user?.flag_reason || '—'} · access logged to audit</>}
+                </div>
+              </div>
+              <button onClick={() => setDm(null)} className="h-8 w-8 grid place-items-center rounded-lg hover:bg-white/10"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="p-4 overflow-y-auto space-y-4">
+              {(dmLoading || dm.loading) ? <div className="py-10 grid place-items-center"><Loader2 className="h-6 w-6 animate-spin text-slate-500" /></div>
+                : (dm.threads?.length ? dm.threads.map((t: any, i: number) => (
+                  <div key={i} className="border border-edge rounded-xl overflow-hidden">
+                    <div className="px-3 py-2 bg-white/5 text-sm font-medium flex items-center gap-2"><Lock className="h-3.5 w-3.5 text-emerald-400" />with #{t.peer.handle}</div>
+                    <div className="p-3 space-y-1.5">
+                      {t.messages.map((m: any, k: number) => (
+                        <div key={k} className={`flex ${m.from_flagged ? 'justify-end' : ''}`}>
+                          <div className={`max-w-[80%] rounded-xl px-3 py-1.5 text-sm ${m.from_flagged ? 'bg-brand/20' : 'bg-white/5 border border-edge'}`}>
+                            <div className="text-[10px] text-slate-500 mb-0.5">{m.from_flagged ? `#${dm.user.handle}` : `#${t.peer.handle}`} · {timeAgo(m.created_at)}</div>
+                            {m.text}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )) : <p className="text-center text-slate-500 py-10">No DMs found for this account.</p>)}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
