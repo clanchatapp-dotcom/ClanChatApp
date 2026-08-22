@@ -17,5 +17,6 @@ export default defineConfig({
       },
     },
     hmr: { clientPort: 443 },
+    watch: { ignored: ['**/android/**', '**/dist/**'] },
   },
 })

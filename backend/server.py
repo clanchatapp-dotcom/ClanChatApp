@@ -20,8 +20,12 @@ from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorClient
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from livekit import api as lk_api
+from pathlib import Path
 
-load_dotenv('/app/.env')
+# Load .env for local/sandbox; on Render (and other hosts) real env vars are already
+# present in os.environ and load_dotenv does NOT override them.
+for _p in ('/app/.env', str(Path(__file__).resolve().parent.parent / '.env'), '.env'):
+    load_dotenv(_p)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('clanchat')
 

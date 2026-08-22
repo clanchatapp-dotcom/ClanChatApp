@@ -2,12 +2,17 @@ const TOKEN_KEY = 'cc_token'
 export const getToken = () => localStorage.getItem(TOKEN_KEY)
 export const setToken = (t: string | null) => t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY)
 
+// In the sandbox / single-origin web deploy this is empty -> relative "/api" (Vite proxy / same origin).
+// For a split web deploy and for the Android APK, set REACT_APP_API_URL to the absolute backend URL
+// e.g. https://clanchat-backend.onrender.com  (baked at build time).
+export const API_BASE = (((import.meta as any).env.REACT_APP_API_URL || '') as string).replace(/\/$/, '')
+
 async function req(path: string, opts: RequestInit = {}) {
   const token = getToken()
   const headers: Record<string, string> = { ...(opts.headers as any) }
   if (token) headers['Authorization'] = `Bearer ${token}`
   if (opts.body && !(opts.body instanceof FormData)) headers['Content-Type'] = 'application/json'
-  const res = await fetch(`/api${path}`, { ...opts, headers })
+  const res = await fetch(`${API_BASE}/api${path}`, { ...opts, headers })
   if (!res.ok) {
     let d = res.statusText
     try { d = (await res.json()).detail || d } catch {}
@@ -57,6 +62,9 @@ export const api = {
 }
 
 export function wsDmUrl(handle: string, token: string) {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${window.location.host}/api/ws/dm/${handle}?token=${encodeURIComponent(token)}`
+  let host = window.location.host
+  let secure = window.location.protocol === 'https:'
+  if (API_BASE) { try { const u = new URL(API_BASE); host = u.host; secure = u.protocol === 'https:' } catch {} }
+  const proto = secure ? 'wss' : 'ws'
+  return `${proto}://${host}/api/ws/dm/${handle}?token=${encodeURIComponent(token)}`
 }

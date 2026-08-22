@@ -8,9 +8,14 @@
     "dev:api": "cd backend && /root/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8001 --reload",
     "dev:web": "vite",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 3000"
+    "start": "concurrently -k -n api,web -c blue,green \"yarn start:api\" \"yarn start:web\"",
+    "start:api": "cd backend && python -m uvicorn server:app --host 0.0.0.0 --port 8001",
+    "start:web": "vite preview --host 0.0.0.0 --port 3000",
+    "preview": "vite preview --host 0.0.0.0 --port 3000",
+    "cap:sync": "vite build && cap sync android"
   },
   "dependencies": {
+    "@capacitor/android": "^7.0.0",
     "@capacitor/core": "^7.0.0",
     "@capgo/capacitor-social-login": "^7.0.0",
     "@livekit/components-react": "^2.9.24",

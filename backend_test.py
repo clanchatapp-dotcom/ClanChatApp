@@ -1,621 +1,531 @@
 #!/usr/bin/env python3
 """
-ClanChat Admin & Reporting Backend Tests
-Tests admin gating, reporting, CSAM auto-quarantine, admin actions, strike escalation, and audit log
+FOCUSED REGRESSION TEST for ClanChat deploy-prep changes
+Tests: Auth, Three-tier visibility, Encrypted DMs, Likes, Admin gating
 """
-import requests
-import json
+import os
 import sys
+import httpx
+import asyncio
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
-# Base URL from .env
-BASE_URL = "https://auth-consolidation-3.preview.emergentagent.com/api"
+# Load environment
+load_dotenv('/app/.env')
 
-# Test results tracking
+BASE_URL = os.getenv('NEXT_PUBLIC_BASE_URL', 'http://localhost:3000')
+API_URL = f"{BASE_URL}/api"
+MONGO_URL = os.getenv('MONGO_URL', 'mongodb://localhost:27017')
+DB_NAME = os.getenv('DB_NAME', 'clanchat')
+
+print(f"🔧 Testing against: {API_URL}")
+print(f"🔧 MongoDB: {MONGO_URL}/{DB_NAME}")
+
+# Test counters
 tests_passed = 0
 tests_failed = 0
 
-def log_test(name, passed, details=""):
+def test_result(name: str, passed: bool, detail: str = ""):
     global tests_passed, tests_failed
     if passed:
         tests_passed += 1
-        print(f"✅ PASS: {name}")
-        if details:
-            print(f"   {details}")
+        print(f"✅ {name}")
+        if detail:
+            print(f"   {detail}")
     else:
         tests_failed += 1
-        print(f"❌ FAIL: {name}")
-        if details:
-            print(f"   {details}")
+        print(f"❌ {name}")
+        if detail:
+            print(f"   {detail}")
 
-def create_user(name):
-    """Create a dev user and return token and user info"""
-    try:
-        resp = requests.post(f"{BASE_URL}/dev/token", json={"name": name}, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            return data['access_token'], data['user']
-        else:
-            print(f"Failed to create user {name}: {resp.status_code} {resp.text}")
-            return None, None
-    except Exception as e:
-        print(f"Exception creating user {name}: {e}")
-        return None, None
-
-def get_me(token):
-    """Get current user profile"""
-    try:
-        headers = {"Authorization": f"Bearer {token}"}
-        resp = requests.get(f"{BASE_URL}/me", headers=headers, timeout=10)
-        if resp.status_code == 200:
-            return resp.json()
-        return None
-    except Exception as e:
-        print(f"Exception getting /me: {e}")
-        return None
-
-def create_post(token, tier="public", text="Test post", tags=None):
-    """Create a post and return post data"""
-    try:
-        headers = {"Authorization": f"Bearer {token}"}
-        payload = {"tier": tier, "text": text, "tags": tags or []}
-        resp = requests.post(f"{BASE_URL}/posts", headers=headers, json=payload, timeout=10)
-        if resp.status_code == 200:
-            return resp.json()
-        else:
-            print(f"Failed to create post: {resp.status_code} {resp.text}")
-            return None
-    except Exception as e:
-        print(f"Exception creating post: {e}")
-        return None
-
-def main():
-    print("=" * 80)
-    print("ClanChat Admin & Reporting Backend Tests")
-    print("=" * 80)
-    print()
-
-    # ========== SETUP: Create users ==========
-    print("SETUP: Creating test users...")
-    admin_token, admin_user = create_user("Admin")
-    regular_token, regular_user = create_user("Regular")
-    victim_token, victim_user = create_user("Victim")
-
-    if not admin_token or not regular_token or not victim_token:
-        print("❌ FATAL: Failed to create test users")
-        sys.exit(1)
-
-    print(f"✓ Admin user: {admin_user['handle']} (email: {admin_user['email']})")
-    print(f"✓ Regular user: {regular_user['handle']} (email: {regular_user['email']})")
-    print(f"✓ Victim user: {victim_user['handle']} (email: {victim_user['email']})")
-    print()
-
-    # Verify admin status
-    admin_profile = get_me(admin_token)
-    if admin_profile:
-        is_admin = admin_profile.get('is_admin', False)
-        log_test("Admin user has is_admin=true", is_admin, 
-                 f"is_admin={is_admin}, email={admin_profile.get('email')}")
-    else:
-        log_test("Admin user has is_admin=true", False, "Failed to get admin profile")
-
-    regular_profile = get_me(regular_token)
-    if regular_profile:
-        is_admin = regular_profile.get('is_admin', False)
-        log_test("Regular user has is_admin=false", not is_admin, 
-                 f"is_admin={is_admin}, email={regular_profile.get('email')}")
-    else:
-        log_test("Regular user has is_admin=false", False, "Failed to get regular profile")
-
-    print()
-
-    # ========== TEST 1: ADMIN GATING ==========
-    print("TEST 1: ADMIN GATING")
-    print("-" * 80)
-
-    admin_endpoints = [
-        "/admin/stats",
-        "/admin/reports",
-        "/admin/csam",
-        "/admin/users",
-        "/admin/audit"
-    ]
-
-    # Test with NO token (should be 401)
-    for endpoint in admin_endpoints:
-        try:
-            resp = requests.get(f"{BASE_URL}{endpoint}", timeout=10)
-            log_test(f"GET {endpoint} without token returns 401", 
-                     resp.status_code == 401,
-                     f"Status: {resp.status_code}")
-        except Exception as e:
-            log_test(f"GET {endpoint} without token returns 401", False, f"Exception: {e}")
-
-    # Test with REGULAR token (should be 403)
-    for endpoint in admin_endpoints:
-        try:
-            headers = {"Authorization": f"Bearer {regular_token}"}
-            resp = requests.get(f"{BASE_URL}{endpoint}", headers=headers, timeout=10)
-            log_test(f"GET {endpoint} with regular token returns 403", 
-                     resp.status_code == 403,
-                     f"Status: {resp.status_code}")
-        except Exception as e:
-            log_test(f"GET {endpoint} with regular token returns 403", False, f"Exception: {e}")
-
-    # Test with ADMIN token (should be 200)
-    for endpoint in admin_endpoints:
-        try:
-            headers = {"Authorization": f"Bearer {admin_token}"}
-            resp = requests.get(f"{BASE_URL}{endpoint}", headers=headers, timeout=10)
-            log_test(f"GET {endpoint} with admin token returns 200", 
-                     resp.status_code == 200,
-                     f"Status: {resp.status_code}")
-        except Exception as e:
-            log_test(f"GET {endpoint} with admin token returns 200", False, f"Exception: {e}")
-
-    # Test POST /api/admin/users/{handle}/strike with regular token (should be 403)
-    try:
-        headers = {"Authorization": f"Bearer {regular_token}"}
-        resp = requests.post(f"{BASE_URL}/admin/users/{victim_user['handle']}/strike", 
-                            headers=headers, json={"reason": "test"}, timeout=10)
-        log_test(f"POST /admin/users/{{handle}}/strike with regular token returns 403", 
-                 resp.status_code == 403,
-                 f"Status: {resp.status_code}")
-    except Exception as e:
-        log_test(f"POST /admin/users/{{handle}}/strike with regular token returns 403", False, f"Exception: {e}")
-
-    print()
-
-    # ========== TEST 2: REPORTING ==========
-    print("TEST 2: REPORTING")
-    print("-" * 80)
-
-    # Create a post by victim to report
-    victim_post = create_post(victim_token, tier="public", text="Reportable post content", tags=["test"])
-    if victim_post:
-        print(f"✓ Created victim post: {victim_post['id']}")
+async def main():
+    global tests_passed, tests_failed
+    
+    print("\n" + "="*80)
+    print("FOCUSED REGRESSION TEST - Deploy-Prep Changes")
+    print("="*80 + "\n")
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
         
-        # Report with valid category (harassment)
-        try:
-            headers = {"Authorization": f"Bearer {regular_token}"}
-            payload = {
-                "target_type": "post",
-                "target_id": victim_post['id'],
-                "category": "harassment",
-                "note": "This is abusive content"
-            }
-            resp = requests.post(f"{BASE_URL}/report", headers=headers, json=payload, timeout=10)
-            log_test("POST /report with valid category (harassment) returns 200", 
-                     resp.status_code == 200 and resp.json().get('ok') == True,
-                     f"Status: {resp.status_code}, Response: {resp.json() if resp.status_code == 200 else resp.text}")
-        except Exception as e:
-            log_test("POST /report with valid category (harassment) returns 200", False, f"Exception: {e}")
-
-        # Report with invalid category (should be 400)
-        try:
-            headers = {"Authorization": f"Bearer {regular_token}"}
-            payload = {
-                "target_type": "post",
-                "target_id": victim_post['id'],
-                "category": "invalid_category",
-                "note": "Test invalid"
-            }
-            resp = requests.post(f"{BASE_URL}/report", headers=headers, json=payload, timeout=10)
-            log_test("POST /report with invalid category returns 400", 
-                     resp.status_code == 400,
-                     f"Status: {resp.status_code}")
-        except Exception as e:
-            log_test("POST /report with invalid category returns 400", False, f"Exception: {e}")
-    else:
-        log_test("Create victim post for reporting", False, "Failed to create post")
-
-    print()
-
-    # ========== TEST 3: CSAM AUTO-QUARANTINE ==========
-    print("TEST 3: CSAM AUTO-QUARANTINE")
-    print("-" * 80)
-
-    # Create another post by victim for CSAM report
-    csam_post = create_post(victim_token, tier="public", text="Post to be quarantined by CSAM report", tags=["csam_test"])
-    if csam_post:
-        print(f"✓ Created CSAM test post: {csam_post['id']}")
+        # ============================================================
+        # 1. AUTH TESTS
+        # ============================================================
+        print("\n📋 TEST SUITE 1: AUTH")
+        print("-" * 80)
         
-        # Report as CSAM
+        # Test 1.1: Create RegA user
         try:
-            headers = {"Authorization": f"Bearer {regular_token}"}
-            payload = {
-                "target_type": "post",
-                "target_id": csam_post['id'],
-                "category": "csam",
-                "note": "CSAM content detected"
-            }
-            resp = requests.post(f"{BASE_URL}/report", headers=headers, json=payload, timeout=10)
-            log_test("POST /report with category=csam returns 200", 
-                     resp.status_code == 200 and resp.json().get('ok') == True,
-                     f"Status: {resp.status_code}")
-        except Exception as e:
-            log_test("POST /report with category=csam returns 200", False, f"Exception: {e}")
-
-        # Verify post is quarantined - should NOT appear in victim's own feed
-        try:
-            headers = {"Authorization": f"Bearer {victim_token}"}
-            resp = requests.get(f"{BASE_URL}/feed?scope=general", headers=headers, timeout=10)
-            if resp.status_code == 200:
-                feed = resp.json()
-                post_ids = [p['id'] for p in feed]
-                is_hidden = csam_post['id'] not in post_ids
-                log_test("CSAM-reported post hidden from victim's own feed", 
-                         is_hidden,
-                         f"Post {csam_post['id']} {'NOT found' if is_hidden else 'FOUND'} in feed")
+            r = await client.post(f"{API_URL}/dev/token", json={"name": "RegA"})
+            if r.status_code == 200:
+                data = r.json()
+                rega_token = data.get('access_token')
+                rega_handle = data['user']['handle']
+                test_result("AUTH-1.1: POST /api/dev/token (RegA)", True, 
+                           f"Token received, handle={rega_handle}")
             else:
-                log_test("CSAM-reported post hidden from victim's own feed", False, 
-                         f"Failed to get feed: {resp.status_code}")
+                test_result("AUTH-1.1: POST /api/dev/token (RegA)", False, 
+                           f"Status {r.status_code}: {r.text}")
+                return
         except Exception as e:
-            log_test("CSAM-reported post hidden from victim's own feed", False, f"Exception: {e}")
-
-        # Verify post is hidden from victim's profile posts
-        try:
-            headers = {"Authorization": f"Bearer {victim_token}"}
-            resp = requests.get(f"{BASE_URL}/users/{victim_user['handle']}/posts", headers=headers, timeout=10)
-            if resp.status_code == 200:
-                posts = resp.json()
-                post_ids = [p['id'] for p in posts]
-                is_hidden = csam_post['id'] not in post_ids
-                log_test("CSAM-reported post hidden from victim's profile posts", 
-                         is_hidden,
-                         f"Post {csam_post['id']} {'NOT found' if is_hidden else 'FOUND'} in profile")
-            else:
-                log_test("CSAM-reported post hidden from victim's profile posts", False, 
-                         f"Failed to get profile posts: {resp.status_code}")
-        except Exception as e:
-            log_test("CSAM-reported post hidden from victim's profile posts", False, f"Exception: {e}")
-
-        # Verify post appears in admin CSAM queue
-        try:
-            headers = {"Authorization": f"Bearer {admin_token}"}
-            resp = requests.get(f"{BASE_URL}/admin/csam", headers=headers, timeout=10)
-            if resp.status_code == 200:
-                csam_reports = resp.json()
-                found = any(r['target_id'] == csam_post['id'] for r in csam_reports)
-                log_test("CSAM-reported post appears in admin CSAM queue", 
-                         found,
-                         f"Found {len(csam_reports)} CSAM reports, target post {'found' if found else 'NOT found'}")
-            else:
-                log_test("CSAM-reported post appears in admin CSAM queue", False, 
-                         f"Failed to get CSAM queue: {resp.status_code}")
-        except Exception as e:
-            log_test("CSAM-reported post appears in admin CSAM queue", False, f"Exception: {e}")
-    else:
-        log_test("Create CSAM test post", False, "Failed to create post")
-
-    print()
-
-    # ========== TEST 4: ADMIN STATS ==========
-    print("TEST 4: ADMIN STATS")
-    print("-" * 80)
-
-    try:
-        headers = {"Authorization": f"Bearer {admin_token}"}
-        resp = requests.get(f"{BASE_URL}/admin/stats", headers=headers, timeout=10)
-        if resp.status_code == 200:
-            stats = resp.json()
-            has_users = isinstance(stats.get('users'), int) and stats['users'] > 0
-            has_posts = isinstance(stats.get('posts'), int) and stats['posts'] > 0
-            has_open_reports = isinstance(stats.get('open_reports'), int) and stats['open_reports'] >= 1
-            has_csam_reports = isinstance(stats.get('csam_reports'), int) and stats['csam_reports'] >= 1
-            
-            log_test("Admin stats returns numeric users count", has_users, 
-                     f"users={stats.get('users')}")
-            log_test("Admin stats returns numeric posts count", has_posts, 
-                     f"posts={stats.get('posts')}")
-            log_test("Admin stats returns open_reports >= 1", has_open_reports, 
-                     f"open_reports={stats.get('open_reports')}")
-            log_test("Admin stats returns csam_reports >= 1", has_csam_reports, 
-                     f"csam_reports={stats.get('csam_reports')}")
-        else:
-            log_test("Admin stats endpoint", False, f"Status: {resp.status_code}")
-    except Exception as e:
-        log_test("Admin stats endpoint", False, f"Exception: {e}")
-
-    print()
-
-    # ========== TEST 5: ADMIN REPORTS + ACTIONS ==========
-    print("TEST 5: ADMIN REPORTS + ACTIONS")
-    print("-" * 80)
-
-    # Get open reports
-    try:
-        headers = {"Authorization": f"Bearer {admin_token}"}
-        resp = requests.get(f"{BASE_URL}/admin/reports?status=open", headers=headers, timeout=10)
-        if resp.status_code == 200:
-            reports = resp.json()
-            print(f"✓ Found {len(reports)} open reports")
-            
-            # Find the harassment report
-            harassment_report = None
-            for r in reports:
-                if r.get('category') == 'harassment' and r.get('target_type') == 'post':
-                    harassment_report = r
-                    break
-            
-            if harassment_report:
-                target_user = harassment_report.get('target_user', {})
-                preview = harassment_report.get('preview', {})
-                
-                log_test("Harassment report has target_user.handle", 
-                         target_user.get('handle') == victim_user['handle'],
-                         f"target_user.handle={target_user.get('handle')}, expected={victim_user['handle']}")
-                
-                log_test("Harassment report has post text preview", 
-                         'Reportable post' in preview.get('text', ''),
-                         f"preview.text={preview.get('text', '')[:50]}")
-                
-                # Test action: dismiss
-                # Create a new report to dismiss
-                dismiss_post = create_post(victim_token, tier="public", text="Post for dismiss test", tags=["dismiss"])
-                if dismiss_post:
-                    headers_reg = {"Authorization": f"Bearer {regular_token}"}
-                    report_resp = requests.post(f"{BASE_URL}/report", headers=headers_reg, 
-                                               json={"target_type": "post", "target_id": dismiss_post['id'], 
-                                                     "category": "spam", "note": "spam"}, timeout=10)
-                    if report_resp.status_code == 200:
-                        dismiss_report_id = report_resp.json()['id']
-                        
-                        # Dismiss the report
-                        headers_admin = {"Authorization": f"Bearer {admin_token}"}
-                        action_resp = requests.post(f"{BASE_URL}/admin/reports/{dismiss_report_id}/action",
-                                                   headers=headers_admin, 
-                                                   json={"action": "dismiss", "reason": "not valid"}, timeout=10)
-                        if action_resp.status_code == 200:
-                            # Verify report is dismissed
-                            reports_resp = requests.get(f"{BASE_URL}/admin/reports?status=dismissed", 
-                                                       headers=headers_admin, timeout=10)
-                            if reports_resp.status_code == 200:
-                                dismissed_reports = reports_resp.json()
-                                found_dismissed = any(r['id'] == dismiss_report_id for r in dismissed_reports)
-                                log_test("Action 'dismiss' changes report status to dismissed", 
-                                         found_dismissed,
-                                         f"Report {dismiss_report_id} {'found' if found_dismissed else 'NOT found'} in dismissed list")
-                            else:
-                                log_test("Action 'dismiss' changes report status to dismissed", False, 
-                                         f"Failed to get dismissed reports: {reports_resp.status_code}")
-                        else:
-                            log_test("Action 'dismiss' changes report status to dismissed", False, 
-                                     f"Action failed: {action_resp.status_code}")
-                
-                # Test action: remove_content
-                remove_post = create_post(victim_token, tier="public", text="Post for remove test", tags=["remove"])
-                if remove_post:
-                    headers_reg = {"Authorization": f"Bearer {regular_token}"}
-                    report_resp = requests.post(f"{BASE_URL}/report", headers=headers_reg, 
-                                               json={"target_type": "post", "target_id": remove_post['id'], 
-                                                     "category": "inappropriate", "note": "inappropriate"}, timeout=10)
-                    if report_resp.status_code == 200:
-                        remove_report_id = report_resp.json()['id']
-                        
-                        # Remove content
-                        headers_admin = {"Authorization": f"Bearer {admin_token}"}
-                        action_resp = requests.post(f"{BASE_URL}/admin/reports/{remove_report_id}/action",
-                                                   headers=headers_admin, 
-                                                   json={"action": "remove_content", "reason": "violates policy"}, timeout=10)
-                        if action_resp.status_code == 200:
-                            # Verify post is quarantined (not in feed)
-                            feed_resp = requests.get(f"{BASE_URL}/feed?scope=general", 
-                                                    headers={"Authorization": f"Bearer {victim_token}"}, timeout=10)
-                            if feed_resp.status_code == 200:
-                                feed = feed_resp.json()
-                                post_ids = [p['id'] for p in feed]
-                                is_quarantined = remove_post['id'] not in post_ids
-                                log_test("Action 'remove_content' quarantines the post", 
-                                         is_quarantined,
-                                         f"Post {remove_post['id']} {'NOT found' if is_quarantined else 'FOUND'} in feed")
-                            else:
-                                log_test("Action 'remove_content' quarantines the post", False, 
-                                         f"Failed to get feed: {feed_resp.status_code}")
-                        else:
-                            log_test("Action 'remove_content' quarantines the post", False, 
-                                     f"Action failed: {action_resp.status_code}")
-                
-                # Test action: warn_user
-                warn_post = create_post(victim_token, tier="public", text="Post for warn test", tags=["warn"])
-                if warn_post:
-                    headers_reg = {"Authorization": f"Bearer {regular_token}"}
-                    report_resp = requests.post(f"{BASE_URL}/report", headers=headers_reg, 
-                                               json={"target_type": "post", "target_id": warn_post['id'], 
-                                                     "category": "hate", "note": "hate speech"}, timeout=10)
-                    if report_resp.status_code == 200:
-                        warn_report_id = report_resp.json()['id']
-                        
-                        # Warn user
-                        headers_admin = {"Authorization": f"Bearer {admin_token}"}
-                        action_resp = requests.post(f"{BASE_URL}/admin/reports/{warn_report_id}/action",
-                                                   headers=headers_admin, 
-                                                   json={"action": "warn_user", "reason": "warning"}, timeout=10)
-                        if action_resp.status_code == 200:
-                            result = action_resp.json()
-                            log_test("Action 'warn_user' returns stage 'soft_warning'", 
-                                     result.get('stage') == 'soft_warning',
-                                     f"stage={result.get('stage')}")
-                        else:
-                            log_test("Action 'warn_user' returns stage 'soft_warning'", False, 
-                                     f"Action failed: {action_resp.status_code}")
-                
-                # Test action: strike_user
-                strike_post = create_post(victim_token, tier="public", text="Post for strike test", tags=["strike"])
-                if strike_post:
-                    headers_reg = {"Authorization": f"Bearer {regular_token}"}
-                    report_resp = requests.post(f"{BASE_URL}/report", headers=headers_reg, 
-                                               json={"target_type": "post", "target_id": strike_post['id'], 
-                                                     "category": "harassment", "note": "harassment"}, timeout=10)
-                    if report_resp.status_code == 200:
-                        strike_report_id = report_resp.json()['id']
-                        
-                        # Strike user
-                        headers_admin = {"Authorization": f"Bearer {admin_token}"}
-                        action_resp = requests.post(f"{BASE_URL}/admin/reports/{strike_report_id}/action",
-                                                   headers=headers_admin, 
-                                                   json={"action": "strike_user", "reason": "violation"}, timeout=10)
-                        if action_resp.status_code == 200:
-                            result = action_resp.json()
-                            log_test("Action 'strike_user' returns stage 'strike_1_48h'", 
-                                     result.get('stage') == 'strike_1_48h',
-                                     f"stage={result.get('stage')}, strikes={result.get('strikes')}")
-                            log_test("Action 'strike_user' increments strikes", 
-                                     result.get('strikes') >= 1,
-                                     f"strikes={result.get('strikes')}")
-                        else:
-                            log_test("Action 'strike_user' returns stage 'strike_1_48h'", False, 
-                                     f"Action failed: {action_resp.status_code}")
-            else:
-                log_test("Find harassment report in open reports", False, "No harassment report found")
-        else:
-            log_test("Get admin reports", False, f"Status: {resp.status_code}")
-    except Exception as e:
-        log_test("Get admin reports", False, f"Exception: {e}")
-
-    print()
-
-    # ========== TEST 6: STRIKE ESCALATION ==========
-    print("TEST 6: STRIKE ESCALATION")
-    print("-" * 80)
-
-    # Create a new user for strike testing
-    strike_test_token, strike_test_user = create_user("StrikeTest")
-    if strike_test_token and strike_test_user:
-        print(f"✓ Created strike test user: {strike_test_user['handle']}")
+            test_result("AUTH-1.1: POST /api/dev/token (RegA)", False, str(e))
+            return
         
-        headers_admin = {"Authorization": f"Bearer {admin_token}"}
-        
-        # Strike 1
+        # Test 1.2: GET /api/me with valid token
         try:
-            resp = requests.post(f"{BASE_URL}/admin/users/{strike_test_user['handle']}/strike",
-                               headers=headers_admin, json={"reason": "test strike 1"}, timeout=10)
-            if resp.status_code == 200:
-                result = resp.json()
-                log_test("Strike 1 returns stage 'strike_1_48h'", 
-                         result.get('stage') == 'strike_1_48h',
-                         f"stage={result.get('stage')}, strikes={result.get('strikes')}")
+            r = await client.get(f"{API_URL}/me", 
+                                headers={"Authorization": f"Bearer {rega_token}"})
+            if r.status_code == 200:
+                data = r.json()
+                has_handle = 'handle' in data
+                test_result("AUTH-1.2: GET /api/me (valid token)", True, 
+                           f"Profile returned, handle={data.get('handle')}")
             else:
-                log_test("Strike 1 returns stage 'strike_1_48h'", False, 
-                         f"Status: {resp.status_code}")
+                test_result("AUTH-1.2: GET /api/me (valid token)", False, 
+                           f"Status {r.status_code}: {r.text}")
         except Exception as e:
-            log_test("Strike 1 returns stage 'strike_1_48h'", False, f"Exception: {e}")
+            test_result("AUTH-1.2: GET /api/me (valid token)", False, str(e))
         
-        # Strike 2
+        # Test 1.3: GET /api/me without token (should be 401)
         try:
-            resp = requests.post(f"{BASE_URL}/admin/users/{strike_test_user['handle']}/strike",
-                               headers=headers_admin, json={"reason": "test strike 2"}, timeout=10)
-            if resp.status_code == 200:
-                result = resp.json()
-                log_test("Strike 2 returns stage 'strike_2_7d'", 
-                         result.get('stage') == 'strike_2_7d',
-                         f"stage={result.get('stage')}, strikes={result.get('strikes')}")
+            r = await client.get(f"{API_URL}/me")
+            if r.status_code == 401:
+                test_result("AUTH-1.3: GET /api/me (no token)", True, "Correctly returned 401")
             else:
-                log_test("Strike 2 returns stage 'strike_2_7d'", False, 
-                         f"Status: {resp.status_code}")
+                test_result("AUTH-1.3: GET /api/me (no token)", False, 
+                           f"Expected 401, got {r.status_code}")
         except Exception as e:
-            log_test("Strike 2 returns stage 'strike_2_7d'", False, f"Exception: {e}")
+            test_result("AUTH-1.3: GET /api/me (no token)", False, str(e))
         
-        # Strike 3
+        # Test 1.4: GET /api/me with malformed token (should be 401)
         try:
-            resp = requests.post(f"{BASE_URL}/admin/users/{strike_test_user['handle']}/strike",
-                               headers=headers_admin, json={"reason": "test strike 3"}, timeout=10)
-            if resp.status_code == 200:
-                result = resp.json()
-                log_test("Strike 3 returns stage 'strike_3_permanent' (banned)", 
-                         result.get('stage') == 'strike_3_permanent',
-                         f"stage={result.get('stage')}, strikes={result.get('strikes')}")
+            r = await client.get(f"{API_URL}/me", 
+                                headers={"Authorization": "Bearer invalid.token.here"})
+            if r.status_code == 401:
+                test_result("AUTH-1.4: GET /api/me (malformed token)", True, 
+                           "Correctly returned 401")
             else:
-                log_test("Strike 3 returns stage 'strike_3_permanent' (banned)", False, 
-                         f"Status: {resp.status_code}")
+                test_result("AUTH-1.4: GET /api/me (malformed token)", False, 
+                           f"Expected 401, got {r.status_code}")
         except Exception as e:
-            log_test("Strike 3 returns stage 'strike_3_permanent' (banned)", False, f"Exception: {e}")
+            test_result("AUTH-1.4: GET /api/me (malformed token)", False, str(e))
         
-        # Unsuspend
+        # ============================================================
+        # 2. THREE-TIER VISIBILITY TESTS
+        # ============================================================
+        print("\n📋 TEST SUITE 2: THREE-TIER VISIBILITY")
+        print("-" * 80)
+        
+        # Create Alpha2 and Beta2 users
         try:
-            resp = requests.post(f"{BASE_URL}/admin/users/{strike_test_user['handle']}/unsuspend",
-                               headers=headers_admin, json={}, timeout=10)
-            if resp.status_code == 200:
-                result = resp.json()
-                log_test("Unsuspend returns ok=true", 
-                         result.get('ok') == True,
-                         f"ok={result.get('ok')}")
-                
-                # Verify strikes reset
-                users_resp = requests.get(f"{BASE_URL}/admin/users?q={strike_test_user['handle']}", 
-                                         headers=headers_admin, timeout=10)
-                if users_resp.status_code == 200:
-                    users = users_resp.json()
-                    user = next((u for u in users if u['handle'] == strike_test_user['handle']), None)
-                    if user:
-                        log_test("Unsuspend resets strikes to 0", 
-                                 user.get('strikes') == 0,
-                                 f"strikes={user.get('strikes')}")
-                        log_test("Unsuspend sets banned to false", 
-                                 user.get('banned') == False,
-                                 f"banned={user.get('banned')}")
-                    else:
-                        log_test("Unsuspend resets strikes to 0", False, "User not found in admin/users")
+            r = await client.post(f"{API_URL}/dev/token", json={"name": "Alpha2"})
+            alpha2_token = r.json()['access_token']
+            alpha2_handle = r.json()['user']['handle']
+            test_result("VISIBILITY-2.1: Create Alpha2 user", r.status_code == 200, 
+                       f"handle={alpha2_handle}")
+        except Exception as e:
+            test_result("VISIBILITY-2.1: Create Alpha2 user", False, str(e))
+            return
+        
+        try:
+            r = await client.post(f"{API_URL}/dev/token", json={"name": "Beta2"})
+            beta2_token = r.json()['access_token']
+            beta2_handle = r.json()['user']['handle']
+            test_result("VISIBILITY-2.2: Create Beta2 user", r.status_code == 200, 
+                       f"handle={beta2_handle}")
+        except Exception as e:
+            test_result("VISIBILITY-2.2: Create Beta2 user", False, str(e))
+            return
+        
+        # Alpha2 creates public, followers, inner posts
+        post_ids = {}
+        for tier in ['public', 'followers', 'inner']:
+            try:
+                r = await client.post(f"{API_URL}/posts", 
+                    json={"tier": tier, "text": f"Alpha2 {tier} post for regression test", 
+                          "tags": ["regression", "test"]},
+                    headers={"Authorization": f"Bearer {alpha2_token}"})
+                if r.status_code == 200:
+                    post_ids[tier] = r.json()['id']
+                    test_result(f"VISIBILITY-2.3.{tier}: Alpha2 creates {tier} post", True, 
+                               f"post_id={post_ids[tier]}")
                 else:
-                    log_test("Unsuspend resets strikes to 0", False, 
-                             f"Failed to get users: {users_resp.status_code}")
+                    test_result(f"VISIBILITY-2.3.{tier}: Alpha2 creates {tier} post", False, 
+                               f"Status {r.status_code}")
+            except Exception as e:
+                test_result(f"VISIBILITY-2.3.{tier}: Alpha2 creates {tier} post", False, str(e))
+        
+        # Beta2 (not following) should see ONLY public post
+        try:
+            r = await client.get(f"{API_URL}/feed?scope=general", 
+                                headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 200:
+                posts = r.json()
+                alpha_posts = [p for p in posts if p['author']['handle'] == alpha2_handle]
+                visible_tiers = [p['tier'] for p in alpha_posts]
+                if visible_tiers == ['public']:
+                    test_result("VISIBILITY-2.4: Beta2 sees ONLY public (not following)", True, 
+                               f"Visible tiers: {visible_tiers}")
+                else:
+                    test_result("VISIBILITY-2.4: Beta2 sees ONLY public (not following)", False, 
+                               f"Expected ['public'], got {visible_tiers}")
             else:
-                log_test("Unsuspend returns ok=true", False, 
-                         f"Status: {resp.status_code}")
+                test_result("VISIBILITY-2.4: Beta2 sees ONLY public (not following)", False, 
+                           f"Status {r.status_code}")
         except Exception as e:
-            log_test("Unsuspend returns ok=true", False, f"Exception: {e}")
-    else:
-        log_test("Create strike test user", False, "Failed to create user")
-
-    print()
-
-    # ========== TEST 7: AUDIT LOG ==========
-    print("TEST 7: AUDIT LOG")
-    print("-" * 80)
-
-    try:
-        headers = {"Authorization": f"Bearer {admin_token}"}
-        resp = requests.get(f"{BASE_URL}/admin/audit", headers=headers, timeout=10)
-        if resp.status_code == 200:
-            audit_log = resp.json()
-            log_test("Audit log returns non-empty list", 
-                     len(audit_log) > 0,
-                     f"Found {len(audit_log)} audit entries")
-            
-            if len(audit_log) > 0:
-                # Check that entries have required fields
-                first_entry = audit_log[0]
-                has_admin_handle = 'admin_handle' in first_entry
-                has_action = 'action' in first_entry
-                has_target = 'target' in first_entry
+            test_result("VISIBILITY-2.4: Beta2 sees ONLY public (not following)", False, str(e))
+        
+        # Beta2 follows Alpha2 (open mode -> auto-approved)
+        try:
+            r = await client.post(f"{API_URL}/follow/{alpha2_handle}", 
+                                 headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 200 and r.json().get('status') == 'approved':
+                test_result("VISIBILITY-2.5: Beta2 follows Alpha2 (auto-approved)", True)
+            else:
+                test_result("VISIBILITY-2.5: Beta2 follows Alpha2 (auto-approved)", False, 
+                           f"Status {r.status_code}, response: {r.text}")
+        except Exception as e:
+            test_result("VISIBILITY-2.5: Beta2 follows Alpha2 (auto-approved)", False, str(e))
+        
+        # Beta2 should now see public + followers (NOT inner)
+        try:
+            r = await client.get(f"{API_URL}/feed?scope=general", 
+                                headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 200:
+                posts = r.json()
+                alpha_posts = [p for p in posts if p['author']['handle'] == alpha2_handle]
+                visible_tiers = sorted([p['tier'] for p in alpha_posts])
+                expected = ['followers', 'public']
+                if visible_tiers == expected:
+                    test_result("VISIBILITY-2.6: Beta2 sees public+followers (NOT inner)", True, 
+                               f"Visible tiers: {visible_tiers}")
+                else:
+                    test_result("VISIBILITY-2.6: Beta2 sees public+followers (NOT inner)", False, 
+                               f"Expected {expected}, got {visible_tiers}")
+            else:
+                test_result("VISIBILITY-2.6: Beta2 sees public+followers (NOT inner)", False, 
+                           f"Status {r.status_code}")
+        except Exception as e:
+            test_result("VISIBILITY-2.6: Beta2 sees public+followers (NOT inner)", False, str(e))
+        
+        # Alpha2 invites Beta2 to inner circle
+        try:
+            r = await client.post(f"{API_URL}/inner/invite/{beta2_handle}", 
+                                 headers={"Authorization": f"Bearer {alpha2_token}"})
+            if r.status_code == 200 and r.json().get('status') == 'pending':
+                test_result("VISIBILITY-2.7: Alpha2 invites Beta2 to inner circle", True)
+            else:
+                test_result("VISIBILITY-2.7: Alpha2 invites Beta2 to inner circle", False, 
+                           f"Status {r.status_code}")
+        except Exception as e:
+            test_result("VISIBILITY-2.7: Alpha2 invites Beta2 to inner circle", False, str(e))
+        
+        # Beta2 accepts inner circle invite
+        try:
+            r = await client.post(f"{API_URL}/inner/accept/{alpha2_handle}", 
+                                 headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 200 and r.json().get('status') == 'accepted':
+                test_result("VISIBILITY-2.8: Beta2 accepts inner circle invite", True)
+            else:
+                test_result("VISIBILITY-2.8: Beta2 accepts inner circle invite", False, 
+                           f"Status {r.status_code}")
+        except Exception as e:
+            test_result("VISIBILITY-2.8: Beta2 accepts inner circle invite", False, str(e))
+        
+        # Beta2 should now see ALL three tiers
+        try:
+            r = await client.get(f"{API_URL}/feed?scope=general", 
+                                headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 200:
+                posts = r.json()
+                alpha_posts = [p for p in posts if p['author']['handle'] == alpha2_handle]
+                visible_tiers = sorted([p['tier'] for p in alpha_posts])
+                expected = ['followers', 'inner', 'public']
+                if visible_tiers == expected:
+                    test_result("VISIBILITY-2.9: Beta2 sees ALL tiers (public+followers+inner)", True, 
+                               f"Visible tiers: {visible_tiers}")
+                else:
+                    test_result("VISIBILITY-2.9: Beta2 sees ALL tiers (public+followers+inner)", False, 
+                               f"Expected {expected}, got {visible_tiers}")
+            else:
+                test_result("VISIBILITY-2.9: Beta2 sees ALL tiers (public+followers+inner)", False, 
+                           f"Status {r.status_code}")
+        except Exception as e:
+            test_result("VISIBILITY-2.9: Beta2 sees ALL tiers (public+followers+inner)", False, str(e))
+        
+        # ============================================================
+        # 3. ENCRYPTED DM TESTS
+        # ============================================================
+        print("\n📋 TEST SUITE 3: ENCRYPTED DMs")
+        print("-" * 80)
+        
+        # Alpha2 sends DM to Beta2
+        dm_text = "reg check"
+        dm_id = None
+        try:
+            r = await client.post(f"{API_URL}/dms/{beta2_handle}", 
+                                 json={"text": dm_text},
+                                 headers={"Authorization": f"Bearer {alpha2_token}"})
+            if r.status_code == 200:
+                dm_id = r.json()['id']
+                test_result("DM-3.1: Alpha2 sends DM to Beta2", True, f"dm_id={dm_id}")
+            else:
+                test_result("DM-3.1: Alpha2 sends DM to Beta2", False, 
+                           f"Status {r.status_code}: {r.text}")
+        except Exception as e:
+            test_result("DM-3.1: Alpha2 sends DM to Beta2", False, str(e))
+        
+        # Beta2 retrieves DM and verifies decryption
+        try:
+            r = await client.get(f"{API_URL}/dms/{alpha2_handle}", 
+                                headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 200:
+                data = r.json()
+                messages = data.get('messages', [])
+                can_dm = data.get('can_dm', False)
                 
-                log_test("Audit entries have admin_handle field", has_admin_handle,
-                         f"admin_handle={first_entry.get('admin_handle')}")
-                log_test("Audit entries have action field", has_action,
-                         f"action={first_entry.get('action')}")
-                log_test("Audit entries have target field", has_target,
-                         f"target={first_entry.get('target')}")
+                if messages and messages[-1]['text'] == dm_text and can_dm:
+                    test_result("DM-3.2: Beta2 retrieves decrypted DM", True, 
+                               f"Text='{dm_text}', can_dm={can_dm}")
+                else:
+                    test_result("DM-3.2: Beta2 retrieves decrypted DM", False, 
+                               f"Expected text='{dm_text}', got messages={messages}, can_dm={can_dm}")
+            else:
+                test_result("DM-3.2: Beta2 retrieves decrypted DM", False, 
+                           f"Status {r.status_code}")
+        except Exception as e:
+            test_result("DM-3.2: Beta2 retrieves decrypted DM", False, str(e))
+        
+        # Verify encryption at rest in MongoDB
+        try:
+            mongo_client = AsyncIOMotorClient(MONGO_URL)
+            db = mongo_client[DB_NAME]
+            
+            if dm_id:
+                dm_doc = await db.dms.find_one({'id': dm_id})
+                if dm_doc:
+                    content_enc = dm_doc.get('content_enc', '')
+                    # Check that content_enc is NOT the plaintext
+                    if content_enc and content_enc != dm_text and len(content_enc) > 20:
+                        # Check if it looks like base64 ciphertext
+                        is_base64_like = all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' 
+                                            for c in content_enc)
+                        if is_base64_like:
+                            test_result("DM-3.3: MongoDB encryption at rest verified", True, 
+                                       f"content_enc is base64 ciphertext (not plaintext), length={len(content_enc)}")
+                        else:
+                            test_result("DM-3.3: MongoDB encryption at rest verified", False, 
+                                       f"content_enc doesn't look like base64: {content_enc[:50]}")
+                    else:
+                        test_result("DM-3.3: MongoDB encryption at rest verified", False, 
+                                   f"content_enc is plaintext or empty: {content_enc}")
+                else:
+                    test_result("DM-3.3: MongoDB encryption at rest verified", False, 
+                               "DM document not found in MongoDB")
+            else:
+                test_result("DM-3.3: MongoDB encryption at rest verified", False, 
+                           "No dm_id to verify")
+            
+            mongo_client.close()
+        except Exception as e:
+            test_result("DM-3.3: MongoDB encryption at rest verified", False, str(e))
+        
+        # ============================================================
+        # 4. LIKES TESTS
+        # ============================================================
+        print("\n📋 TEST SUITE 4: LIKES (public-only enforcement)")
+        print("-" * 80)
+        
+        # Beta2 likes Alpha2's public post
+        try:
+            r = await client.post(f"{API_URL}/posts/{post_ids['public']}/like", 
+                                 headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 200:
+                data = r.json()
+                if data.get('liked') == True:
+                    test_result("LIKES-4.1: Beta2 likes Alpha2's public post", True, 
+                               f"liked={data['liked']}, like_count={data.get('like_count')}")
+                else:
+                    test_result("LIKES-4.1: Beta2 likes Alpha2's public post", False, 
+                               f"Expected liked=True, got {data}")
+            else:
+                test_result("LIKES-4.1: Beta2 likes Alpha2's public post", False, 
+                           f"Status {r.status_code}")
+        except Exception as e:
+            test_result("LIKES-4.1: Beta2 likes Alpha2's public post", False, str(e))
+        
+        # Beta2 tries to like Alpha2's followers post (should be 400)
+        try:
+            r = await client.post(f"{API_URL}/posts/{post_ids['followers']}/like", 
+                                 headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 400:
+                test_result("LIKES-4.2: Beta2 cannot like followers post (400)", True, 
+                           "Correctly returned 400")
+            else:
+                test_result("LIKES-4.2: Beta2 cannot like followers post (400)", False, 
+                           f"Expected 400, got {r.status_code}")
+        except Exception as e:
+            test_result("LIKES-4.2: Beta2 cannot like followers post (400)", False, str(e))
+        
+        # Beta2 tries to like Alpha2's inner post (should be 400)
+        try:
+            r = await client.post(f"{API_URL}/posts/{post_ids['inner']}/like", 
+                                 headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 400:
+                test_result("LIKES-4.3: Beta2 cannot like inner post (400)", True, 
+                           "Correctly returned 400")
+            else:
+                test_result("LIKES-4.3: Beta2 cannot like inner post (400)", False, 
+                           f"Expected 400, got {r.status_code}")
+        except Exception as e:
+            test_result("LIKES-4.3: Beta2 cannot like inner post (400)", False, str(e))
+        
+        # ============================================================
+        # 5. ADMIN GATING + ONE ACTION TESTS
+        # ============================================================
+        print("\n📋 TEST SUITE 5: ADMIN GATING + REPORTING")
+        print("-" * 80)
+        
+        # Create Admin user
+        try:
+            r = await client.post(f"{API_URL}/dev/token", json={"name": "Admin"})
+            admin_token = r.json()['access_token']
+            admin_handle = r.json()['user']['handle']
+            
+            # Verify admin status
+            r2 = await client.get(f"{API_URL}/me", 
+                                 headers={"Authorization": f"Bearer {admin_token}"})
+            is_admin = r2.json().get('is_admin', False)
+            
+            if r.status_code == 200 and is_admin:
+                test_result("ADMIN-5.1: Create Admin user (is_admin=true)", True, 
+                           f"handle={admin_handle}, is_admin={is_admin}")
+            else:
+                test_result("ADMIN-5.1: Create Admin user (is_admin=true)", False, 
+                           f"is_admin={is_admin}")
+        except Exception as e:
+            test_result("ADMIN-5.1: Create Admin user (is_admin=true)", False, str(e))
+            return
+        
+        # Regular user tries to access admin stats (should be 403)
+        try:
+            r = await client.get(f"{API_URL}/admin/stats", 
+                                headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 403:
+                test_result("ADMIN-5.2: Regular user GET /admin/stats (403)", True, 
+                           "Correctly returned 403")
+            else:
+                test_result("ADMIN-5.2: Regular user GET /admin/stats (403)", False, 
+                           f"Expected 403, got {r.status_code}")
+        except Exception as e:
+            test_result("ADMIN-5.2: Regular user GET /admin/stats (403)", False, str(e))
+        
+        # No token tries to access admin stats (should be 401)
+        try:
+            r = await client.get(f"{API_URL}/admin/stats")
+            if r.status_code == 401:
+                test_result("ADMIN-5.3: No token GET /admin/stats (401)", True, 
+                           "Correctly returned 401")
+            else:
+                test_result("ADMIN-5.3: No token GET /admin/stats (401)", False, 
+                           f"Expected 401, got {r.status_code}")
+        except Exception as e:
+            test_result("ADMIN-5.3: No token GET /admin/stats (401)", False, str(e))
+        
+        # Admin user accesses admin stats (should be 200)
+        try:
+            r = await client.get(f"{API_URL}/admin/stats", 
+                                headers={"Authorization": f"Bearer {admin_token}"})
+            if r.status_code == 200:
+                stats = r.json()
+                test_result("ADMIN-5.4: Admin GET /admin/stats (200)", True, 
+                           f"users={stats.get('users')}, posts={stats.get('posts')}")
+            else:
+                test_result("ADMIN-5.4: Admin GET /admin/stats (200)", False, 
+                           f"Expected 200, got {r.status_code}")
+        except Exception as e:
+            test_result("ADMIN-5.4: Admin GET /admin/stats (200)", False, str(e))
+        
+        # Regular user reports Alpha2's public post
+        report_id = None
+        try:
+            r = await client.post(f"{API_URL}/report", 
+                                 json={"target_type": "post", 
+                                      "target_id": post_ids['public'],
+                                      "category": "spam",
+                                      "note": "Regression test report"},
+                                 headers={"Authorization": f"Bearer {beta2_token}"})
+            if r.status_code == 200:
+                report_id = r.json().get('id')
+                test_result("ADMIN-5.5: Beta2 reports Alpha2's public post", True, 
+                           f"report_id={report_id}")
+            else:
+                test_result("ADMIN-5.5: Beta2 reports Alpha2's public post", False, 
+                           f"Status {r.status_code}")
+        except Exception as e:
+            test_result("ADMIN-5.5: Beta2 reports Alpha2's public post", False, str(e))
+        
+        # Admin retrieves open reports
+        try:
+            r = await client.get(f"{API_URL}/admin/reports?status=open", 
+                                headers={"Authorization": f"Bearer {admin_token}"})
+            if r.status_code == 200:
+                reports = r.json()
+                matching_report = None
+                for rep in reports:
+                    if rep.get('id') == report_id:
+                        matching_report = rep
+                        break
+                
+                if matching_report:
+                    test_result("ADMIN-5.6: Admin GET /admin/reports shows report", True, 
+                               f"Found report, target_user={matching_report.get('target_user', {}).get('handle')}")
+                else:
+                    test_result("ADMIN-5.6: Admin GET /admin/reports shows report", False, 
+                               f"Report {report_id} not found in {len(reports)} reports")
+            else:
+                test_result("ADMIN-5.6: Admin GET /admin/reports shows report", False, 
+                           f"Status {r.status_code}")
+        except Exception as e:
+            test_result("ADMIN-5.6: Admin GET /admin/reports shows report", False, str(e))
+        
+        # Admin dismisses the report
+        if report_id:
+            try:
+                r = await client.post(f"{API_URL}/admin/reports/{report_id}/action", 
+                                     json={"action": "dismiss", "reason": "Regression test"},
+                                     headers={"Authorization": f"Bearer {admin_token}"})
+                if r.status_code == 200 and r.json().get('ok'):
+                    test_result("ADMIN-5.7: Admin dismisses report", True, 
+                               f"action=dismiss, ok={r.json().get('ok')}")
+                else:
+                    test_result("ADMIN-5.7: Admin dismisses report", False, 
+                               f"Status {r.status_code}, response: {r.text}")
+            except Exception as e:
+                test_result("ADMIN-5.7: Admin dismisses report", False, str(e))
         else:
-            log_test("Audit log endpoint", False, f"Status: {resp.status_code}")
-    except Exception as e:
-        log_test("Audit log endpoint", False, f"Exception: {e}")
-
-    print()
-
-    # ========== SUMMARY ==========
-    print("=" * 80)
-    print("TEST SUMMARY")
-    print("=" * 80)
+            test_result("ADMIN-5.7: Admin dismisses report", False, "No report_id to dismiss")
+    
+    # ============================================================
+    # FINAL SUMMARY
+    # ============================================================
+    print("\n" + "="*80)
+    print("REGRESSION TEST SUMMARY")
+    print("="*80)
     print(f"✅ PASSED: {tests_passed}")
     print(f"❌ FAILED: {tests_failed}")
-    print(f"TOTAL: {tests_passed + tests_failed}")
-    print()
-
+    print(f"📊 TOTAL:  {tests_passed + tests_failed}")
+    
     if tests_failed == 0:
-        print("🎉 ALL TESTS PASSED!")
-        sys.exit(0)
+        print("\n🎉 ALL REGRESSION TESTS PASSED - NO REGRESSIONS DETECTED")
+        print("✅ Deploy-prep changes (dotenv refactor) did NOT introduce any regressions")
     else:
-        print(f"⚠️  {tests_failed} TEST(S) FAILED")
-        sys.exit(1)
+        print(f"\n⚠️  {tests_failed} TEST(S) FAILED - REGRESSION DETECTED")
+        print("❌ Deploy-prep changes may have introduced regressions")
+    
+    print("="*80 + "\n")
+    
+    return tests_failed == 0
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    success = asyncio.run(main())
+    sys.exit(0 if success else 1)
