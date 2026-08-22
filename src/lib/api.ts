@@ -11,7 +11,9 @@ async function req(path: string, opts: RequestInit = {}) {
   if (!res.ok) {
     let d = res.statusText
     try { d = (await res.json()).detail || d } catch {}
-    throw new Error(d)
+    const err: any = new Error(d)
+    err.status = res.status
+    throw err
   }
   return res.status === 204 ? null : res.json()
 }

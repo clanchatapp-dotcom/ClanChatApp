@@ -239,23 +239,29 @@ backend:
         -comment: "✅ LIVEKIT TOKEN WORKING (2/2). Without auth correctly returns 401. With auth returns server_url (wss://clanchat-rlnieg0m.livekit.cloud), participant_token (JWT with 3 segments), and room name. Token format correct."
 
 frontend:
-  - task: "ClanChat v4 UI (feed/profile/messages/search/activity, new black+indigo theme)"
+  - task: "Session persistence / token refresh (no logout when leaving & returning)"
     implemented: true
-    working: "NA"
-    file: "src/pages/Feed.tsx"
+    working: true
+    file: "src/lib/auth.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: false
     status_history:
         -working: "NA"
+        -agent: "user"
+        -comment: "BUG REPORT: token refresh refused to work; leaving the app and coming back logs you straight out."
+        -working: "NA"
         -agent: "main"
-        -comment: "Rendered & verified via screenshot (feed, composer, nav, trending). Not yet agent-tested; awaiting user go-ahead for automated frontend tests."
+        -comment: "FIX: refresh() previously nuked the session (setToken(null)+setUser(null)) on ANY /api/me failure incl. transient errors and an access token that expired while away. New logic: (1) always pull freshest token from supabase.auth.getSession() before calling /api/me, (2) on 401 attempt supabase.auth.refreshSession() once and retry, (3) only hard-logout on a genuine 401 where refresh also fails; keep session on network/5xx blips. API errors now carry .status. Needs verification that a logged-in user stays logged in across a full page reload and after navigating away/back."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ BUG FIX VERIFIED - ALL SESSION PERSISTENCE TESTS PASSED (5/5). STEP 1 (Login): Successfully logged in with 'Persist Tester', 'My Feed' heading visible, localStorage 'cc_token' exists (387 chars). STEP 2 (CORE BUG - Reload Persistence): ✅ PASS - After full page reload, 'My Feed' heading STILL VISIBLE, login screen NOT visible, token persists in localStorage. This is the PRIMARY test for the reported bug and it PASSED. STEP 3 (Navigate + Return): Successfully navigated Messages → Activity → My Feed, reloaded again, user remained logged in. STEP 4 (New Tab): Opened fresh tab to same origin, session persisted correctly - 'My Feed' visible without re-login. STEP 5 (Logout): Logout button worked correctly - returned to login screen, localStorage 'cc_token' removed, reload stayed on login screen (no phantom session). No console errors, no network errors. The user-reported issue 'leaving the app and coming back logs you straight out' has been RESOLVED."
 
 metadata:
   created_by: "main_agent"
-  version: "2.0"
-  test_sequence: 2
-  run_ui: false
+  version: "2.1"
+  test_sequence: 3
+  run_ui: true
 
 test_plan:
   current_focus: []
@@ -265,6 +271,8 @@ test_plan:
 
 agent_communication:
     -agent: "main"
-    -message: "Iteration 2: full ClanChat v4 social core. Auth via POST /api/dev/token {name} -> Bearer access_token (real HS256 Supabase-compatible JWT). Create TWO users (e.g. names 'Alpha' and 'Beta') to test the social graph. FOCUS on the server-side tier visibility matrix (followers/inner posts must be invisible to non-members), Inner-Circle invite/accept flow, DM tier-gating + AES-256-GCM encryption AT REST (inspect dms.content_enc via pymongo), and the DM realtime websocket. Also verify LiveKit token endpoint returns a wss server_url + JWT."
+    -message: "BUG FIX verification needed (frontend). User reported: leaving the app and returning logs you straight out. Fixed session handling in src/lib/auth.tsx. Verify via sandbox dev-login (Login page -> type a display name -> click 'Enter ClanChat'), then: (1) after landing on My Feed, do a FULL page reload and confirm the user REMAINS logged in (My Feed heading visible, NOT the 'Welcome back' login screen); (2) navigate to /messages and /activity then back to / and reload again, still logged in; (3) open a second fresh tab to same origin and confirm session persists (localStorage 'cc_token'). Report if any reload/return drops to login."
     -agent: "testing"
     -message: "🎉 BACKEND TESTING COMPLETE - ALL 39 TESTS PASSED (100% success rate). Comprehensive testing performed with Alpha & Beta users across all 8 backend tasks. KEY VALIDATIONS: (1) Auth: JWT validation working perfectly, 401 for invalid tokens. (2) Three-tier visibility: Server-side enforcement PERFECT - Beta sees only public posts initially, then public+followers after follow, then all tiers after inner circle acceptance. (3) Follows: Both open and approval modes working. (4) Inner Circle: Invite/accept flow working. (5) DMs: Tier-gating enforced, AES-256-GCM encryption VERIFIED at rest via MongoDB (content_enc is base64 ciphertext, NOT plaintext), WebSocket real-time delivery working. (6) Likes: Public-only enforcement working (400 for non-public). (7) Search/Trending/Activity: No privacy leaks, only public posts in search. (8) Storage: Supabase upload working, signed URLs accessible. (9) LiveKit: Token generation working with correct wss:// URL and 3-segment JWT. NO MAJOR ISSUES FOUND. Backend is production-ready."
+    -agent: "testing"
+    -message: "✅ SESSION PERSISTENCE BUG FIX VERIFIED - ALL TESTS PASSED. Comprehensive testing of the session persistence fix in src/lib/auth.tsx completed successfully. All 5 test scenarios passed: (1) Login with dev account works correctly, (2) CORE BUG FIX: Full page reload maintains session - user stays logged in, (3) Navigation through app (Messages → Activity → Feed) + reload maintains session, (4) New tab/window opens with session persisted via localStorage, (5) Logout works correctly and removes token. No console errors, no network errors. The user-reported bug 'leaving the app and coming back logs you straight out' has been RESOLVED. Frontend session persistence is now production-ready."

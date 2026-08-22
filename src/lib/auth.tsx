@@ -22,26 +22,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   const refresh = useCallback(async () => {
-    if (!getToken()) { setUser(null); return }
+    // Always sync to the freshest Supabase token first (auto-refreshes an
+    // expired Supabase session), then fall back to the stored token (dev login).
     try {
-      const me = await api.me()
-      setUser(me)
-    } catch {
-      setToken(null)
-      setUser(null)
+      const { data } = await supabase.auth.getSession()
+      if (data.session?.access_token) setToken(data.session.access_token)
+    } catch { /* ignore — dev-login users have no Supabase session */ }
+
+    if (!getToken()) { setUser(null); return }
+
+    try {
+      setUser(await api.me())
+    } catch (e: any) {
+      if (e?.status === 401) {
+        // Token rejected. Try one Supabase refresh before giving up so that
+        // returning to the app after the access token expired does NOT log you out.
+        try {
+          const { data } = await supabase.auth.refreshSession()
+          if (data.session?.access_token) {
+            setToken(data.session.access_token)
+            setUser(await api.me())
+            return
+          }
+        } catch { /* no refreshable Supabase session */ }
+        // Genuine auth failure (e.g. dev JWT truly expired) -> sign out.
+        setToken(null)
+        setUser(null)
+      }
+      // Any non-401 (network blip, 5xx, offline) -> keep the current session.
     }
   }, [])
 
   useEffect(() => {
     (async () => {
-      // Prefer a live Supabase session (Google web/native) if present.
-      const { data } = await supabase.auth.getSession()
-      if (data.session?.access_token) setToken(data.session.access_token)
       await refresh()
       setLoading(false)
     })()
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
+        setToken(null)
+        setUser(null)
+        return
+      }
       if (session?.access_token) {
         setToken(session.access_token)
         refresh()
