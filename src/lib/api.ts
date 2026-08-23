@@ -1,11 +1,27 @@
+import { Capacitor } from '@capacitor/core'
+
 const TOKEN_KEY = 'cc_token'
 export const getToken = () => localStorage.getItem(TOKEN_KEY)
 export const setToken = (t: string | null) => t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY)
 
-// In the sandbox / single-origin web deploy this is empty -> relative "/api" (Vite proxy / same origin).
-// For a split web deploy and for the Android APK, set REACT_APP_API_URL to the absolute backend URL
-// e.g. https://clanchat-backend.onrender.com  (baked at build time).
-export const API_BASE = (((import.meta as any).env.REACT_APP_API_URL || '') as string).replace(/\/$/, '')
+// Deployed FastAPI backend on Render. Used as the fallback inside the native app
+// (which has no same-origin API) so the APK works out of the box even if the
+// REACT_APP_API_URL build var isn't provided.
+const NATIVE_API_FALLBACK = 'https://clanchatapp-backend.onrender.com'
+
+// Resolve the backend base URL:
+//  - If REACT_APP_API_URL is baked at build time, always use it (web deploy + APK).
+//  - Else, inside the native Capacitor shell -> use the deployed Render backend.
+//  - Else (sandbox dev / same-origin web) -> "" so requests hit relative "/api"
+//    (Vite proxy in dev, same origin in single-host deploys).
+function computeApiBase(): string {
+  const fromEnv = (((import.meta as any).env.REACT_APP_API_URL || '') as string).replace(/\/$/, '')
+  if (fromEnv) return fromEnv
+  try { if (Capacitor.isNativePlatform()) return NATIVE_API_FALLBACK } catch { /* not native */ }
+  return ''
+}
+
+export const API_BASE = computeApiBase()
 
 async function req(path: string, opts: RequestInit = {}) {
   const token = getToken()
