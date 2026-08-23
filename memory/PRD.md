@@ -41,3 +41,11 @@ Discussion Boards, group chats (T3 max 15), comments, 18+/NSFW + age verificatio
 - NEW Settings page (/settings): edit display name, privacy toggles (follow_mode approval, dm_open), sign out, delete account (typed-DELETE confirm). Added sidebar + mobile nav links.
 - NEW backend endpoint: DELETE /api/account (wipes profile/auth/posts/follows/inner/dms/activity/reports). Tested 26/26 backend, 5/5 frontend.
 - PENDING user: (a) Save to GitHub + redeploy Render backend (fixes 502) + rebuild APK; (b) provide shield logo file to integrate into header/login/favicon/Android icon.
+
+## Changelog — Branding + Comfort Zone + Admin (this session, cont.)
+- Brand logo (shield + gold C + sword) integrated: /app/public/logo.png (optimized 256px transparent, 53KB). Used on Login (desktop+mobile), sidebar header; favicon + apple-touch-icon + og:image in index.html.
+- Android launcher icons regenerated at all densities (mipmap-mdpi..xxxhdpi): ic_launcher.png, ic_launcher_round.png, ic_launcher_foreground.png; adaptive ic_launcher_background color set to #0B1020 (navy). Full-res source kept at /tmp only; app uses trimmed versions.
+- Comfort Zone settings section added (NSFW/AI/Strong language/Violence/Drugs toggles), backend profile.comfort_zone + sanitizer + /api/me self-only exposure. Tested 42/42 backend.
+- Admin: added thomasgallacher92@gmail.com to ADMIN_EMAILS (sandbox .env). Prod requires ADMIN_EMAILS env on Render. Admin link (Shield) shows in sidebar when is_admin.
+- Google APK sign-in error [16] = needs Android OAuth client (pkg app.clanchat.mobile + SHA-1 23:C2:C4:7F:B8:6D:1B:4A:9F:5B:4F:21:20:C6:1E:F2:CD:6B:E0:9B) + stable keystore secret ANDROID_KEYSTORE_BASE64. Config only, no code change.
+- Render backend was misconfigured as Node service running old CRA (craco start) -> 502; must be Python web service (rootDir backend, uvicorn start). User recreating it.

@@ -26,7 +26,7 @@ export default function Layout() {
       {/* Desktop sidebar */}
       <aside className="hidden md:flex flex-col w-64 shrink-0 h-screen sticky top-0 p-4 gap-1">
         <div className="flex items-center gap-2 px-2 py-3">
-          <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-brand to-violet-600 grid place-items-center"><MessageCircle className="h-5 w-5 text-white" /></div>
+          <img src="/logo.png" alt="ClanChat" className="h-9 w-9 object-contain" />
           <span className="font-extrabold text-lg">ClanChat</span>
         </div>
         {NAV.map(n => (

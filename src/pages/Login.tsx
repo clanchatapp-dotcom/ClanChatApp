@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
-import { MessageCircle, Lock, Users, Sparkles, Mail } from 'lucide-react'
+import { Lock, Users, Sparkles, Mail } from 'lucide-react'
 
 export default function Login() {
   const { loginEmail, registerEmail, loginGoogle } = useAuth()
@@ -29,9 +29,7 @@ export default function Login() {
     <div className="min-h-full grid lg:grid-cols-2">
       <div className="hidden lg:flex flex-col justify-between p-12 relative overflow-hidden">
         <div className="flex items-center gap-3">
-          <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-brand to-violet-600 grid place-items-center shadow-lg shadow-violet-900/40">
-            <MessageCircle className="h-6 w-6 text-white" />
-          </div>
+          <img src="/logo.png" alt="ClanChat" className="h-12 w-12 object-contain drop-shadow-lg" />
           <span className="text-2xl font-extrabold tracking-tight">ClanChat</span>
         </div>
         <div className="space-y-6 max-w-md">
@@ -56,7 +54,7 @@ export default function Login() {
       <div className="flex items-center justify-center p-6">
         <div className="w-full max-w-sm bg-panel/80 backdrop-blur border border-edge rounded-3xl p-8 shadow-2xl shadow-black/50">
           <div className="lg:hidden flex items-center gap-3 mb-6">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-brand to-violet-600 grid place-items-center"><MessageCircle className="h-5 w-5 text-white" /></div>
+            <img src="/logo.png" alt="ClanChat" className="h-10 w-10 object-contain" />
             <span className="text-xl font-extrabold">ClanChat</span>
           </div>
           <h2 className="text-2xl font-bold">{mode === 'register' ? 'Create your account' : 'Welcome back'}</h2>
