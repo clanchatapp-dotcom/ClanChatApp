@@ -46,6 +46,7 @@ export const api = {
   authLogin: (email: string, password: string) => req('/auth/login', { method: 'POST', body: j({ email, password }) }),
   me: () => req('/me'),
   updateProfile: (b: any) => req('/profile', { method: 'PUT', body: j(b) }),
+  deleteAccount: () => req('/account', { method: 'DELETE' }),
   getUser: (h: string) => req(`/users/${h}`),
   getUserPosts: (h: string) => req(`/users/${h}/posts`),
   follow: (h: string) => req(`/follow/${h}`, { method: 'POST' }),

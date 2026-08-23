@@ -27,9 +27,13 @@ export async function initGoogle(): Promise<void> {
 export async function signInGoogleNative() {
   await initGoogle()
   const { SocialLogin } = await import('@capgo/capacitor-social-login')
+  // NOTE: do NOT pass `scopes` here — the capgo v7 plugin rejects custom scopes
+  // ("You CANNOT use scopes without modifying the main activity") for the basic
+  // online flow. Omitting them uses Google's default email/profile scopes, which
+  // is exactly what we need for Supabase signInWithIdToken.
   const res: any = await SocialLogin.login({
     provider: 'google',
-    options: { scopes: ['email', 'profile'] },
+    options: {},
   })
   const idToken = res?.result?.idToken
   if (!idToken) throw new Error('No idToken from Google')

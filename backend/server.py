@@ -38,7 +38,19 @@ JWT_SECRET = os.environ.get('SUPABASE_JWT_SECRET', '')
 SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
 SERVICE_ROLE_KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')
 BUCKET = os.environ.get('SUPABASE_BUCKET', 'clanchat-media')
-DM_KEY = base64.b64decode(os.environ.get('DM_ENC_KEY', ''))
+def _load_dm_key() -> bytes:
+    """Parse DM_ENC_KEY safely. A bad/missing value must NOT crash startup
+    (that would 502 the whole service on Render)."""
+    raw = os.environ.get('DM_ENC_KEY', '')
+    if not raw:
+        return b''
+    try:
+        return base64.b64decode(raw)
+    except Exception:
+        logging.getLogger('clanchat').warning('DM_ENC_KEY is not valid base64 — DM encryption disabled until fixed')
+        return b''
+
+DM_KEY = _load_dm_key()
 LIVEKIT_URL = os.environ.get('LIVEKIT_URL', '')
 LIVEKIT_API_KEY = os.environ.get('LIVEKIT_API_KEY', '')
 LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
@@ -444,6 +456,21 @@ async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user
         await db.profiles.update_one({'id': u['id']}, {'$set': upd})
     prof = await db.profiles.find_one({'id': u['id']}, {'_id': 0})
     return await public_profile(prof, u['id'])
+
+
+@app.delete('/api/account')
+async def delete_account(u: dict = Depends(get_current_user)):
+    """Permanently delete the signed-in user's account and all their data."""
+    uid = u['id']
+    await db.profiles.delete_one({'id': uid})
+    await db.auth.delete_many({'user_id': uid})
+    await db.posts.delete_many({'author_id': uid})
+    await db.follows.delete_many({'$or': [{'follower_id': uid}, {'target_id': uid}]})
+    await db.inner.delete_many({'$or': [{'owner_id': uid}, {'member_id': uid}]})
+    await db.dms.delete_many({'participants': uid})
+    await db.activity.delete_many({'$or': [{'user_id': uid}, {'actor_id': uid}]})
+    await db.reports.delete_many({'reporter_id': uid})
+    return {'ok': True, 'deleted': uid}
 
 
 # ----------------------------- Profiles / social graph -----------------------------

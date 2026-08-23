@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Backend test for Admin: flag suspicious accounts + discreet encrypted-DM review
-Tests the NEW admin feature for flagging accounts and reviewing their encrypted DMs.
+Backend test for DELETE /api/account + DM_ENC_KEY startup hardening + regression sanity
+Tests the NEW account deletion endpoint and verifies no regressions in core functionality.
 """
 import requests
 import json
 import sys
+import secrets
 
 # Base URL from .env
 BASE_URL = "https://auth-consolidation-3.preview.emergentagent.com/api"
@@ -32,464 +33,347 @@ def headers(token):
     return {"Authorization": f"Bearer {token}"}
 
 print("\n" + "="*80)
-print("ADMIN FLAG + DISCREET DM REVIEW TESTS")
+print("DELETE /api/account + REGRESSION SANITY TESTS")
 print("="*80 + "\n")
 
 # ============================================================================
-# SETUP: Create users
+# TEST 1: DELETE /api/account WITHOUT token → 401
 # ============================================================================
-print("SETUP: Creating users...")
-admin_token, admin_user = create_user("Admin")
-suspect_token, suspect_user = create_user("Suspect")
-contact_token, contact_user = create_user("Contact")
+print("TEST 1: DELETE /api/account WITHOUT token")
+print("-" * 80)
 
-print(f"  Admin: {admin_user['handle']} (email: admin@sandbox.clanchat)")
-print(f"  Suspect: {suspect_user['handle']}")
-print(f"  Contact: {contact_user['handle']}")
-
-# Verify admin has is_admin=true
-me_resp = requests.get(f"{BASE_URL}/me", headers=headers(admin_token))
-if me_resp.status_code == 200:
-    me_data = me_resp.json()
-    is_admin = me_data.get('is_admin', False)
-    print_test("Admin user has is_admin=true", is_admin, f"is_admin={is_admin}")
-else:
-    print_test("Admin user verification", False, f"GET /me failed: {me_resp.status_code}")
+delete_noauth_resp = requests.delete(f"{BASE_URL}/account")
+print_test(
+    "DELETE /api/account without token → 401",
+    delete_noauth_resp.status_code == 401,
+    f"Status: {delete_noauth_resp.status_code}"
+)
 
 # ============================================================================
-# SETUP: Create DM conversation between Suspect and Contact
+# TEST 2: Register fresh user, create post, DELETE account
 # ============================================================================
-print("\nSETUP: Creating DM conversation between Suspect and Contact...")
+print("\nTEST 2: Register fresh user, create post, DELETE account")
+print("-" * 80)
 
-# Step 1: Suspect invites Contact to inner circle
-invite_resp = requests.post(
-    f"{BASE_URL}/inner/invite/{contact_user['handle']}",
-    headers=headers(suspect_token)
+# Generate unique random email
+random_suffix = secrets.token_hex(4)
+test_email = f"deltest+{random_suffix}@example.com"
+test_password = "secret123"
+test_name = "Del Test"
+
+# Step 2a: Register user
+register_resp = requests.post(
+    f"{BASE_URL}/auth/register",
+    json={"email": test_email, "password": test_password, "name": test_name}
 )
 print_test(
-    "Suspect invites Contact to inner circle",
+    f"POST /api/auth/register with email '{test_email}' → 200",
+    register_resp.status_code == 200,
+    f"Status: {register_resp.status_code}"
+)
+
+if register_resp.status_code != 200:
+    print(f"❌ FAIL: Registration failed: {register_resp.text}")
+    sys.exit(1)
+
+register_data = register_resp.json()
+test_token = register_data['access_token']
+test_user_id = register_data['user']['id']
+test_handle = register_data['user']['handle']
+
+print(f"  → Registered user: {test_handle} (id: {test_user_id})")
+
+# Step 2b: Confirm GET /api/me → 200
+me_resp = requests.get(f"{BASE_URL}/me", headers=headers(test_token))
+print_test(
+    "GET /api/me with registration token → 200",
+    me_resp.status_code == 200,
+    f"Status: {me_resp.status_code}, handle: {me_resp.json().get('handle') if me_resp.status_code == 200 else 'N/A'}"
+)
+
+# Step 2c: Create a post
+post_text = f"to be deleted {random_suffix}"
+create_post_resp = requests.post(
+    f"{BASE_URL}/posts",
+    headers=headers(test_token),
+    json={"tier": "public", "text": post_text}
+)
+print_test(
+    f"POST /api/posts with text '{post_text}' → 200",
+    create_post_resp.status_code == 200,
+    f"Status: {create_post_resp.status_code}"
+)
+
+if create_post_resp.status_code != 200:
+    print(f"❌ FAIL: Post creation failed: {create_post_resp.text}")
+    sys.exit(1)
+
+post_id = create_post_resp.json()['id']
+print(f"  → Created post: {post_id}")
+
+# Step 2d: Confirm post appears in GET /api/feed?scope=general
+feed_before_resp = requests.get(
+    f"{BASE_URL}/feed?scope=general",
+    headers=headers(test_token)
+)
+print_test(
+    "GET /api/feed?scope=general → 200",
+    feed_before_resp.status_code == 200,
+    f"Status: {feed_before_resp.status_code}"
+)
+
+if feed_before_resp.status_code == 200:
+    feed_before = feed_before_resp.json()
+    post_in_feed = any(p['id'] == post_id for p in feed_before)
+    print_test(
+        f"Post '{post_id}' appears in feed BEFORE deletion",
+        post_in_feed,
+        f"Found: {post_in_feed}"
+    )
+
+# Step 2e: DELETE /api/account with token → 200 {ok:true, deleted:<uid>}
+delete_resp = requests.delete(f"{BASE_URL}/account", headers=headers(test_token))
+print_test(
+    "DELETE /api/account with token → 200",
+    delete_resp.status_code == 200,
+    f"Status: {delete_resp.status_code}"
+)
+
+if delete_resp.status_code == 200:
+    delete_data = delete_resp.json()
+    print_test(
+        "Response contains ok=true",
+        delete_data.get('ok') == True,
+        f"ok={delete_data.get('ok')}"
+    )
+    print_test(
+        f"Response contains deleted='{test_user_id}'",
+        delete_data.get('deleted') == test_user_id,
+        f"deleted={delete_data.get('deleted')}"
+    )
+
+# ============================================================================
+# TEST 3: Verify deletion side-effects
+# ============================================================================
+print("\nTEST 3: Verify deletion side-effects")
+print("-" * 80)
+
+# Step 3a: POST /api/auth/login with deleted user's email+password → 401
+login_resp = requests.post(
+    f"{BASE_URL}/auth/login",
+    json={"email": test_email, "password": test_password}
+)
+print_test(
+    "POST /api/auth/login with deleted user's email+password → 401",
+    login_resp.status_code == 401,
+    f"Status: {login_resp.status_code}"
+)
+
+if login_resp.status_code == 401:
+    error_message = login_resp.json().get('detail', '') if login_resp.headers.get('content-type', '').startswith('application/json') else login_resp.text
+    has_invalid_message = 'invalid email or password' in error_message.lower()
+    print_test(
+        "Error message is 'Invalid email or password'",
+        has_invalid_message,
+        f"Message: {error_message}"
+    )
+
+# Step 3b: The created post must NOT appear in GET /api/feed?scope=general
+# Create a new user to check the feed (since the deleted user's token is invalid)
+check_token, check_user = create_user("FeedChecker")
+feed_after_resp = requests.get(
+    f"{BASE_URL}/feed?scope=general",
+    headers=headers(check_token)
+)
+print_test(
+    "GET /api/feed?scope=general (with new user) → 200",
+    feed_after_resp.status_code == 200,
+    f"Status: {feed_after_resp.status_code}"
+)
+
+if feed_after_resp.status_code == 200:
+    feed_after = feed_after_resp.json()
+    post_still_in_feed = any(p['id'] == post_id for p in feed_after)
+    print_test(
+        f"Post '{post_id}' does NOT appear in feed AFTER deletion",
+        not post_still_in_feed,
+        f"Found in feed: {post_still_in_feed}"
+    )
+
+# ============================================================================
+# TEST 4: REGRESSION SANITY - dev-token + /api/me (200/401)
+# ============================================================================
+print("\nTEST 4: REGRESSION SANITY - dev-token + /api/me")
+print("-" * 80)
+
+# Step 4a: POST /api/dev/token → 200
+dev_token_resp = requests.post(f"{BASE_URL}/dev/token", json={"name": "RegChk"})
+print_test(
+    "POST /api/dev/token {name:'RegChk'} → 200",
+    dev_token_resp.status_code == 200,
+    f"Status: {dev_token_resp.status_code}"
+)
+
+if dev_token_resp.status_code != 200:
+    print(f"❌ FAIL: Dev token creation failed: {dev_token_resp.text}")
+    sys.exit(1)
+
+dev_token_data = dev_token_resp.json()
+dev_token = dev_token_data['access_token']
+
+# Step 4b: GET /api/me with dev token → 200
+me_dev_resp = requests.get(f"{BASE_URL}/me", headers=headers(dev_token))
+print_test(
+    "GET /api/me with dev token → 200",
+    me_dev_resp.status_code == 200,
+    f"Status: {me_dev_resp.status_code}"
+)
+
+# Step 4c: GET /api/me without token → 401
+me_notoken_resp = requests.get(f"{BASE_URL}/me")
+print_test(
+    "GET /api/me without token → 401",
+    me_notoken_resp.status_code == 401,
+    f"Status: {me_notoken_resp.status_code}"
+)
+
+# Step 4d: GET /api/me with malformed token → 401
+me_malformed_resp = requests.get(f"{BASE_URL}/me", headers={"Authorization": "Bearer invalid.token.here"})
+print_test(
+    "GET /api/me with malformed token → 401",
+    me_malformed_resp.status_code == 401,
+    f"Status: {me_malformed_resp.status_code}"
+)
+
+# ============================================================================
+# TEST 5: REGRESSION SANITY - Encrypted DM round-trip
+# ============================================================================
+print("\nTEST 5: REGRESSION SANITY - Encrypted DM round-trip")
+print("-" * 80)
+
+# Create two users
+dm_user1_token, dm_user1 = create_user("DMUser1")
+dm_user2_token, dm_user2 = create_user("DMUser2")
+
+print(f"  → Created DMUser1: {dm_user1['handle']}")
+print(f"  → Created DMUser2: {dm_user2['handle']}")
+
+# Step 5a: DMUser1 invites DMUser2 to inner circle
+invite_resp = requests.post(
+    f"{BASE_URL}/inner/invite/{dm_user2['handle']}",
+    headers=headers(dm_user1_token)
+)
+print_test(
+    "DMUser1 invites DMUser2 to inner circle → 200",
     invite_resp.status_code == 200,
     f"Status: {invite_resp.status_code}"
 )
 
-# Step 2: Contact accepts Suspect's inner circle invite
+# Step 5b: DMUser2 accepts invite
 accept_resp = requests.post(
-    f"{BASE_URL}/inner/accept/{suspect_user['handle']}",
-    headers=headers(contact_token)
+    f"{BASE_URL}/inner/accept/{dm_user1['handle']}",
+    headers=headers(dm_user2_token)
 )
 print_test(
-    "Contact accepts Suspect's inner circle invite",
+    "DMUser2 accepts inner circle invite → 200",
     accept_resp.status_code == 200,
     f"Status: {accept_resp.status_code}"
 )
 
-# Step 3: Suspect sends DM to Contact
-dm1_resp = requests.post(
-    f"{BASE_URL}/dms/{contact_user['handle']}",
-    headers=headers(suspect_token),
-    json={"text": "secret plan alpha"}
+# Step 5c: DMUser1 sends encrypted DM to DMUser2
+dm_text = f"encrypted test message {secrets.token_hex(4)}"
+send_dm_resp = requests.post(
+    f"{BASE_URL}/dms/{dm_user2['handle']}",
+    headers=headers(dm_user1_token),
+    json={"text": dm_text}
 )
 print_test(
-    "Suspect sends DM 'secret plan alpha' to Contact",
-    dm1_resp.status_code == 200,
-    f"Status: {dm1_resp.status_code}"
+    f"DMUser1 sends DM '{dm_text}' to DMUser2 → 200",
+    send_dm_resp.status_code == 200,
+    f"Status: {send_dm_resp.status_code}"
 )
 
-# Step 4: Contact sends DM to Suspect
-dm2_resp = requests.post(
-    f"{BASE_URL}/dms/{suspect_user['handle']}",
-    headers=headers(contact_token),
-    json={"text": "roger that bravo"}
+# Step 5d: DMUser2 retrieves DM (should be decrypted)
+get_dm_resp = requests.get(
+    f"{BASE_URL}/dms/{dm_user1['handle']}",
+    headers=headers(dm_user2_token)
 )
 print_test(
-    "Contact sends DM 'roger that bravo' to Suspect",
-    dm2_resp.status_code == 200,
-    f"Status: {dm2_resp.status_code}"
+    "DMUser2 retrieves DMs from DMUser1 → 200",
+    get_dm_resp.status_code == 200,
+    f"Status: {get_dm_resp.status_code}"
 )
 
-print("\n" + "="*80)
-print("TEST 1: ADMIN GATING")
-print("="*80 + "\n")
-
-# Test 1a: Regular user (Contact) tries to flag - should get 403
-flag_regular_resp = requests.post(
-    f"{BASE_URL}/admin/users/{suspect_user['handle']}/flag",
-    headers=headers(contact_token),
-    json={"reason": "test"}
-)
-print_test(
-    "Regular user (Contact) POST /admin/users/{handle}/flag → 403",
-    flag_regular_resp.status_code == 403,
-    f"Status: {flag_regular_resp.status_code}"
-)
-
-# Test 1b: Regular user tries to view DMs - should get 403
-dm_regular_resp = requests.get(
-    f"{BASE_URL}/admin/dms/{suspect_user['handle']}",
-    headers=headers(contact_token)
-)
-print_test(
-    "Regular user (Contact) GET /admin/dms/{handle} → 403",
-    dm_regular_resp.status_code == 403,
-    f"Status: {dm_regular_resp.status_code}"
-)
-
-# Test 1c: No token - should get 401
-flag_noauth_resp = requests.post(
-    f"{BASE_URL}/admin/users/{suspect_user['handle']}/flag",
-    json={"reason": "test"}
-)
-print_test(
-    "No token POST /admin/users/{handle}/flag → 401",
-    flag_noauth_resp.status_code == 401,
-    f"Status: {flag_noauth_resp.status_code}"
-)
-
-dm_noauth_resp = requests.get(
-    f"{BASE_URL}/admin/dms/{suspect_user['handle']}"
-)
-print_test(
-    "No token GET /admin/dms/{handle} → 401",
-    dm_noauth_resp.status_code == 401,
-    f"Status: {dm_noauth_resp.status_code}"
-)
-
-# Test 1d: Admin user - should be allowed
-flag_admin_test_resp = requests.get(
-    f"{BASE_URL}/admin/stats",
-    headers=headers(admin_token)
-)
-print_test(
-    "Admin user GET /admin/stats → 200",
-    flag_admin_test_resp.status_code == 200,
-    f"Status: {flag_admin_test_resp.status_code}"
-)
-
-print("\n" + "="*80)
-print("TEST 2: DM REVIEW REQUIRES FLAG")
-print("="*80 + "\n")
-
-# Test 2: Admin tries to view DMs BEFORE flagging - should get 403
-dm_before_flag_resp = requests.get(
-    f"{BASE_URL}/admin/dms/{suspect_user['handle']}",
-    headers=headers(admin_token)
-)
-print_test(
-    "Admin GET /admin/dms/{handle} BEFORE flagging → 403",
-    dm_before_flag_resp.status_code == 403,
-    f"Status: {dm_before_flag_resp.status_code}, Message: {dm_before_flag_resp.text}"
-)
-
-# Verify the error message mentions flagging requirement
-if dm_before_flag_resp.status_code == 403:
-    error_text = dm_before_flag_resp.text.lower()
-    has_flag_message = 'flag' in error_text or 'suspicious' in error_text
+if get_dm_resp.status_code == 200:
+    dm_data = get_dm_resp.json()
+    messages = dm_data.get('messages', [])
     print_test(
-        "Error message mentions flagging requirement",
-        has_flag_message,
-        f"Error text contains 'flag' or 'suspicious': {has_flag_message}"
-    )
-
-print("\n" + "="*80)
-print("TEST 3: FLAG USER")
-print("="*80 + "\n")
-
-# Test 3a: Admin flags Suspect
-flag_resp = requests.post(
-    f"{BASE_URL}/admin/users/{suspect_user['handle']}/flag",
-    headers=headers(admin_token),
-    json={"reason": "suspicious activity"}
-)
-print_test(
-    "Admin POST /admin/users/{handle}/flag → 200",
-    flag_resp.status_code == 200,
-    f"Status: {flag_resp.status_code}"
-)
-
-if flag_resp.status_code == 200:
-    flag_data = flag_resp.json()
-    print_test(
-        "Flag response contains ok=true and flagged=true",
-        flag_data.get('ok') == True and flag_data.get('flagged') == True,
-        f"Response: {flag_data}"
-    )
-
-# Test 3b: Verify user appears in admin users list with flagged=true
-users_resp = requests.get(
-    f"{BASE_URL}/admin/users?q=suspect",
-    headers=headers(admin_token)
-)
-print_test(
-    "Admin GET /admin/users?q=suspect → 200",
-    users_resp.status_code == 200,
-    f"Status: {users_resp.status_code}"
-)
-
-if users_resp.status_code == 200:
-    users_data = users_resp.json()
-    suspect_in_list = None
-    for user in users_data:
-        if user['handle'] == suspect_user['handle']:
-            suspect_in_list = user
-            break
-    
-    print_test(
-        "Suspect user found in admin users list",
-        suspect_in_list is not None,
-        f"Found: {suspect_in_list is not None}"
+        "DM response contains messages",
+        len(messages) > 0,
+        f"Message count: {len(messages)}"
     )
     
-    if suspect_in_list:
+    if len(messages) > 0:
+        # Find the message we sent
+        found_message = any(msg.get('text') == dm_text for msg in messages)
         print_test(
-            "Suspect user has flagged=true",
-            suspect_in_list.get('flagged') == True,
-            f"flagged={suspect_in_list.get('flagged')}"
-        )
-        print_test(
-            "Suspect user has flag_reason='suspicious activity'",
-            suspect_in_list.get('flag_reason') == 'suspicious activity',
-            f"flag_reason='{suspect_in_list.get('flag_reason')}'"
+            f"Decrypted message '{dm_text}' found",
+            found_message,
+            f"Found: {found_message}"
         )
 
-# Test 3c: Verify admin stats shows flagged count >= 1
-stats_resp = requests.get(
-    f"{BASE_URL}/admin/stats",
-    headers=headers(admin_token)
-)
-if stats_resp.status_code == 200:
-    stats_data = stats_resp.json()
+# ============================================================================
+# TEST 6: REGRESSION SANITY - Admin gating
+# ============================================================================
+print("\nTEST 6: REGRESSION SANITY - Admin gating")
+print("-" * 80)
+
+# Create admin user (email: admin@sandbox.clanchat)
+admin_token, admin_user = create_user("Admin")
+print(f"  → Created Admin: {admin_user['handle']} (email: admin@sandbox.clanchat)")
+
+# Verify admin has is_admin=true
+admin_me_resp = requests.get(f"{BASE_URL}/me", headers=headers(admin_token))
+if admin_me_resp.status_code == 200:
+    admin_me_data = admin_me_resp.json()
+    is_admin = admin_me_data.get('is_admin', False)
     print_test(
-        "Admin stats shows flagged >= 1",
-        stats_data.get('flagged', 0) >= 1,
-        f"flagged={stats_data.get('flagged', 0)}"
+        "Admin user has is_admin=true",
+        is_admin,
+        f"is_admin={is_admin}"
     )
 
-print("\n" + "="*80)
-print("TEST 4: DISCREET DM REVIEW")
-print("="*80 + "\n")
-
-# Test 4: Admin views DMs of flagged user
-dm_review_resp = requests.get(
-    f"{BASE_URL}/admin/dms/{suspect_user['handle']}",
-    headers=headers(admin_token)
-)
+# Step 6a: Regular user GET /api/admin/stats → 403
+regular_stats_resp = requests.get(f"{BASE_URL}/admin/stats", headers=headers(dm_user1_token))
 print_test(
-    "Admin GET /admin/dms/{handle} AFTER flagging → 200",
-    dm_review_resp.status_code == 200,
-    f"Status: {dm_review_resp.status_code}"
+    "Regular user GET /api/admin/stats → 403",
+    regular_stats_resp.status_code == 403,
+    f"Status: {regular_stats_resp.status_code}"
 )
 
-if dm_review_resp.status_code == 200:
-    dm_data = dm_review_resp.json()
-    
-    # Verify structure
-    print_test(
-        "Response contains 'user' and 'threads' fields",
-        'user' in dm_data and 'threads' in dm_data,
-        f"Keys: {list(dm_data.keys())}"
-    )
-    
-    # Verify user info
-    if 'user' in dm_data:
-        user_info = dm_data['user']
-        print_test(
-            "User info contains handle and flag_reason",
-            user_info.get('handle') == suspect_user['handle'] and 
-            user_info.get('flag_reason') == 'suspicious activity',
-            f"handle={user_info.get('handle')}, flag_reason={user_info.get('flag_reason')}"
-        )
-    
-    # Verify threads
-    if 'threads' in dm_data:
-        threads = dm_data['threads']
-        print_test(
-            "At least one thread exists",
-            len(threads) > 0,
-            f"Thread count: {len(threads)}"
-        )
-        
-        if len(threads) > 0:
-            # Find thread with Contact
-            contact_thread = None
-            for thread in threads:
-                if thread.get('peer', {}).get('handle') == contact_user['handle']:
-                    contact_thread = thread
-                    break
-            
-            print_test(
-                "Thread with Contact exists",
-                contact_thread is not None,
-                f"Found: {contact_thread is not None}"
-            )
-            
-            if contact_thread:
-                messages = contact_thread.get('messages', [])
-                print_test(
-                    "Thread contains messages",
-                    len(messages) >= 2,
-                    f"Message count: {len(messages)}"
-                )
-                
-                # Verify DECRYPTED messages
-                message_texts = [msg.get('text', '') for msg in messages]
-                has_alpha = 'secret plan alpha' in message_texts
-                has_bravo = 'roger that bravo' in message_texts
-                
-                print_test(
-                    "DECRYPTED message 'secret plan alpha' found",
-                    has_alpha,
-                    f"Found: {has_alpha}, Messages: {message_texts}"
-                )
-                
-                print_test(
-                    "DECRYPTED message 'roger that bravo' found",
-                    has_bravo,
-                    f"Found: {has_bravo}, Messages: {message_texts}"
-                )
-                
-                # Verify from_flagged field
-                for msg in messages:
-                    if msg.get('text') == 'secret plan alpha':
-                        print_test(
-                            "Message 'secret plan alpha' has from_flagged=true",
-                            msg.get('from_flagged') == True,
-                            f"from_flagged={msg.get('from_flagged')}"
-                        )
-                    elif msg.get('text') == 'roger that bravo':
-                        print_test(
-                            "Message 'roger that bravo' has from_flagged=false",
-                            msg.get('from_flagged') == False,
-                            f"from_flagged={msg.get('from_flagged')}"
-                        )
-
-print("\n" + "="*80)
-print("TEST 5: DISCREET = NO NOTIFICATION, BUT AUDITED")
-print("="*80 + "\n")
-
-# Test 5a: Verify Suspect is NOT notified
-activity_resp = requests.get(
-    f"{BASE_URL}/activity",
-    headers=headers(suspect_token)
-)
+# Step 6b: No token GET /api/admin/stats → 401
+notoken_stats_resp = requests.get(f"{BASE_URL}/admin/stats")
 print_test(
-    "Suspect GET /activity → 200",
-    activity_resp.status_code == 200,
-    f"Status: {activity_resp.status_code}"
+    "No token GET /api/admin/stats → 401",
+    notoken_stats_resp.status_code == 401,
+    f"Status: {notoken_stats_resp.status_code}"
 )
 
-if activity_resp.status_code == 200:
-    activity_data = activity_resp.json()
-    # Check for any 'view_dms' or similar notification
-    has_dm_view_notification = any(
-        'view_dms' in str(act).lower() or 'watched' in str(act).lower() or 'reviewed' in str(act).lower()
-        for act in activity_data
-    )
-    print_test(
-        "Suspect has NO notification about DM review",
-        not has_dm_view_notification,
-        f"Has DM view notification: {has_dm_view_notification}, Activity count: {len(activity_data)}"
-    )
-
-# Test 5b: Verify audit log contains view_dms entry
-audit_resp = requests.get(
-    f"{BASE_URL}/admin/audit",
-    headers=headers(admin_token)
-)
+# Step 6c: Admin user GET /api/admin/stats → 200
+admin_stats_resp = requests.get(f"{BASE_URL}/admin/stats", headers=headers(admin_token))
 print_test(
-    "Admin GET /admin/audit → 200",
-    audit_resp.status_code == 200,
-    f"Status: {audit_resp.status_code}"
+    "Admin user GET /api/admin/stats → 200",
+    admin_stats_resp.status_code == 200,
+    f"Status: {admin_stats_resp.status_code}"
 )
 
-if audit_resp.status_code == 200:
-    audit_data = audit_resp.json()
-    
-    # Find view_dms entry
-    view_dms_entry = None
-    for entry in audit_data:
-        if entry.get('action') == 'view_dms' and entry.get('target') == suspect_user['handle']:
-            view_dms_entry = entry
-            break
-    
+if admin_stats_resp.status_code == 200:
+    stats_data = admin_stats_resp.json()
     print_test(
-        "Audit log contains 'view_dms' entry for Suspect",
-        view_dms_entry is not None,
-        f"Found: {view_dms_entry is not None}"
+        "Admin stats contains expected fields",
+        'users' in stats_data and 'posts' in stats_data,
+        f"Stats: users={stats_data.get('users')}, posts={stats_data.get('posts')}"
     )
-    
-    if view_dms_entry:
-        print_test(
-            "view_dms entry has admin_handle",
-            view_dms_entry.get('admin_handle') == admin_user['handle'],
-            f"admin_handle={view_dms_entry.get('admin_handle')}"
-        )
-    
-    # Find flag_user entry
-    flag_user_entry = None
-    for entry in audit_data:
-        if entry.get('action') == 'flag_user' and entry.get('target') == suspect_user['handle']:
-            flag_user_entry = entry
-            break
-    
-    print_test(
-        "Audit log contains 'flag_user' entry for Suspect",
-        flag_user_entry is not None,
-        f"Found: {flag_user_entry is not None}"
-    )
-
-print("\n" + "="*80)
-print("TEST 6: UNFLAG")
-print("="*80 + "\n")
-
-# Test 6a: Admin unflags Suspect
-unflag_resp = requests.post(
-    f"{BASE_URL}/admin/users/{suspect_user['handle']}/unflag",
-    headers=headers(admin_token)
-)
-print_test(
-    "Admin POST /admin/users/{handle}/unflag → 200",
-    unflag_resp.status_code == 200,
-    f"Status: {unflag_resp.status_code}"
-)
-
-if unflag_resp.status_code == 200:
-    unflag_data = unflag_resp.json()
-    print_test(
-        "Unflag response contains ok=true and flagged=false",
-        unflag_data.get('ok') == True and unflag_data.get('flagged') == False,
-        f"Response: {unflag_data}"
-    )
-
-# Test 6b: Verify DM review is blocked after unflagging
-dm_after_unflag_resp = requests.get(
-    f"{BASE_URL}/admin/dms/{suspect_user['handle']}",
-    headers=headers(admin_token)
-)
-print_test(
-    "Admin GET /admin/dms/{handle} AFTER unflagging → 403",
-    dm_after_unflag_resp.status_code == 403,
-    f"Status: {dm_after_unflag_resp.status_code}"
-)
-
-# Test 6c: Verify user appears in admin users list with flagged=false
-users_after_unflag_resp = requests.get(
-    f"{BASE_URL}/admin/users?q=suspect",
-    headers=headers(admin_token)
-)
-if users_after_unflag_resp.status_code == 200:
-    users_data = users_after_unflag_resp.json()
-    suspect_in_list = None
-    for user in users_data:
-        if user['handle'] == suspect_user['handle']:
-            suspect_in_list = user
-            break
-    
-    if suspect_in_list:
-        print_test(
-            "Suspect user has flagged=false after unflagging",
-            suspect_in_list.get('flagged') == False,
-            f"flagged={suspect_in_list.get('flagged')}"
-        )
 
 print("\n" + "="*80)
 print("ALL TESTS PASSED ✅")
