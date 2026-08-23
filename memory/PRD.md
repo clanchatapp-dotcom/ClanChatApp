@@ -49,3 +49,10 @@ Discussion Boards, group chats (T3 max 15), comments, 18+/NSFW + age verificatio
 - Admin: added thomasgallacher92@gmail.com to ADMIN_EMAILS (sandbox .env). Prod requires ADMIN_EMAILS env on Render. Admin link (Shield) shows in sidebar when is_admin.
 - Google APK sign-in error [16] = needs Android OAuth client (pkg app.clanchat.mobile + SHA-1 23:C2:C4:7F:B8:6D:1B:4A:9F:5B:4F:21:20:C6:1E:F2:CD:6B:E0:9B) + stable keystore secret ANDROID_KEYSTORE_BASE64. Config only, no code change.
 - Render backend was misconfigured as Node service running old CRA (craco start) -> 502; must be Python web service (rootDir backend, uvicorn start). User recreating it.
+
+## Changelog — Real name visibility + Profile avatar + Admin DANGER ZONE (this session, cont.)
+- Real name: profile.real_name + real_name_visibility (private|inner|followers|public). public_profile shows real_name to others only per visibility; self always sees own. Settings has real-name input + "who can see" selector. Profile shows real_name line under display name (backend-gated).
+- Profile avatar upload: orange? NO — brand/violet camera button on avatar (self only) -> /api/upload -> updateProfile(avatar_url). Kept violet/indigo theme per user choice.
+- Admin DANGER ZONE: POST /api/admin/promote {email} (promote to admin), POST /api/admin/purge-demo {include_admin} (purge alice/bob/teen + optional seeded admin, never self). Deleted counter (db.counters) + admin_stats 'deleted'. UI: DELETED stat card + DANGER ZONE section with 3 buttons + confirm dialogs.
+- Accent color: user chose to KEEP violet/indigo (not switch to old orange).
+- Verified: backend 38/38 passed. Frontend build clean. Frontend UI test pending user go-ahead.

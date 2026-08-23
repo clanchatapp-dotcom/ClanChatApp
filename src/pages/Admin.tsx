@@ -63,6 +63,25 @@ export default function Admin() {
     await api.adminFlag(handle, r || 'suspicious activity'); await load(); await loadStats()
   }
   const unflag = async (handle: string) => { await api.adminUnflag(handle); await load(); await loadStats() }
+  const [dz, setDz] = useState(false)
+  const promote = async () => {
+    const email = window.prompt('Enter the email address to promote to admin:', '')
+    if (!email) return
+    setDz(true)
+    try { const r = await api.adminPromote(email.trim()); alert(`Promoted #${r.promoted} to admin.`); await loadStats() }
+    catch (e: any) { alert(e.message || 'Could not promote that email.') }
+    setDz(false)
+  }
+  const purgeDemo = async (includeAdmin: boolean) => {
+    const msg = includeAdmin
+      ? 'Purge ALL demo accounts INCLUDING the seeded admin? This permanently deletes alice / bob / teen and the seeded admin and all their data. This cannot be undone.'
+      : 'Purge the seeded demo accounts alice / bob / teen and all their data? This cannot be undone.'
+    if (!window.confirm(msg)) return
+    setDz(true)
+    try { const r = await api.adminPurgeDemo(includeAdmin); alert(r.count ? `Purged: ${r.purged.join(', ')}` : 'No demo accounts found to purge.'); await load(); await loadStats() }
+    catch (e: any) { alert(e.message || 'Purge failed.') }
+    setDz(false)
+  }
   const viewDms = async (handle: string) => {
     setDm({ loading: true }); setDmLoading(true)
     try { setDm(await api.adminUserDms(handle)) } catch (e: any) { alert(e.message); setDm(null) } finally { setDmLoading(false) }
@@ -84,6 +103,7 @@ export default function Admin() {
           <Stat label="Suspended" value={stats.suspended} />
           <Stat label="Banned" value={stats.banned} />
           <Stat label="Flagged" value={stats.flagged} danger />
+          <Stat label="Deleted" value={stats.deleted} />
         </div>
 
         <div className="flex gap-1 bg-panel border border-edge rounded-xl p-1 w-fit">
@@ -166,6 +186,32 @@ export default function Admin() {
             ))}
           </div>
         )}
+
+        {/* Danger zone — production bootstrap tools */}
+        <section className="mt-4 border border-rose-500/30 bg-rose-500/5 rounded-2xl p-5">
+          <div className="flex items-center gap-2 text-rose-400 mb-2">
+            <AlertTriangle className="h-5 w-5" />
+            <h2 className="font-bold tracking-wide">DANGER ZONE</h2>
+          </div>
+          <p className="text-sm text-slate-400 mb-4">
+            One-off bootstrap for production. Promote your real email to admin, sign in as that account,
+            then purge the seeded demo accounts (alice / bob / teen) and optionally the seeded admin too.
+          </p>
+          <div className="flex flex-col sm:flex-row flex-wrap gap-2">
+            <button onClick={promote} disabled={dz}
+              className="px-4 py-2.5 rounded-xl border border-edge hover:bg-white/5 font-medium disabled:opacity-50 flex items-center justify-center gap-2">
+              {dz ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />} Promote email to admin…
+            </button>
+            <button onClick={() => purgeDemo(false)} disabled={dz}
+              className="px-4 py-2.5 rounded-xl border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 font-medium disabled:opacity-50 flex items-center justify-center gap-2">
+              <Trash2 className="h-4 w-4" /> Purge alice / bob / teen
+            </button>
+            <button onClick={() => purgeDemo(true)} disabled={dz}
+              className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 font-medium disabled:opacity-50 flex items-center justify-center gap-2">
+              <Trash2 className="h-4 w-4" /> Purge ALL demo (incl. seeded admin)
+            </button>
+          </div>
+        </section>
       </div>
 
       {dm && (

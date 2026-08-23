@@ -4,7 +4,7 @@ import { api } from '../lib/api'
 import { Avatar } from '../lib/ui'
 import PostCard from '../components/PostCard'
 import { useAuth } from '../lib/auth'
-import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon } from 'lucide-react'
+import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera } from 'lucide-react'
 
 const TABS = ['media', 'wall', 'audio'] as const
 type Tab = typeof TABS[number]
@@ -19,6 +19,7 @@ export default function Profile() {
   const [editing, setEditing] = useState(false)
   const [bio, setBio] = useState('')
   const [loading, setLoading] = useState(true)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -34,6 +35,19 @@ export default function Profile() {
   const invite = async () => { await api.inviteInner(p.handle); load() }
   const saveBio = async () => { await api.updateProfile({ bio }); setEditing(false); await refresh(); load() }
   const del = async (id: string) => { await api.deletePost(id); setPosts(x => x.filter(y => y.id !== id)) }
+
+  const onAvatarPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadingAvatar(true)
+    try {
+      const { signed_url } = await api.upload(file)
+      await api.updateProfile({ avatar_url: signed_url })
+      await refresh(); await load()
+    } catch { alert('Could not upload photo. Please try again.') }
+    setUploadingAvatar(false)
+    e.target.value = ''
+  }
 
   if (loading) return <div className="py-24 grid place-items-center text-slate-500"><Loader2 className="h-6 w-6 animate-spin" /></div>
   if (!p) return <div className="py-24 text-center text-slate-500">User not found.</div>
@@ -57,14 +71,23 @@ export default function Profile() {
 
       {/* Centered header */}
       <div className="max-w-xl mx-auto px-6 pt-8 flex flex-col items-center text-center">
-        <div className="ring-2 ring-edge rounded-full p-1">
-          <Avatar id={p.id} name={p.display_name} url={p.avatar_url} size={128} />
+        <div className="relative">
+          <div className="ring-2 ring-edge rounded-full p-1">
+            <Avatar id={p.id} name={p.display_name} url={p.avatar_url} size={128} />
+          </div>
+          {p.is_self && (
+            <label className="absolute bottom-1 right-1 h-10 w-10 rounded-full bg-brand grid place-items-center cursor-pointer shadow-lg shadow-violet-900/40 ring-2 ring-ink hover:brightness-110 transition">
+              {uploadingAvatar ? <Loader2 className="h-5 w-5 text-white animate-spin" /> : <Camera className="h-5 w-5 text-white" />}
+              <input type="file" accept="image/*" className="hidden" onChange={onAvatarPick} disabled={uploadingAvatar} />
+            </label>
+          )}
         </div>
         <h1 className="mt-5 text-3xl sm:text-4xl font-extrabold flex items-center gap-2">
           #{p.handle}
           {p.account_type === 'verified' && <Check className="h-5 w-5 text-brand bg-brand/20 rounded-full p-0.5" />}
         </h1>
         <div className="mt-1 text-lg text-slate-400">{p.display_name}</div>
+        {p.real_name && <div className="text-sm text-slate-500">{p.real_name}</div>}
 
         <div className="mt-4 flex items-center gap-2 text-slate-500 uppercase tracking-wide text-sm">
           <ShoppingBag className="h-4 w-4" /> Shop · Coming soon

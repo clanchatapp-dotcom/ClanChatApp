@@ -81,6 +81,8 @@ export const api = {
   adminUnflag: (handle: string) => req(`/admin/users/${handle}/unflag`, { method: 'POST' }),
   adminUserDms: (handle: string) => req(`/admin/dms/${handle}`),
   adminAudit: () => req('/admin/audit'),
+  adminPromote: (email: string) => req('/admin/promote', { method: 'POST', body: j({ email }) }),
+  adminPurgeDemo: (include_admin: boolean) => req('/admin/purge-demo', { method: 'POST', body: j({ include_admin }) }),
 }
 
 export function wsDmUrl(handle: string, token: string) {

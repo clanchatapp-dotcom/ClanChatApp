@@ -257,11 +257,25 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
     }
     if is_self:
         out['real_name'] = prof.get('real_name')
+        out['real_name_visibility'] = prof.get('real_name_visibility', 'private')
         out['email'] = prof.get('email')
         out['followers_count'] = followers_count  # private: owner only
         out['is_admin'] = is_admin_user(prof)
         out['strikes'] = prof.get('strikes', 0)
         out['comfort_zone'] = {**COMFORT_ZONE_DEFAULTS, **(prof.get('comfort_zone') or {})}
+    else:
+        # Real name is shown to others only per the owner's chosen visibility.
+        vis = prof.get('real_name_visibility', 'private')
+        rn = prof.get('real_name')
+        is_fol = bool(following and following.get('status') == 'approved')
+        is_inner = bool(inv and inv.get('status') == 'accepted')
+        show_rn = rn and (
+            vis == 'public'
+            or (vis == 'followers' and (is_fol or is_inner))
+            or (vis == 'inner' and is_inner)
+        )
+        if show_rn:
+            out['real_name'] = rn
     return out
 
 async def post_out(p: dict, viewer_id: str) -> dict:
@@ -299,6 +313,8 @@ class ProfileUpdate(BaseModel):
     dm_open: Optional[bool] = None
     avatar_url: Optional[str] = None
     comfort_zone: Optional[dict] = None
+    real_name: Optional[str] = None
+    real_name_visibility: Optional[str] = None  # private | inner | followers | public
 
 class PostCreate(BaseModel):
     tier: str = 'public'
@@ -458,6 +474,8 @@ async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user
     upd = {k: v for k, v in body.dict().items() if v is not None}
     if 'follow_mode' in upd and upd['follow_mode'] not in ('open', 'approval'):
         upd.pop('follow_mode')
+    if 'real_name_visibility' in upd and upd['real_name_visibility'] not in ('private', 'inner', 'followers', 'public'):
+        upd.pop('real_name_visibility')
     if 'comfort_zone' in upd:
         cz = upd['comfort_zone'] or {}
         upd['comfort_zone'] = {k: bool(cz.get(k, COMFORT_ZONE_DEFAULTS[k])) for k in COMFORT_ZONE_KEYS}
@@ -471,6 +489,13 @@ async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user
 async def delete_account(u: dict = Depends(get_current_user)):
     """Permanently delete the signed-in user's account and all their data."""
     uid = u['id']
+    await _purge_user(uid)
+    await incr_deleted(1)
+    return {'ok': True, 'deleted': uid}
+
+
+async def _purge_user(uid: str):
+    """Delete a user and all of their data across collections."""
     await db.profiles.delete_one({'id': uid})
     await db.auth.delete_many({'user_id': uid})
     await db.posts.delete_many({'author_id': uid})
@@ -479,7 +504,11 @@ async def delete_account(u: dict = Depends(get_current_user)):
     await db.dms.delete_many({'participants': uid})
     await db.activity.delete_many({'$or': [{'user_id': uid}, {'actor_id': uid}]})
     await db.reports.delete_many({'reporter_id': uid})
-    return {'ok': True, 'deleted': uid}
+
+
+async def incr_deleted(n: int = 1):
+    if n:
+        await db.counters.update_one({'_id': 'deleted'}, {'$inc': {'n': n}}, upsert=True)
 
 
 # ----------------------------- Profiles / social graph -----------------------------
@@ -853,6 +882,7 @@ async def create_report(body: ReportIn, u: dict = Depends(get_current_user)):
 
 @app.get('/api/admin/stats')
 async def admin_stats(a: dict = Depends(require_admin)):
+    deleted = (await db.counters.find_one({'_id': 'deleted'}) or {}).get('n', 0)
     return {
         'users': await db.profiles.count_documents({}),
         'posts': await db.posts.count_documents({}),
@@ -861,7 +891,53 @@ async def admin_stats(a: dict = Depends(require_admin)):
         'suspended': await db.profiles.count_documents({'suspended_until': {'$exists': True}}),
         'banned': await db.profiles.count_documents({'banned': True}),
         'flagged': await db.profiles.count_documents({'flagged': True}),
+        'deleted': deleted,
     }
+
+
+class PromoteBody(BaseModel):
+    email: str
+
+
+class PurgeBody(BaseModel):
+    include_admin: bool = False
+
+
+@app.post('/api/admin/promote')
+async def admin_promote(body: PromoteBody, a: dict = Depends(require_admin)):
+    """Promote a user (by email) to admin."""
+    email = (body.email or '').strip().lower()
+    if not email:
+        raise HTTPException(400, 'Email required')
+    prof = await db.profiles.find_one({'email': {'$regex': f'^{re.escape(email)}$', '$options': 'i'}}, {'_id': 0})
+    if not prof:
+        raise HTTPException(404, 'No account with that email')
+    await db.profiles.update_one({'id': prof['id']}, {'$set': {'is_admin': True, 'role': 'admin'}})
+    await audit(a, 'promote_admin', prof['handle'], email)
+    return {'ok': True, 'promoted': prof['handle']}
+
+
+@app.post('/api/admin/purge-demo')
+async def admin_purge_demo(body: PurgeBody, a: dict = Depends(require_admin)):
+    """Purge seeded demo accounts. Optionally include the seeded admin.
+    Never deletes the admin performing the action."""
+    targets = list(await db.profiles.find(
+        {'handle': {'$in': ['alice', 'bob', 'teen']}}, {'_id': 0, 'id': 1, 'handle': 1}
+    ).to_list(50))
+    if body.include_admin:
+        seeded = await db.profiles.find_one(
+            {'$or': [{'handle': 'admin'}, {'email': 'admin@sandbox.clanchat'}]}, {'_id': 0, 'id': 1, 'handle': 1})
+        if seeded:
+            targets.append(seeded)
+    purged = []
+    for t in targets:
+        if t['id'] == a['id']:
+            continue  # never delete yourself
+        await _purge_user(t['id'])
+        purged.append(t['handle'])
+    await incr_deleted(len(purged))
+    await audit(a, 'purge_demo', ','.join(purged) or 'none', f'include_admin={body.include_admin}')
+    return {'ok': True, 'purged': purged, 'count': len(purged)}
 
 @app.get('/api/admin/reports')
 async def admin_reports(status: str = 'open', a: dict = Depends(require_admin)):

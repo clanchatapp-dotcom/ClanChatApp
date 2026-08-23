@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, User as UserIcon, AlertTriangle, Lock, Flame, Sparkles, MessageSquare, Swords, Pill } from 'lucide-react'
+import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, User as UserIcon, AlertTriangle, Lock, Flame, Sparkles, MessageSquare, Swords, Pill, Eye } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Avatar } from '../lib/ui'
@@ -36,12 +36,14 @@ export default function Settings() {
   const [saving, setSaving] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [savedName, setSavedName] = useState(false)
+  const [realName, setRealName] = useState('')
+  const [savedRN, setSavedRN] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmText, setConfirmText] = useState('')
   const [deleting, setDeleting] = useState(false)
 
   const load = async () => {
-    try { const me = await api.me(); setP(me); setName(me.display_name || '') } catch {}
+    try { const me = await api.me(); setP(me); setName(me.display_name || ''); setRealName(me.real_name || '') } catch {}
     setLoading(false)
   }
   useEffect(() => { load() }, [])
@@ -67,6 +69,14 @@ export default function Settings() {
     if (!v || v === p?.display_name) return
     setSaving('display_name')
     try { await api.updateProfile({ display_name: v }); await refresh(); setSavedName(true); setTimeout(() => setSavedName(false), 1500) } catch {}
+    setSaving(null)
+  }
+
+  const saveRealName = async () => {
+    const v = realName.trim()
+    if (v === (p?.real_name || '')) return
+    setSaving('real_name')
+    try { await api.updateProfile({ real_name: v }); setP((prev: any) => ({ ...prev, real_name: v })); setSavedRN(true); setTimeout(() => setSavedRN(false), 1500) } catch {}
     setSaving(null)
   }
 
@@ -115,6 +125,41 @@ export default function Settings() {
               {saving === 'display_name' ? <Loader2 className="h-4 w-4 animate-spin" /> : savedName ? <Check className="h-4 w-4" /> : null}
               {savedName ? 'Saved' : 'Save'}
             </button>
+          </div>
+
+          <div className="mt-4">
+            <label className="block text-sm text-slate-400 mb-1.5">Real name <span className="text-slate-600">(optional)</span></label>
+            <div className="flex gap-2">
+              <input
+                value={realName}
+                onChange={e => setRealName(e.target.value)}
+                maxLength={60}
+                className="flex-1 bg-black/40 border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand/60"
+                placeholder="e.g. Thomas Gallacher"
+              />
+              <button
+                onClick={saveRealName}
+                disabled={saving === 'real_name' || realName.trim() === (p?.real_name || '')}
+                className="px-4 rounded-xl bg-brand font-medium disabled:opacity-40 flex items-center gap-1.5"
+              >
+                {saving === 'real_name' ? <Loader2 className="h-4 w-4 animate-spin" /> : savedRN ? <Check className="h-4 w-4" /> : null}
+                {savedRN ? 'Saved' : 'Save'}
+              </button>
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <Eye className="h-4 w-4 text-slate-500 shrink-0" />
+              <span className="text-xs text-slate-400">Who can see your real name</span>
+              <select
+                value={p?.real_name_visibility || 'private'}
+                onChange={e => setPref('real_name_visibility', e.target.value)}
+                className="ml-auto bg-black/40 border border-edge rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-brand/60"
+              >
+                <option value="private">Only me</option>
+                <option value="inner">Inner Circle</option>
+                <option value="followers">Followers</option>
+                <option value="public">Everyone</option>
+              </select>
+            </div>
           </div>
 
           <div className="mt-4">
