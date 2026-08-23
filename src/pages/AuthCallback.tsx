@@ -2,28 +2,58 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { setToken } from '../lib/api'
+import { useAuth } from '../lib/auth'
+
+// A PKCE authorization code is single-use: exchanging it consumes the code and
+// clears the stored code_verifier. React 18 StrictMode mounts effects twice in
+// dev, so without this dedupe the second run exchanges an already-spent code and
+// reports "Could not complete sign-in" even though sign-in actually succeeded.
+const inflight = new Map<string, ReturnType<typeof supabase.auth.exchangeCodeForSession>>()
+
+function exchangeOnce(code: string) {
+  let p = inflight.get(code)
+  if (!p) {
+    p = supabase.auth.exchangeCodeForSession(code)
+    inflight.set(code, p)
+  }
+  return p
+}
 
 export default function AuthCallback() {
   const navigate = useNavigate()
+  const { refresh } = useAuth()
   const [msg, setMsg] = useState('Completing sign-in…')
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
     let cancelled = false
+    const fail = (m: string) => { if (!cancelled) { setFailed(true); setMsg(m) } }
+
     ;(async () => {
       const params = new URLSearchParams(window.location.search)
       const oauthErr = params.get('error_description')
       const code = params.get('code')
-      if (oauthErr) { setFailed(true); setMsg(oauthErr); return }
-      if (!code) { setFailed(true); setMsg('Missing authorization code'); return }
-      const { data, error } = await supabase.auth.exchangeCodeForSession(code)
-      if (cancelled) return
-      if (error) { setFailed(true); setMsg('Could not complete sign-in'); return }
+      if (oauthErr) return fail(oauthErr)
+      if (!code) return fail('Missing authorization code')
+
+      const { data, error } = await exchangeOnce(code)
+      if (error) return fail('Could not complete sign-in. Please try again.')
       if (data.session?.access_token) setToken(data.session.access_token)
-      navigate('/', { replace: true })
+
+      // Load the profile BEFORE leaving this screen. If we navigate while the
+      // auth context still has user === null, App renders <Login /> and the
+      // sign-in looks like it silently bounced back to the login page.
+      const user = await refresh()
+      if (!user) {
+        // Signed in with Google, but our own API would not accept the token.
+        // Say so instead of dropping the user on the login screen with no clue.
+        return fail('Signed in with Google, but this app could not verify your session. Please try again.')
+      }
+      if (!cancelled) navigate('/', { replace: true })
     })()
+
     return () => { cancelled = true }
-  }, [navigate])
+  }, [navigate, refresh])
 
   return (
     <div className="h-full grid place-items-center p-6">

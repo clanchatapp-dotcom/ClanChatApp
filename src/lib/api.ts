@@ -26,6 +26,8 @@ const j = (b: any) => JSON.stringify(b)
 
 export const api = {
   devLogin: (name: string) => req('/dev/token', { method: 'POST', body: j({ name }) }),
+  authRegister: (email: string, password: string, name: string) => req('/auth/register', { method: 'POST', body: j({ email, password, name }) }),
+  authLogin: (email: string, password: string) => req('/auth/login', { method: 'POST', body: j({ email, password }) }),
   me: () => req('/me'),
   updateProfile: (b: any) => req('/profile', { method: 'PUT', body: j(b) }),
   getUser: (h: string) => req(`/users/${h}`),

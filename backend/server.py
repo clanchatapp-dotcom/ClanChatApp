@@ -3,6 +3,9 @@ import re
 import uuid
 import time
 import base64
+import hashlib
+import hmac
+import secrets
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -76,10 +79,66 @@ def dec(blob: str) -> str:
 
 # ----------------------------- Auth -----------------------------
 
+_jwk_client = None
+
+def _get_jwk_client():
+    global _jwk_client
+    if _jwk_client is None and SUPABASE_URL:
+        # cache_jwk_set + lifespan keep this to ~1 network fetch per 5 min,
+        # not one per authenticated request.
+        _jwk_client = jwt.PyJWKClient(f'{SUPABASE_URL}/auth/v1/.well-known/jwks.json',
+                                      cache_jwk_set=True, lifespan=300, timeout=5)
+    return _jwk_client
+
+
+_SYMMETRIC_ALGS = ['HS256', 'HS384', 'HS512']
+_ASYMMETRIC_ALGS = ['ES256', 'RS256', 'EdDSA']
+
+
 def decode_jwt(token: str) -> dict:
-    return jwt.decode(token, JWT_SECRET, algorithms=['HS256'], audience='authenticated',
-                      options={'verify_signature': True, 'verify_exp': True,
-                               'verify_aud': True, 'require': ['exp', 'sub']})
+    """Verify a bearer token, dispatching on the token's own `alg` header.
+
+    Do NOT 'try HS256 first and fall through on failure': verifying an ES256
+    token with algorithms=['HS256'] raises InvalidAlgorithmError, which is NOT a
+    subclass of InvalidSignatureError. Catching only InvalidSignatureError means
+    the JWKS branch is never reached, so every Google/OAuth login 401s on
+    Supabase projects migrated to asymmetric JWT signing keys.
+    """
+    try:
+        alg = (jwt.get_unverified_header(token) or {}).get('alg', '')
+    except jwt.PyJWTError as e:
+        raise jwt.InvalidTokenError(f'Malformed token header: {e}')
+
+    # 1) Symmetric HS* -- our own email/password + dev tokens, and Supabase
+    #    projects still on the shared (legacy) JWT secret.
+    if alg in _SYMMETRIC_ALGS:
+        if not JWT_SECRET:
+            raise jwt.InvalidTokenError('HS* token but SUPABASE_JWT_SECRET is not configured')
+        return jwt.decode(token, JWT_SECRET, algorithms=_SYMMETRIC_ALGS,
+                          audience='authenticated',
+                          options={'verify_signature': True, 'verify_exp': True,
+                                   'verify_aud': True, 'require': ['exp', 'sub']})
+
+    # 2) Asymmetric via Supabase JWKS -- real Google/OAuth tokens on projects
+    #    migrated to JWT signing keys.
+    if alg in _ASYMMETRIC_ALGS:
+        client = _get_jwk_client()
+        if client is None:
+            raise jwt.InvalidTokenError(f'{alg} token but SUPABASE_URL is not configured')
+        try:
+            signing_key = client.get_signing_key_from_jwt(token)
+        except jwt.PyJWKClientConnectionError as e:
+            # JWKS endpoint unreachable. This is OUR outage, not a bad token --
+            # surface 503 so the client keeps the session instead of signing out.
+            raise HTTPException(503, f'Unable to reach identity provider: {e}')
+        except jwt.PyJWKClientError as e:
+            raise jwt.InvalidTokenError(f'No matching JWKS key: {e}')
+        return jwt.decode(token, signing_key.key, algorithms=_ASYMMETRIC_ALGS,
+                          audience='authenticated',
+                          options={'verify_signature': True, 'verify_exp': True,
+                                   'verify_aud': True, 'require': ['exp', 'sub']})
+
+    raise jwt.InvalidTokenError(f'Unsupported token algorithm: {alg or "<none>"}')
 
 def slugify_handle(name: str) -> str:
     base = re.sub(r'[^a-z0-9]', '', (name or 'member').lower())[:20] or 'member'
@@ -210,6 +269,11 @@ class DevLogin(BaseModel):
     name: Optional[str] = 'Guest'
     email: Optional[str] = None
 
+class EmailAuth(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
+
 class ProfileUpdate(BaseModel):
     display_name: Optional[str] = None
     bio: Optional[str] = None
@@ -316,19 +380,56 @@ async def startup():
 async def root():
     return {'ok': True, 'service': 'clanchat', 'time': datetime.now(timezone.utc).isoformat()}
 
+def mint_token(uid: str, email: str, name: str) -> str:
+    now = int(time.time())
+    return jwt.encode({'sub': uid, 'email': email, 'aud': 'authenticated',
+                       'role': 'authenticated', 'iss': 'clanchat', 'iat': now,
+                       'exp': now + 60 * 60 * 24 * 30, 'user_metadata': {'name': name}},
+                      JWT_SECRET, algorithm='HS256')
+
+def _pw_hash(pw: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac('sha256', pw.encode(), bytes.fromhex(salt), 100_000).hex()
+
+
 @app.post('/api/dev/token')
 async def dev_token(body: DevLogin):
     name = (body.name or 'Guest').strip() or 'Guest'
     email = (body.email or f"{slugify_handle(name)}@sandbox.clanchat").strip()
     uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, email))
-    now = int(time.time())
-    token = jwt.encode({'sub': uid, 'email': email, 'aud': 'authenticated',
-                        'role': 'authenticated', 'iss': 'clanchat-dev', 'iat': now,
-                        'exp': now + 60 * 60 * 24 * 7, 'user_metadata': {'name': name}},
-                       JWT_SECRET, algorithm='HS256')
     prof = await ensure_profile(uid, email, name, None)
-    return {'access_token': token, 'token_type': 'bearer',
+    return {'access_token': mint_token(uid, email, name), 'token_type': 'bearer',
             'user': {'id': uid, 'handle': prof['handle'], 'display_name': prof['display_name'], 'email': email}}
+
+
+@app.post('/api/auth/register')
+async def auth_register(body: EmailAuth):
+    email = (body.email or '').strip().lower()
+    if '@' not in email or '.' not in email.split('@')[-1]:
+        raise HTTPException(400, 'Enter a valid email')
+    if not body.password or len(body.password) < 6:
+        raise HTTPException(400, 'Password must be at least 6 characters')
+    if await db.auth.find_one({'email': email}):
+        raise HTTPException(400, 'That email is already registered — try signing in')
+    salt = secrets.token_hex(16)
+    uid = str(uuid.uuid4())
+    await db.auth.insert_one({'email': email, 'salt': salt, 'hash': _pw_hash(body.password, salt), 'user_id': uid})
+    name = (body.name or email.split('@')[0]).strip()
+    prof = await ensure_profile(uid, email, name, None)
+    return {'access_token': mint_token(uid, email, name), 'token_type': 'bearer',
+            'user': {'id': uid, 'handle': prof['handle'], 'display_name': prof['display_name'], 'email': email}}
+
+
+@app.post('/api/auth/login')
+async def auth_login(body: EmailAuth):
+    email = (body.email or '').strip().lower()
+    rec = await db.auth.find_one({'email': email})
+    if not rec or not hmac.compare_digest(rec['hash'], _pw_hash(body.password or '', rec['salt'])):
+        raise HTTPException(401, 'Invalid email or password')
+    prof = await db.profiles.find_one({'id': rec['user_id']}, {'_id': 0})
+    if not prof:
+        prof = await ensure_profile(rec['user_id'], email, email.split('@')[0], None)
+    return {'access_token': mint_token(rec['user_id'], email, prof['display_name']), 'token_type': 'bearer',
+            'user': {'id': prof['id'], 'handle': prof['handle'], 'display_name': prof['display_name'], 'email': email}}
 
 @app.get('/api/me')
 async def me(u: dict = Depends(get_current_user)):

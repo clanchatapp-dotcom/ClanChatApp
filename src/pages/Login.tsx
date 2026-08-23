@@ -1,10 +1,13 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
-import { MessageCircle, Lock, Users, Sparkles } from 'lucide-react'
+import { MessageCircle, Lock, Users, Sparkles, Mail } from 'lucide-react'
 
 export default function Login() {
-  const { loginDev, loginGoogle } = useAuth()
+  const { loginEmail, registerEmail, loginGoogle } = useAuth()
+  const [mode, setMode] = useState<'signin' | 'register'>('signin')
   const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
 
@@ -13,9 +16,12 @@ export default function Login() {
     try { await loginGoogle() } catch (e: any) { setErr(e.message || 'Google sign-in failed') }
     finally { setBusy(false) }
   }
-  const dev = async (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setErr(''); setBusy(true)
-    try { await loginDev(name || 'Guest') } catch (e: any) { setErr(e.message || 'Failed') }
+    try {
+      if (mode === 'register') await registerEmail(email.trim(), password, name.trim() || email.split('@')[0])
+      else await loginEmail(email.trim(), password)
+    } catch (e: any) { setErr(e.message || 'Something went wrong') }
     finally { setBusy(false) }
   }
 
@@ -53,8 +59,8 @@ export default function Login() {
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-brand to-violet-600 grid place-items-center"><MessageCircle className="h-5 w-5 text-white" /></div>
             <span className="text-xl font-extrabold">ClanChat</span>
           </div>
-          <h2 className="text-2xl font-bold">Welcome back</h2>
-          <p className="text-slate-400 text-sm mt-1 mb-6">Sign in to continue to your clans.</p>
+          <h2 className="text-2xl font-bold">{mode === 'register' ? 'Create your account' : 'Welcome back'}</h2>
+          <p className="text-slate-400 text-sm mt-1 mb-6">{mode === 'register' ? 'Join the clubhouse.' : 'Sign in to continue to your clans.'}</p>
 
           <button onClick={google} disabled={busy}
             className="w-full flex items-center justify-center gap-3 bg-white text-slate-900 font-semibold rounded-xl py-3 hover:bg-slate-100 transition disabled:opacity-60">
@@ -66,16 +72,33 @@ export default function Login() {
             <div className="h-px bg-edge flex-1" /> OR <div className="h-px bg-edge flex-1" />
           </div>
 
-          <form onSubmit={dev} className="space-y-3">
-            <label className="text-xs text-slate-400">Quick sandbox sign-in (testing)</label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="Your display name"
+          <form onSubmit={submit} className="space-y-3">
+            {mode === 'register' && (
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="Display name"
+                className="w-full bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand transition" />
+            )}
+            <div className="relative">
+              <Mail className="h-4 w-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com"
+                className="w-full bg-ink border border-edge rounded-xl pl-10 pr-4 py-3 outline-none focus:border-brand transition" />
+            </div>
+            <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="Password (min 6 chars)"
               className="w-full bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand transition" />
             <button disabled={busy}
               className="w-full bg-gradient-to-r from-brand to-violet-600 font-semibold rounded-xl py-3 hover:opacity-95 transition disabled:opacity-60">
-              {busy ? 'Please wait…' : 'Enter ClanChat'}
+              {busy ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}
             </button>
           </form>
+
           {err && <p className="text-rose-400 text-sm mt-4">{err}</p>}
+
+          <p className="text-sm text-slate-400 mt-5 text-center">
+            {mode === 'register' ? 'Already have an account?' : "Don't have an account?"}{' '}
+            <button onClick={() => { setErr(''); setMode(mode === 'register' ? 'signin' : 'register') }}
+              className="text-brand font-semibold hover:underline">
+              {mode === 'register' ? 'Sign in' : 'Create one'}
+            </button>
+          </p>
         </div>
       </div>
     </div>

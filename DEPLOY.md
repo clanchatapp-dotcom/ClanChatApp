@@ -22,7 +22,7 @@ Two services (see `render.yaml` blueprint — New + "Blueprint" in Render, or cr
 After deploy, add the web origin to Supabase Auth URL config + Google Cloud JS origins (SETUP.md).
 
 ## 2. Android APK (Capacitor 7)
-> This sandbox has no Android SDK, so the APK is built on YOUR machine (Android Studio + JDK 17).
+> This sandbox has no Android SDK, so the APK is built on YOUR machine (Android Studio + JDK 21).
 The `android/` project is already scaffolded and the native Google plugin (`@capgo/capacitor-social-login`) is wired.
 
 ```bash

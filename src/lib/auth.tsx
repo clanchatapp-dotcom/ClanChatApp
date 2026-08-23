@@ -9,9 +9,13 @@ type AuthCtx = {
   user: User | null
   loading: boolean
   loginDev: (name: string) => Promise<void>
+  loginEmail: (email: string, password: string) => Promise<void>
+  registerEmail: (email: string, password: string, name: string) => Promise<void>
   loginGoogle: () => Promise<void>
   logout: () => Promise<void>
-  refresh: () => Promise<void>
+  // Returns the loaded user (or null) so callers such as the OAuth callback can
+  // tell "signed in" apart from "token was not accepted" before navigating.
+  refresh: () => Promise<User | null>
 }
 
 const Ctx = createContext<AuthCtx>(null as any)
@@ -21,7 +25,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<User | null> => {
     // Always sync to the freshest Supabase token first (auto-refreshes an
     // expired Supabase session), then fall back to the stored token (dev login).
     try {
@@ -29,10 +33,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (data.session?.access_token) setToken(data.session.access_token)
     } catch { /* ignore — dev-login users have no Supabase session */ }
 
-    if (!getToken()) { setUser(null); return }
+    if (!getToken()) { setUser(null); return null }
 
     try {
-      setUser(await api.me())
+      const me = await api.me()
+      setUser(me)
+      return me
     } catch (e: any) {
       if (e?.status === 401) {
         // Token rejected. Try one Supabase refresh before giving up so that
@@ -41,8 +47,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const { data } = await supabase.auth.refreshSession()
           if (data.session?.access_token) {
             setToken(data.session.access_token)
-            setUser(await api.me())
-            return
+            const me = await api.me()
+            setUser(me)
+            return me
           }
         } catch { /* no refreshable Supabase session */ }
         // Genuine auth failure (e.g. dev JWT truly expired) -> sign out.
@@ -50,6 +57,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null)
       }
       // Any non-401 (network blip, 5xx, offline) -> keep the current session.
+      return null
     }
   }, [])
 
@@ -79,6 +87,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(user)
   }
 
+  const loginEmail = async (email: string, password: string) => {
+    const { access_token, user } = await api.authLogin(email, password)
+    setToken(access_token)
+    setUser(user)
+  }
+
+  const registerEmail = async (email: string, password: string, name: string) => {
+    const { access_token, user } = await api.authRegister(email, password, name)
+    setToken(access_token)
+    setUser(user)
+  }
+
   const loginGoogle = async () => {
     if (isNative()) {
       const { data } = await signInGoogleNative()
@@ -98,7 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <Ctx.Provider value={{ user, loading, loginDev, loginGoogle, logout, refresh }}>
+    <Ctx.Provider value={{ user, loading, loginDev, loginEmail, registerEmail, loginGoogle, logout, refresh }}>
       {children}
     </Ctx.Provider>
   )
