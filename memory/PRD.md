@@ -31,3 +31,13 @@ Supabase (URL/anon/service-role/JWT secret/bucket), DM_ENC_KEY (AES-256), LiveKi
 
 ## NOT yet built (spec P2/P3 — next candidates)
 Discussion Boards, group chats (T3 max 15), comments, 18+/NSFW + age verification (Yoti/Veriff/Hive), Choices discovery+ads, Premium/verified shields, payments (Stripe/Xsolla/YooMoney/Printful), screenshot protection, FCM push, Giphy, moderation/CSAM pipeline, Signal Protocol E2E.
+
+## Changelog — Settings + APK/login fixes (this session)
+- Android APK: fixed CI (compileSdk/targetSdk 36, AGP 8.9.1, android-36 SDK install, gradle.properties suppressUnsupportedCompileSdk) — prior fixes were uncommitted; user must "Save to GitHub".
+- Fixed APK black screen: baked PUBLIC Supabase URL/anon key + Google web client id as fallbacks in supabase.ts/nativeGoogle.ts (createClient no longer crashes on empty key); added ErrorBoundary + boot guard in main.tsx (visible error instead of black screen).
+- APK backend connectivity: baked Render backend https://clanchatapp-backend.onrender.com as native fallback in api.ts (computeApiBase) + workflow REACT_APP_API_URL fallback. Sandbox/web unchanged (relative /api).
+- Google native sign-in fix: removed `scopes` from SocialLogin.login (capgo v7 "scopes without modifying main activity" error) + added MainActivity ModifiedMainActivityForSocialLoginPlugin bridge.
+- Backend hardening: DM_ENC_KEY parsing wrapped (_load_dm_key) so bad/missing key can't crash startup (likely Render 502 cause).
+- NEW Settings page (/settings): edit display name, privacy toggles (follow_mode approval, dm_open), sign out, delete account (typed-DELETE confirm). Added sidebar + mobile nav links.
+- NEW backend endpoint: DELETE /api/account (wipes profile/auth/posts/follows/inner/dms/activity/reports). Tested 26/26 backend, 5/5 frontend.
+- PENDING user: (a) Save to GitHub + redeploy Render backend (fixes 502) + rebuild APK; (b) provide shield logo file to integrate into header/login/favicon/Android icon.
