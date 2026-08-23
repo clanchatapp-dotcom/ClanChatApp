@@ -56,6 +56,10 @@ LIVEKIT_API_KEY = os.environ.get('LIVEKIT_API_KEY', '')
 LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get('ADMIN_EMAILS', 'admin@sandbox.clanchat').split(',') if e.strip()}
 
+# Comfort Zone — per-user content preferences (True = show in feed, False = soften/hide).
+COMFORT_ZONE_KEYS = ['nsfw', 'ai', 'language', 'violence', 'drugs']
+COMFORT_ZONE_DEFAULTS = {'nsfw': False, 'ai': True, 'language': True, 'violence': False, 'drugs': False}
+
 REPORT_CATEGORIES = {'csam', 'underage', 'harassment', 'hate', 'self_harm',
                      'inappropriate', 'unlabelled_ai', 'impersonation', 'spam', 'other'}
 
@@ -257,6 +261,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         out['followers_count'] = followers_count  # private: owner only
         out['is_admin'] = is_admin_user(prof)
         out['strikes'] = prof.get('strikes', 0)
+        out['comfort_zone'] = {**COMFORT_ZONE_DEFAULTS, **(prof.get('comfort_zone') or {})}
     return out
 
 async def post_out(p: dict, viewer_id: str) -> dict:
@@ -293,6 +298,7 @@ class ProfileUpdate(BaseModel):
     follow_mode: Optional[str] = None
     dm_open: Optional[bool] = None
     avatar_url: Optional[str] = None
+    comfort_zone: Optional[dict] = None
 
 class PostCreate(BaseModel):
     tier: str = 'public'
@@ -452,6 +458,9 @@ async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user
     upd = {k: v for k, v in body.dict().items() if v is not None}
     if 'follow_mode' in upd and upd['follow_mode'] not in ('open', 'approval'):
         upd.pop('follow_mode')
+    if 'comfort_zone' in upd:
+        cz = upd['comfort_zone'] or {}
+        upd['comfort_zone'] = {k: bool(cz.get(k, COMFORT_ZONE_DEFAULTS[k])) for k in COMFORT_ZONE_KEYS}
     if upd:
         await db.profiles.update_one({'id': u['id']}, {'$set': upd})
     prof = await db.profiles.find_one({'id': u['id']}, {'_id': 0})

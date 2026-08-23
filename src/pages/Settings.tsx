@@ -1,22 +1,32 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, User as UserIcon, AlertTriangle } from 'lucide-react'
+import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, User as UserIcon, AlertTriangle, Lock, Flame, Sparkles, MessageSquare, Swords, Pill } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Avatar } from '../lib/ui'
 
-function Toggle({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+function Toggle({ on, onChange, disabled, accent = 'brand' }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; accent?: 'brand' | 'amber' }) {
+  const onColor = accent === 'amber' ? 'bg-amber-500' : 'bg-brand'
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={() => onChange(!on)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${on ? 'bg-brand' : 'bg-white/15'} ${disabled ? 'opacity-50' : ''}`}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${on ? onColor : 'bg-white/15'} ${disabled ? 'opacity-50' : ''}`}
     >
       <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${on ? 'translate-x-5' : 'translate-x-0.5'}`} />
     </button>
   )
 }
+
+const CZ_DEFAULTS: Record<string, boolean> = { nsfw: false, ai: true, language: true, violence: false, drugs: false }
+const CZ_ITEMS = [
+  { key: 'nsfw', label: 'NSFW', desc: 'Nudity and sexual content.', Icon: Flame },
+  { key: 'ai', label: 'AI content', desc: 'Posts made with or about AI tools.', Icon: Sparkles },
+  { key: 'language', label: 'Strong language', desc: 'Swearing and crude humour.', Icon: MessageSquare },
+  { key: 'violence', label: 'Violence & gore', desc: 'Graphic injury, fights, blood.', Icon: Swords },
+  { key: 'drugs', label: 'Drugs & alcohol', desc: 'Recreational substance use.', Icon: Pill },
+]
 
 export default function Settings() {
   const { user, logout, refresh } = useAuth()
@@ -40,6 +50,15 @@ export default function Settings() {
     setP((prev: any) => ({ ...prev, [key]: value }))
     setSaving(key)
     try { await api.updateProfile({ [key]: value }); await refresh() } catch {}
+    setSaving(null)
+  }
+
+  const cz = { ...CZ_DEFAULTS, ...(p?.comfort_zone || {}) }
+  const setCZ = async (key: string, value: boolean) => {
+    const next = { ...cz, [key]: value }
+    setP((prev: any) => ({ ...prev, comfort_zone: next }))
+    setSaving('cz:' + key)
+    try { await api.updateProfile({ comfort_zone: next }) } catch {}
     setSaving(null)
   }
 
@@ -129,6 +148,28 @@ export default function Settings() {
             </div>
             {saving === 'dm_open' && <Loader2 className="h-4 w-4 animate-spin text-slate-500" />}
             <Toggle on={!!p?.dm_open} onChange={v => setPref('dm_open', v)} />
+          </div>
+        </section>
+
+        {/* Comfort Zone */}
+        <section className="bg-panel border border-edge rounded-2xl p-5">
+          <h2 className="text-lg font-extrabold tracking-wide">Comfort Zone</h2>
+          <p className="text-sm text-slate-400 mt-1 mb-3">Choose what shows up in your feed. We'll soften or hide anything you turn off.</p>
+          <div className="inline-flex items-center gap-2 text-[11px] tracking-wider text-slate-500 border border-edge rounded-full px-3 py-1.5 mb-4">
+            <Lock className="h-3.5 w-3.5" /> PRIVATE — ONLY YOU CAN SEE THESE
+          </div>
+          <div className="divide-y divide-edge/60">
+            {CZ_ITEMS.map(({ key, label, desc, Icon }) => (
+              <div key={key} className="flex items-center gap-3 py-3.5">
+                <Icon className="h-5 w-5 text-amber-500/90 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium">{label}</div>
+                  <div className="text-xs text-slate-500">{desc}</div>
+                </div>
+                {saving === 'cz:' + key && <Loader2 className="h-4 w-4 animate-spin text-slate-500" />}
+                <Toggle on={!!cz[key]} onChange={v => setCZ(key, v)} accent="amber" />
+              </div>
+            ))}
           </div>
         </section>
 

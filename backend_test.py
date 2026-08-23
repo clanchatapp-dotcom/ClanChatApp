@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Backend test for DELETE /api/account + DM_ENC_KEY startup hardening + regression sanity
-Tests the NEW account deletion endpoint and verifies no regressions in core functionality.
+Backend test for Comfort Zone content prefs + admin email allowlist
+Tests the NEW comfort_zone feature and admin email allowlist changes.
 """
 import requests
 import json
@@ -33,35 +33,22 @@ def headers(token):
     return {"Authorization": f"Bearer {token}"}
 
 print("\n" + "="*80)
-print("DELETE /api/account + REGRESSION SANITY TESTS")
+print("COMFORT ZONE CONTENT PREFS + ADMIN EMAIL ALLOWLIST TESTS")
 print("="*80 + "\n")
 
 # ============================================================================
-# TEST 1: DELETE /api/account WITHOUT token → 401
+# TEST 1: Register fresh user with unique email
 # ============================================================================
-print("TEST 1: DELETE /api/account WITHOUT token")
-print("-" * 80)
-
-delete_noauth_resp = requests.delete(f"{BASE_URL}/account")
-print_test(
-    "DELETE /api/account without token → 401",
-    delete_noauth_resp.status_code == 401,
-    f"Status: {delete_noauth_resp.status_code}"
-)
-
-# ============================================================================
-# TEST 2: Register fresh user, create post, DELETE account
-# ============================================================================
-print("\nTEST 2: Register fresh user, create post, DELETE account")
+print("TEST 1: Register fresh user with unique email")
 print("-" * 80)
 
 # Generate unique random email
 random_suffix = secrets.token_hex(4)
-test_email = f"deltest+{random_suffix}@example.com"
+test_email = f"czqa+{random_suffix}@example.com"
 test_password = "secret123"
-test_name = "Del Test"
+test_name = "CZ QA"
 
-# Step 2a: Register user
+# Register user
 register_resp = requests.post(
     f"{BASE_URL}/auth/register",
     json={"email": test_email, "password": test_password, "name": test_name}
@@ -82,297 +69,395 @@ test_user_id = register_data['user']['id']
 test_handle = register_data['user']['handle']
 
 print(f"  → Registered user: {test_handle} (id: {test_user_id})")
+print(f"  → Token length: {len(test_token)} chars")
 
-# Step 2b: Confirm GET /api/me → 200
+# ============================================================================
+# TEST 2: GET /api/me → verify comfort_zone with defaults
+# ============================================================================
+print("\nTEST 2: GET /api/me → verify comfort_zone with defaults")
+print("-" * 80)
+
 me_resp = requests.get(f"{BASE_URL}/me", headers=headers(test_token))
 print_test(
-    "GET /api/me with registration token → 200",
+    "GET /api/me → 200",
     me_resp.status_code == 200,
-    f"Status: {me_resp.status_code}, handle: {me_resp.json().get('handle') if me_resp.status_code == 200 else 'N/A'}"
+    f"Status: {me_resp.status_code}"
 )
 
-# Step 2c: Create a post
-post_text = f"to be deleted {random_suffix}"
-create_post_resp = requests.post(
-    f"{BASE_URL}/posts",
+if me_resp.status_code != 200:
+    print(f"❌ FAIL: GET /api/me failed: {me_resp.text}")
+    sys.exit(1)
+
+me_data = me_resp.json()
+
+# Verify comfort_zone exists
+print_test(
+    "Response includes 'comfort_zone' object",
+    'comfort_zone' in me_data,
+    f"comfort_zone present: {'comfort_zone' in me_data}"
+)
+
+if 'comfort_zone' not in me_data:
+    print(f"❌ FAIL: comfort_zone not found in response: {json.dumps(me_data, indent=2)}")
+    sys.exit(1)
+
+comfort_zone = me_data['comfort_zone']
+
+# Verify EXACTLY 5 keys
+expected_keys = {'nsfw', 'ai', 'language', 'violence', 'drugs'}
+actual_keys = set(comfort_zone.keys())
+print_test(
+    "comfort_zone has EXACTLY 5 keys: nsfw, ai, language, violence, drugs",
+    actual_keys == expected_keys,
+    f"Keys: {sorted(actual_keys)}"
+)
+
+# Verify default values
+expected_defaults = {
+    'nsfw': False,
+    'ai': True,
+    'language': True,
+    'violence': False,
+    'drugs': False
+}
+
+for key, expected_value in expected_defaults.items():
+    actual_value = comfort_zone.get(key)
+    print_test(
+        f"comfort_zone.{key} = {expected_value}",
+        actual_value == expected_value,
+        f"Expected: {expected_value}, Got: {actual_value}"
+    )
+
+# Verify all values are booleans
+all_bools = all(isinstance(v, bool) for v in comfort_zone.values())
+print_test(
+    "All comfort_zone values are booleans",
+    all_bools,
+    f"All bools: {all_bools}"
+)
+
+# ============================================================================
+# TEST 3: PUT /api/profile with partial comfort_zone (nsfw:true, violence:true)
+# ============================================================================
+print("\nTEST 3: PUT /api/profile with partial comfort_zone")
+print("-" * 80)
+
+update_resp = requests.put(
+    f"{BASE_URL}/profile",
     headers=headers(test_token),
-    json={"tier": "public", "text": post_text}
+    json={"comfort_zone": {"nsfw": True, "violence": True}}
 )
 print_test(
-    f"POST /api/posts with text '{post_text}' → 200",
-    create_post_resp.status_code == 200,
-    f"Status: {create_post_resp.status_code}"
+    "PUT /api/profile with {nsfw:true, violence:true} → 200",
+    update_resp.status_code == 200,
+    f"Status: {update_resp.status_code}"
 )
 
-if create_post_resp.status_code != 200:
-    print(f"❌ FAIL: Post creation failed: {create_post_resp.text}")
+if update_resp.status_code != 200:
+    print(f"❌ FAIL: PUT /api/profile failed: {update_resp.text}")
     sys.exit(1)
 
-post_id = create_post_resp.json()['id']
-print(f"  → Created post: {post_id}")
-
-# Step 2d: Confirm post appears in GET /api/feed?scope=general
-feed_before_resp = requests.get(
-    f"{BASE_URL}/feed?scope=general",
-    headers=headers(test_token)
-)
+# GET /api/me again to verify changes
+me_resp2 = requests.get(f"{BASE_URL}/me", headers=headers(test_token))
 print_test(
-    "GET /api/feed?scope=general → 200",
-    feed_before_resp.status_code == 200,
-    f"Status: {feed_before_resp.status_code}"
+    "GET /api/me after update → 200",
+    me_resp2.status_code == 200,
+    f"Status: {me_resp2.status_code}"
 )
 
-if feed_before_resp.status_code == 200:
-    feed_before = feed_before_resp.json()
-    post_in_feed = any(p['id'] == post_id for p in feed_before)
-    print_test(
-        f"Post '{post_id}' appears in feed BEFORE deletion",
-        post_in_feed,
-        f"Found: {post_in_feed}"
-    )
-
-# Step 2e: DELETE /api/account with token → 200 {ok:true, deleted:<uid>}
-delete_resp = requests.delete(f"{BASE_URL}/account", headers=headers(test_token))
-print_test(
-    "DELETE /api/account with token → 200",
-    delete_resp.status_code == 200,
-    f"Status: {delete_resp.status_code}"
-)
-
-if delete_resp.status_code == 200:
-    delete_data = delete_resp.json()
-    print_test(
-        "Response contains ok=true",
-        delete_data.get('ok') == True,
-        f"ok={delete_data.get('ok')}"
-    )
-    print_test(
-        f"Response contains deleted='{test_user_id}'",
-        delete_data.get('deleted') == test_user_id,
-        f"deleted={delete_data.get('deleted')}"
-    )
-
-# ============================================================================
-# TEST 3: Verify deletion side-effects
-# ============================================================================
-print("\nTEST 3: Verify deletion side-effects")
-print("-" * 80)
-
-# Step 3a: POST /api/auth/login with deleted user's email+password → 401
-login_resp = requests.post(
-    f"{BASE_URL}/auth/login",
-    json={"email": test_email, "password": test_password}
-)
-print_test(
-    "POST /api/auth/login with deleted user's email+password → 401",
-    login_resp.status_code == 401,
-    f"Status: {login_resp.status_code}"
-)
-
-if login_resp.status_code == 401:
-    error_message = login_resp.json().get('detail', '') if login_resp.headers.get('content-type', '').startswith('application/json') else login_resp.text
-    has_invalid_message = 'invalid email or password' in error_message.lower()
-    print_test(
-        "Error message is 'Invalid email or password'",
-        has_invalid_message,
-        f"Message: {error_message}"
-    )
-
-# Step 3b: The created post must NOT appear in GET /api/feed?scope=general
-# Create a new user to check the feed (since the deleted user's token is invalid)
-check_token, check_user = create_user("FeedChecker")
-feed_after_resp = requests.get(
-    f"{BASE_URL}/feed?scope=general",
-    headers=headers(check_token)
-)
-print_test(
-    "GET /api/feed?scope=general (with new user) → 200",
-    feed_after_resp.status_code == 200,
-    f"Status: {feed_after_resp.status_code}"
-)
-
-if feed_after_resp.status_code == 200:
-    feed_after = feed_after_resp.json()
-    post_still_in_feed = any(p['id'] == post_id for p in feed_after)
-    print_test(
-        f"Post '{post_id}' does NOT appear in feed AFTER deletion",
-        not post_still_in_feed,
-        f"Found in feed: {post_still_in_feed}"
-    )
-
-# ============================================================================
-# TEST 4: REGRESSION SANITY - dev-token + /api/me (200/401)
-# ============================================================================
-print("\nTEST 4: REGRESSION SANITY - dev-token + /api/me")
-print("-" * 80)
-
-# Step 4a: POST /api/dev/token → 200
-dev_token_resp = requests.post(f"{BASE_URL}/dev/token", json={"name": "RegChk"})
-print_test(
-    "POST /api/dev/token {name:'RegChk'} → 200",
-    dev_token_resp.status_code == 200,
-    f"Status: {dev_token_resp.status_code}"
-)
-
-if dev_token_resp.status_code != 200:
-    print(f"❌ FAIL: Dev token creation failed: {dev_token_resp.text}")
+if me_resp2.status_code != 200:
+    print(f"❌ FAIL: GET /api/me failed: {me_resp2.text}")
     sys.exit(1)
 
-dev_token_data = dev_token_resp.json()
-dev_token = dev_token_data['access_token']
+me_data2 = me_resp2.json()
+comfort_zone2 = me_data2.get('comfort_zone', {})
 
-# Step 4b: GET /api/me with dev token → 200
-me_dev_resp = requests.get(f"{BASE_URL}/me", headers=headers(dev_token))
+# Verify updated values with defaults merged
+expected_after_update = {
+    'nsfw': True,      # updated
+    'ai': True,        # default (not changed)
+    'language': True,  # default (not changed)
+    'violence': True,  # updated
+    'drugs': False     # default (not changed)
+}
+
 print_test(
-    "GET /api/me with dev token → 200",
-    me_dev_resp.status_code == 200,
-    f"Status: {me_dev_resp.status_code}"
+    "comfort_zone still has EXACTLY 5 keys after update",
+    set(comfort_zone2.keys()) == expected_keys,
+    f"Keys: {sorted(comfort_zone2.keys())}"
 )
 
-# Step 4c: GET /api/me without token → 401
-me_notoken_resp = requests.get(f"{BASE_URL}/me")
-print_test(
-    "GET /api/me without token → 401",
-    me_notoken_resp.status_code == 401,
-    f"Status: {me_notoken_resp.status_code}"
-)
-
-# Step 4d: GET /api/me with malformed token → 401
-me_malformed_resp = requests.get(f"{BASE_URL}/me", headers={"Authorization": "Bearer invalid.token.here"})
-print_test(
-    "GET /api/me with malformed token → 401",
-    me_malformed_resp.status_code == 401,
-    f"Status: {me_malformed_resp.status_code}"
-)
-
-# ============================================================================
-# TEST 5: REGRESSION SANITY - Encrypted DM round-trip
-# ============================================================================
-print("\nTEST 5: REGRESSION SANITY - Encrypted DM round-trip")
-print("-" * 80)
-
-# Create two users
-dm_user1_token, dm_user1 = create_user("DMUser1")
-dm_user2_token, dm_user2 = create_user("DMUser2")
-
-print(f"  → Created DMUser1: {dm_user1['handle']}")
-print(f"  → Created DMUser2: {dm_user2['handle']}")
-
-# Step 5a: DMUser1 invites DMUser2 to inner circle
-invite_resp = requests.post(
-    f"{BASE_URL}/inner/invite/{dm_user2['handle']}",
-    headers=headers(dm_user1_token)
-)
-print_test(
-    "DMUser1 invites DMUser2 to inner circle → 200",
-    invite_resp.status_code == 200,
-    f"Status: {invite_resp.status_code}"
-)
-
-# Step 5b: DMUser2 accepts invite
-accept_resp = requests.post(
-    f"{BASE_URL}/inner/accept/{dm_user1['handle']}",
-    headers=headers(dm_user2_token)
-)
-print_test(
-    "DMUser2 accepts inner circle invite → 200",
-    accept_resp.status_code == 200,
-    f"Status: {accept_resp.status_code}"
-)
-
-# Step 5c: DMUser1 sends encrypted DM to DMUser2
-dm_text = f"encrypted test message {secrets.token_hex(4)}"
-send_dm_resp = requests.post(
-    f"{BASE_URL}/dms/{dm_user2['handle']}",
-    headers=headers(dm_user1_token),
-    json={"text": dm_text}
-)
-print_test(
-    f"DMUser1 sends DM '{dm_text}' to DMUser2 → 200",
-    send_dm_resp.status_code == 200,
-    f"Status: {send_dm_resp.status_code}"
-)
-
-# Step 5d: DMUser2 retrieves DM (should be decrypted)
-get_dm_resp = requests.get(
-    f"{BASE_URL}/dms/{dm_user1['handle']}",
-    headers=headers(dm_user2_token)
-)
-print_test(
-    "DMUser2 retrieves DMs from DMUser1 → 200",
-    get_dm_resp.status_code == 200,
-    f"Status: {get_dm_resp.status_code}"
-)
-
-if get_dm_resp.status_code == 200:
-    dm_data = get_dm_resp.json()
-    messages = dm_data.get('messages', [])
+for key, expected_value in expected_after_update.items():
+    actual_value = comfort_zone2.get(key)
     print_test(
-        "DM response contains messages",
-        len(messages) > 0,
-        f"Message count: {len(messages)}"
-    )
-    
-    if len(messages) > 0:
-        # Find the message we sent
-        found_message = any(msg.get('text') == dm_text for msg in messages)
-        print_test(
-            f"Decrypted message '{dm_text}' found",
-            found_message,
-            f"Found: {found_message}"
-        )
-
-# ============================================================================
-# TEST 6: REGRESSION SANITY - Admin gating
-# ============================================================================
-print("\nTEST 6: REGRESSION SANITY - Admin gating")
-print("-" * 80)
-
-# Create admin user (email: admin@sandbox.clanchat)
-admin_token, admin_user = create_user("Admin")
-print(f"  → Created Admin: {admin_user['handle']} (email: admin@sandbox.clanchat)")
-
-# Verify admin has is_admin=true
-admin_me_resp = requests.get(f"{BASE_URL}/me", headers=headers(admin_token))
-if admin_me_resp.status_code == 200:
-    admin_me_data = admin_me_resp.json()
-    is_admin = admin_me_data.get('is_admin', False)
-    print_test(
-        "Admin user has is_admin=true",
-        is_admin,
-        f"is_admin={is_admin}"
+        f"comfort_zone.{key} = {expected_value} (after partial update)",
+        actual_value == expected_value,
+        f"Expected: {expected_value}, Got: {actual_value}"
     )
 
-# Step 6a: Regular user GET /api/admin/stats → 403
-regular_stats_resp = requests.get(f"{BASE_URL}/admin/stats", headers=headers(dm_user1_token))
+# ============================================================================
+# TEST 4: PUT /api/profile with bogus_key → verify it's removed
+# ============================================================================
+print("\nTEST 4: PUT /api/profile with bogus_key → verify sanitization")
+print("-" * 80)
+
+update_resp3 = requests.put(
+    f"{BASE_URL}/profile",
+    headers=headers(test_token),
+    json={"comfort_zone": {"ai": False, "bogus_key": True, "language": False}}
+)
+print_test(
+    "PUT /api/profile with {ai:false, bogus_key:true, language:false} → 200",
+    update_resp3.status_code == 200,
+    f"Status: {update_resp3.status_code}"
+)
+
+if update_resp3.status_code != 200:
+    print(f"❌ FAIL: PUT /api/profile failed: {update_resp3.text}")
+    sys.exit(1)
+
+# GET /api/me again to verify sanitization
+me_resp3 = requests.get(f"{BASE_URL}/me", headers=headers(test_token))
+print_test(
+    "GET /api/me after bogus_key update → 200",
+    me_resp3.status_code == 200,
+    f"Status: {me_resp3.status_code}"
+)
+
+if me_resp3.status_code != 200:
+    print(f"❌ FAIL: GET /api/me failed: {me_resp3.text}")
+    sys.exit(1)
+
+me_data3 = me_resp3.json()
+comfort_zone3 = me_data3.get('comfort_zone', {})
+
+# Verify bogus_key is NOT present
+print_test(
+    "bogus_key is NOT present in comfort_zone",
+    'bogus_key' not in comfort_zone3,
+    f"bogus_key present: {'bogus_key' in comfort_zone3}"
+)
+
+# Verify only 5 known keys
+print_test(
+    "comfort_zone still has EXACTLY 5 keys (no bogus_key)",
+    set(comfort_zone3.keys()) == expected_keys,
+    f"Keys: {sorted(comfort_zone3.keys())}"
+)
+
+# According to the review request, sanitizer rebuilds from submitted dict using defaults for absent keys
+# So expect: nsfw:false (default), ai:false (submitted), language:false (submitted), violence:false (default), drugs:false (default)
+expected_after_bogus = {
+    'nsfw': False,     # default (not in submitted dict)
+    'ai': False,       # submitted
+    'language': False, # submitted
+    'violence': False, # default (not in submitted dict)
+    'drugs': False     # default (not in submitted dict)
+}
+
+for key, expected_value in expected_after_bogus.items():
+    actual_value = comfort_zone3.get(key)
+    print_test(
+        f"comfort_zone.{key} = {expected_value} (after sanitization)",
+        actual_value == expected_value,
+        f"Expected: {expected_value}, Got: {actual_value}"
+    )
+
+# ============================================================================
+# TEST 5: Verify comfort_zone is NOT exposed on other users' public profiles
+# ============================================================================
+print("\nTEST 5: Verify comfort_zone is NOT exposed on other users' profiles")
+print("-" * 80)
+
+# Create another user to check the first user's profile
+other_token, other_user = create_user("OtherUser")
+print(f"  → Created OtherUser: {other_user['handle']}")
+
+# OtherUser gets the first user's profile
+other_profile_resp = requests.get(
+    f"{BASE_URL}/users/{test_handle}",
+    headers=headers(other_token)
+)
+print_test(
+    f"GET /api/users/{test_handle} (as OtherUser) → 200",
+    other_profile_resp.status_code == 200,
+    f"Status: {other_profile_resp.status_code}"
+)
+
+if other_profile_resp.status_code != 200:
+    print(f"❌ FAIL: GET /api/users/{test_handle} failed: {other_profile_resp.text}")
+    sys.exit(1)
+
+other_profile_data = other_profile_resp.json()
+
+# Verify comfort_zone is NOT present
+print_test(
+    f"comfort_zone is NOT present in {test_handle}'s public profile",
+    'comfort_zone' not in other_profile_data,
+    f"comfort_zone present: {'comfort_zone' in other_profile_data}"
+)
+
+# ============================================================================
+# TEST 6: ADMIN ALLOWLIST - Regular user is_admin should be false
+# ============================================================================
+print("\nTEST 6: ADMIN ALLOWLIST - Regular user is_admin = false")
+print("-" * 80)
+
+# Create a regular user
+regular_token, regular_user = create_user("RegularUser")
+print(f"  → Created RegularUser: {regular_user['handle']}")
+
+# GET /api/me for regular user
+regular_me_resp = requests.get(f"{BASE_URL}/me", headers=headers(regular_token))
+print_test(
+    "GET /api/me (regular user) → 200",
+    regular_me_resp.status_code == 200,
+    f"Status: {regular_me_resp.status_code}"
+)
+
+if regular_me_resp.status_code != 200:
+    print(f"❌ FAIL: GET /api/me failed: {regular_me_resp.text}")
+    sys.exit(1)
+
+regular_me_data = regular_me_resp.json()
+is_admin = regular_me_data.get('is_admin', False)
+
+print_test(
+    "Regular user has is_admin = false",
+    is_admin == False,
+    f"is_admin: {is_admin}"
+)
+
+# Regular user tries to access admin endpoint
+admin_stats_resp = requests.get(f"{BASE_URL}/admin/stats", headers=headers(regular_token))
 print_test(
     "Regular user GET /api/admin/stats → 403",
-    regular_stats_resp.status_code == 403,
-    f"Status: {regular_stats_resp.status_code}"
-)
-
-# Step 6b: No token GET /api/admin/stats → 401
-notoken_stats_resp = requests.get(f"{BASE_URL}/admin/stats")
-print_test(
-    "No token GET /api/admin/stats → 401",
-    notoken_stats_resp.status_code == 401,
-    f"Status: {notoken_stats_resp.status_code}"
-)
-
-# Step 6c: Admin user GET /api/admin/stats → 200
-admin_stats_resp = requests.get(f"{BASE_URL}/admin/stats", headers=headers(admin_token))
-print_test(
-    "Admin user GET /api/admin/stats → 200",
-    admin_stats_resp.status_code == 200,
+    admin_stats_resp.status_code == 403,
     f"Status: {admin_stats_resp.status_code}"
 )
 
-if admin_stats_resp.status_code == 200:
-    stats_data = admin_stats_resp.json()
+# ============================================================================
+# TEST 7: ADMIN ALLOWLIST - admin@sandbox.clanchat should be admin
+# ============================================================================
+print("\nTEST 7: ADMIN ALLOWLIST - admin@sandbox.clanchat is admin")
+print("-" * 80)
+
+# Create admin user (dev-token with name 'Admin' creates email admin@sandbox.clanchat)
+admin_token, admin_user = create_user("Admin")
+print(f"  → Created Admin: {admin_user['handle']}")
+
+# GET /api/me for admin user
+admin_me_resp = requests.get(f"{BASE_URL}/me", headers=headers(admin_token))
+print_test(
+    "GET /api/me (admin user) → 200",
+    admin_me_resp.status_code == 200,
+    f"Status: {admin_me_resp.status_code}"
+)
+
+if admin_me_resp.status_code != 200:
+    print(f"❌ FAIL: GET /api/me failed: {admin_me_resp.text}")
+    sys.exit(1)
+
+admin_me_data = admin_me_resp.json()
+admin_is_admin = admin_me_data.get('is_admin', False)
+
+print_test(
+    "Admin user (admin@sandbox.clanchat) has is_admin = true",
+    admin_is_admin == True,
+    f"is_admin: {admin_is_admin}"
+)
+
+# Admin user accesses admin endpoint
+admin_stats_resp2 = requests.get(f"{BASE_URL}/admin/stats", headers=headers(admin_token))
+print_test(
+    "Admin user GET /api/admin/stats → 200",
+    admin_stats_resp2.status_code == 200,
+    f"Status: {admin_stats_resp2.status_code}"
+)
+
+if admin_stats_resp2.status_code == 200:
+    stats_data = admin_stats_resp2.json()
     print_test(
         "Admin stats contains expected fields",
         'users' in stats_data and 'posts' in stats_data,
         f"Stats: users={stats_data.get('users')}, posts={stats_data.get('posts')}"
+    )
+
+# ============================================================================
+# TEST 8: QUICK REGRESSION - PUT /api/profile for display_name/follow_mode/dm_open
+# ============================================================================
+print("\nTEST 8: QUICK REGRESSION - PUT /api/profile for other fields")
+print("-" * 80)
+
+# Create a test user for regression
+regression_token, regression_user = create_user("RegressionUser")
+print(f"  → Created RegressionUser: {regression_user['handle']}")
+
+# Update display_name
+update_name_resp = requests.put(
+    f"{BASE_URL}/profile",
+    headers=headers(regression_token),
+    json={"display_name": "Updated Name"}
+)
+print_test(
+    "PUT /api/profile with display_name → 200",
+    update_name_resp.status_code == 200,
+    f"Status: {update_name_resp.status_code}"
+)
+
+# Verify display_name persisted
+me_regression_resp = requests.get(f"{BASE_URL}/me", headers=headers(regression_token))
+if me_regression_resp.status_code == 200:
+    me_regression_data = me_regression_resp.json()
+    print_test(
+        "display_name persisted as 'Updated Name'",
+        me_regression_data.get('display_name') == 'Updated Name',
+        f"display_name: {me_regression_data.get('display_name')}"
+    )
+
+# Update follow_mode
+update_follow_resp = requests.put(
+    f"{BASE_URL}/profile",
+    headers=headers(regression_token),
+    json={"follow_mode": "approval"}
+)
+print_test(
+    "PUT /api/profile with follow_mode='approval' → 200",
+    update_follow_resp.status_code == 200,
+    f"Status: {update_follow_resp.status_code}"
+)
+
+# Verify follow_mode persisted
+me_regression_resp2 = requests.get(f"{BASE_URL}/me", headers=headers(regression_token))
+if me_regression_resp2.status_code == 200:
+    me_regression_data2 = me_regression_resp2.json()
+    print_test(
+        "follow_mode persisted as 'approval'",
+        me_regression_data2.get('follow_mode') == 'approval',
+        f"follow_mode: {me_regression_data2.get('follow_mode')}"
+    )
+
+# Update dm_open
+update_dm_resp = requests.put(
+    f"{BASE_URL}/profile",
+    headers=headers(regression_token),
+    json={"dm_open": False}
+)
+print_test(
+    "PUT /api/profile with dm_open=false → 200",
+    update_dm_resp.status_code == 200,
+    f"Status: {update_dm_resp.status_code}"
+)
+
+# Verify dm_open persisted
+me_regression_resp3 = requests.get(f"{BASE_URL}/me", headers=headers(regression_token))
+if me_regression_resp3.status_code == 200:
+    me_regression_data3 = me_regression_resp3.json()
+    print_test(
+        "dm_open persisted as false",
+        me_regression_data3.get('dm_open') == False,
+        f"dm_open: {me_regression_data3.get('dm_open')}"
     )
 
 print("\n" + "="*80)
