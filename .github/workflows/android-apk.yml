@@ -26,7 +26,7 @@ jobs:
         run: |
           cat > .env <<EOF
           REACT_APP_SUPABASE_URL=${{ secrets.REACT_APP_SUPABASE_URL || 'https://fkhsijjwkrwbwjjaapbb.supabase.co' }}
-          REACT_APP_SUPABASE_ANON_KEY=${{ secrets.REACT_APP_SUPABASE_ANON_KEY }}
+          REACT_APP_SUPABASE_ANON_KEY=${{ secrets.REACT_APP_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraHNpamp3a3J3YndqamFhcGJiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4MzU3MjMsImV4cCI6MjEwMDQxMTcyM30.0_lwIDS9X1vhrVHPFOMYrn2PwKbzYj43vntx3Fe6k4c' }}
           REACT_APP_GOOGLE_WEB_CLIENT_ID=${{ secrets.REACT_APP_GOOGLE_WEB_CLIENT_ID || '286762294730-2hu26blabiqf39os0vfpv5i8ap645dqr.apps.googleusercontent.com' }}
           REACT_APP_API_URL=${{ secrets.REACT_APP_API_URL }}
           EOF

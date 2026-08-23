@@ -4,7 +4,10 @@ import { Capacitor } from '@capacitor/core'
 import { supabase } from './supabase'
 
 const env = (import.meta as any).env
-const WEB_CLIENT_ID = env.REACT_APP_GOOGLE_WEB_CLIENT_ID as string
+// Public OAuth web client id — safe to ship; fall back to the baked default so a
+// missing CI secret doesn't break native Google sign-in.
+const PUBLIC_GOOGLE_WEB_CLIENT_ID = '286762294730-2hu26blabiqf39os0vfpv5i8ap645dqr.apps.googleusercontent.com'
+const WEB_CLIENT_ID = (env.REACT_APP_GOOGLE_WEB_CLIENT_ID as string) || PUBLIC_GOOGLE_WEB_CLIENT_ID
 
 export function isNative(): boolean {
   try { return Capacitor.isNativePlatform() } catch { return false }
