@@ -29,13 +29,13 @@ for _p in ('/app/.env', str(Path(__file__).resolve().parent.parent / '.env'), '.
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('clanchat')
 
-MONGO_URL = os.environ['MONGO_URL']
+MONGO_URL = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 DB_NAME = os.environ.get('DB_NAME', 'clanchat')
-JWT_SECRET = os.environ['SUPABASE_JWT_SECRET']
-SUPABASE_URL = os.environ['SUPABASE_URL'].rstrip('/')
-SERVICE_ROLE_KEY = os.environ['SUPABASE_SERVICE_ROLE_KEY']
+JWT_SECRET = os.environ.get('SUPABASE_JWT_SECRET', '')
+SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
+SERVICE_ROLE_KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')
 BUCKET = os.environ.get('SUPABASE_BUCKET', 'clanchat-media')
-DM_KEY = base64.b64decode(os.environ['DM_ENC_KEY'])
+DM_KEY = base64.b64decode(os.environ.get('DM_ENC_KEY', ''))
 LIVEKIT_URL = os.environ.get('LIVEKIT_URL', '')
 LIVEKIT_API_KEY = os.environ.get('LIVEKIT_API_KEY', '')
 LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
@@ -286,21 +286,24 @@ async def upload_and_sign(path: str, content: bytes, content_type: str,
 @app.on_event('startup')
 async def startup():
     sys_id = 'system-clanchat'
-    if not await db.profiles.find_one({'id': sys_id}):
-        await db.profiles.insert_one({
-            'id': sys_id, 'handle': 'clanchat', 'display_name': 'ClanChat',
-            'real_name': None, 'email': None, 'bio': 'Your Personal Clubhouse. Your circle. Your rules. No bullshit.',
-            'links': ['clanchat.app'], 'avatar_url': None, 'account_type': 'verified',
-            'follow_mode': 'open', 'dm_open': False,
-            'created_at': datetime.now(timezone.utc).isoformat()})
-        for txt, tags in [
-            ('Welcome to ClanChat — the responsible adult social network. No algorithm. No ads in your feed. Just your people.', ['welcome', 'clanchat']),
-            ('Three tiers, one clubhouse: Public, Followers, and your Inner Circle. You decide who sees what.', ['privacy', 'tiers']),
-        ]:
-            await db.posts.insert_one({
-                'id': str(uuid.uuid4()), 'author_id': sys_id, 'tier': 'public',
-                'text': txt, 'media_url': None, 'media_type': None, 'tags': tags,
-                'likes': [], 'created_at': datetime.now(timezone.utc).isoformat()})
+    try:
+        if not await db.profiles.find_one({'id': sys_id}):
+            await db.profiles.insert_one({
+                'id': sys_id, 'handle': 'clanchat', 'display_name': 'ClanChat',
+                'real_name': None, 'email': None, 'bio': 'Your Personal Clubhouse. Your circle. Your rules. No bullshit.',
+                'links': ['clanchat.app'], 'avatar_url': None, 'account_type': 'verified',
+                'follow_mode': 'open', 'dm_open': False,
+                'created_at': datetime.now(timezone.utc).isoformat()})
+            for txt, tags in [
+                ('Welcome to ClanChat — the responsible adult social network. No algorithm. No ads in your feed. Just your people.', ['welcome', 'clanchat']),
+                ('Three tiers, one clubhouse: Public, Followers, and your Inner Circle. You decide who sees what.', ['privacy', 'tiers']),
+            ]:
+                await db.posts.insert_one({
+                    'id': str(uuid.uuid4()), 'author_id': sys_id, 'tier': 'public',
+                    'text': txt, 'media_url': None, 'media_type': None, 'tags': tags,
+                    'likes': [], 'created_at': datetime.now(timezone.utc).isoformat()})
+    except Exception as e:
+        log.warning('seed skipped: %s', e)
     try:
         await ensure_bucket()
     except Exception as e:
