@@ -107,7 +107,7 @@ export default function Messages() {
 
   return (
     <div className="flex h-screen">
-      {call && <CallModal room={call} onClose={() => setCall(null)} />}
+      {call && <CallModal room={call} peer={handle && handle !== user?.handle ? handle : undefined} onClose={() => setCall(null)} />}
       {/* Threads list */}
       <div className={`${handle ? 'hidden lg:flex' : 'flex'} flex-col w-full lg:w-80 shrink-0 border-r border-edge`}>
         <div className="px-4 py-3 border-b border-edge font-extrabold text-xl">Messages</div>
@@ -157,10 +157,15 @@ export default function Messages() {
                   <div className="text-xs text-slate-500 truncate">{isSelf ? 'Your private space · only you can see this' : `#${thread.peer.handle}`}</div>
                 </div>
                 <div className="flex items-center gap-1 text-xs text-emerald-400 mr-2"><Lock className="h-3 w-3" />Encrypted</div>
-                {!isSelf && <>
-                  <button onClick={() => setCall(callRoom)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Phone className="h-4 w-4" /></button>
-                  <button onClick={() => setCall(callRoom)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Video className="h-4 w-4" /></button>
-                </>}
+                {!isSelf && (thread.can_call ? <>
+                  <button onClick={() => setCall(callRoom)} title="Voice call" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Phone className="h-4 w-4" /></button>
+                  <button onClick={() => setCall(callRoom)} title="Video call" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Video className="h-4 w-4" /></button>
+                </> : (
+                  <div title="This person has turned off calls from you" className="flex items-center gap-1 text-slate-600">
+                    <span className="h-9 w-9 grid place-items-center opacity-40 cursor-not-allowed"><Phone className="h-4 w-4" /></span>
+                    <span className="h-9 w-9 grid place-items-center opacity-40 cursor-not-allowed"><Video className="h-4 w-4" /></span>
+                  </div>
+                ))}
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-2">
                 {msgs.some(m => m.pinned && !m.deleted) && (
@@ -212,8 +217,9 @@ export default function Messages() {
                     <button type="button" onClick={openGif} className={`h-11 px-2 grid place-items-center rounded-xl text-xs font-bold shrink-0 ${gifOpen ? 'bg-brand text-white' : 'bg-white/10 hover:bg-white/20'}`}>GIF</button>
                     <input value={text} onChange={e => setText(e.target.value)} placeholder={recording ? 'Recording…' : 'Message (encrypted)…'} disabled={recording}
                       className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand disabled:opacity-60" />
-                    <button type="button" onClick={recording ? stopRec : startRec} disabled={busy}
-                      className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${recording ? 'bg-rose-600 animate-pulse' : 'bg-white/10 hover:bg-white/20'}`}>
+                    <button type="button" onClick={recording ? stopRec : startRec} disabled={busy || !(isSelf || thread.can_voice)}
+                      title={!(isSelf || thread.can_voice) ? 'This person has turned off voice notes from you' : 'Record a voice message'}
+                      className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${recording ? 'bg-rose-600 animate-pulse' : 'bg-white/10 hover:bg-white/20'} disabled:opacity-40 disabled:cursor-not-allowed`}>
                       {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : recording ? <Square className="h-4 w-4" /> : <Mic className="h-5 w-5" />}
                     </button>
                     <button className="h-11 w-11 grid place-items-center rounded-xl bg-gradient-to-r from-brand to-violet-600 shrink-0"><Send className="h-5 w-5" /></button>

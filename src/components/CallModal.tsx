@@ -3,15 +3,15 @@ import { LiveKitRoom, VideoConference } from '@livekit/components-react'
 import { api } from '../lib/api'
 import { X, Loader2 } from 'lucide-react'
 
-export default function CallModal({ room, onClose }: { room: string; onClose: () => void }) {
+export default function CallModal({ room, peer, onClose }: { room: string; peer?: string; onClose: () => void }) {
   const [creds, setCreds] = useState<{ server_url: string; participant_token: string } | null>(null)
   const [err, setErr] = useState('')
 
   useEffect(() => {
     let c = false
-    api.livekitToken(room).then(r => { if (!c) setCreds(r) }).catch(e => { if (!c) setErr(e.message) })
+    api.livekitToken(room, peer).then(r => { if (!c) setCreds(r) }).catch(e => { if (!c) setErr(e.message) })
     return () => { c = true }
-  }, [room])
+  }, [room, peer])
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/90 flex flex-col">

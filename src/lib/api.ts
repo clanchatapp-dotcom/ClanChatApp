@@ -154,7 +154,7 @@ export const api = {
   addGroupMembers: (id: string, handles: string[]) => req(`/groups/${id}/members`, { method: 'POST', body: j({ handles }) }),
   removeGroupMember: (id: string, handle: string) => req(`/groups/${id}/members/${handle}`, { method: 'DELETE' }),
   deleteGroup: (id: string) => req(`/groups/${id}`, { method: 'DELETE' }),
-  livekitToken: (room: string) => req('/livekit/token', { method: 'POST', body: j({ room }) }),
+  livekitToken: (room: string, peer?: string) => req('/livekit/token', { method: 'POST', body: j(peer ? { room, peer } : { room }) }),
   upload: (file: File) => { const fd = new FormData(); fd.append('file', file); return req('/upload', { method: 'POST', body: fd }) },
   report: (target_type: string, target_id: string, category: string, note = '') =>
     req('/report', { method: 'POST', body: j({ target_type, target_id, category, note }) }),

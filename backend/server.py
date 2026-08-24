@@ -338,6 +338,15 @@ async def in_inner(owner: str, member: str) -> bool:
     return bool(await db.inner.find_one({'owner_id': owner, 'member_id': member, 'status': 'accepted'}))
 
 
+async def inner_perm(owner: str, member: str, key: str) -> bool:
+    """Whether `member` may do `key` (dm|voice|call) toward `owner`. Only applies when
+    member is in owner's Inner Circle; otherwise defaults to allowed (other gates handle it)."""
+    doc = await db.inner.find_one({'owner_id': owner, 'member_id': member, 'status': 'accepted'})
+    if not doc:
+        return True
+    return (doc.get('perms') or {}).get(key, True) is not False
+
+
 # --- Phase 5: block / mute / restrict relations ---
 
 async def get_relation(user_id: str, target_id: str) -> Optional[str]:
@@ -548,6 +557,7 @@ class DMSend(BaseModel):
 
 class TokenReq(BaseModel):
     room: str
+    peer: Optional[str] = None  # handle of the person being called (for permission enforcement)
 
 
 # ----------------------------- WS manager -----------------------------
@@ -1583,9 +1593,13 @@ async def dm_history(handle: str, u: dict = Depends(get_current_user)):
                     'pinned': bool(m.get('pinned')), 'deleted': deleted,
                     'created_at': m['created_at'], 'mine': m['sender_id'] == u['id']})
     await mark_read('dm', room, u['id'])  # opening a thread marks it read
+    is_self = other['id'] == u['id']
     return {'peer': {'id': other['id'], 'handle': other['handle'],
                      'display_name': other['display_name'], 'avatar_url': other.get('avatar_url')},
-            'can_dm': await can_dm(u['id'], other['id']), 'messages': out}
+            'can_dm': await can_dm(u['id'], other['id']),
+            'can_voice': is_self or await inner_perm(other['id'], u['id'], 'voice'),
+            'can_call': is_self or await inner_perm(other['id'], u['id'], 'call'),
+            'messages': out}
 
 @app.post('/api/dms/{handle}')
 async def dm_send(handle: str, body: DMSend, u: dict = Depends(get_current_user)):
@@ -1594,6 +1608,8 @@ async def dm_send(handle: str, body: DMSend, u: dict = Depends(get_current_user)
         raise HTTPException(404, 'User not found')
     if not await can_dm(u['id'], other['id']):
         raise HTTPException(403, 'DMs not allowed with this user (tier-gated)')
+    if (body.media_type == 'audio') and not await inner_perm(other['id'], u['id'], 'voice'):
+        raise HTTPException(403, 'This person has turned off voice notes from you')
     text = (body.text or '').strip()
     if not text and not body.media_url:
         raise HTTPException(400, 'Empty message')
@@ -1942,6 +1958,16 @@ async def upload(u: dict = Depends(get_current_user), file: UploadFile = File(..
 async def livekit_token(body: TokenReq, u: dict = Depends(get_current_user)):
     if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
         raise HTTPException(500, 'LiveKit not configured')
+    # Enforce call permission / safety barriers when a specific peer is being called.
+    if body.peer:
+        other = await db.profiles.find_one({'handle': body.peer})
+        if other and other['id'] != u['id']:
+            if await is_blocked_between(u['id'], other['id']):
+                raise HTTPException(403, 'Call not available with this user')
+            if await adult_minor_barrier(u['id'], other['id']):
+                raise HTTPException(403, 'Call not available with this user')
+            if not await inner_perm(other['id'], u['id'], 'call'):
+                raise HTTPException(403, 'This person has turned off calls from you')
     room = re.sub(r'[^A-Za-z0-9_:-]', '', body.room)[:128] or f"room-{u['id']}"
     token = (lk_api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
              .with_identity(u['id']).with_name(f"#{u['handle']}")
