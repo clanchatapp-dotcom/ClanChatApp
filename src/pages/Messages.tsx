@@ -4,7 +4,7 @@ import { api, getToken, wsDmUrl } from '../lib/api'
 import { Avatar } from '../lib/ui'
 import { useAuth } from '../lib/auth'
 import CallModal from '../components/CallModal'
-import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark } from 'lucide-react'
+import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark, Trash2 } from 'lucide-react'
 
 export default function Messages() {
   const { handle } = useParams()
@@ -120,8 +120,12 @@ export default function Messages() {
                   </div>
                 )}
                 {msgs.map(m => (
-                  <div key={m.id} className={`flex ${m.mine ? 'justify-end' : ''}`}>
-                    <div className={`max-w-[75%] rounded-2xl px-4 py-2 ${m.mine ? 'bg-gradient-to-br from-brand to-violet-600 text-white rounded-br-sm' : 'bg-white/5 border border-edge rounded-bl-sm'}`}>{m.text}</div>
+                  <div key={m.id} className={`group flex items-center gap-2 ${m.mine ? 'justify-end' : ''}`}>
+                    {m.mine && !m.deleted && (
+                      <button onClick={async () => { try { await api.deleteDm(handle!, m.id); setMsgs(x => x.map(y => y.id === m.id ? { ...y, deleted: true, text: 'This message was deleted' } : y)) } catch {} }}
+                        className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 transition"><Trash2 className="h-3.5 w-3.5" /></button>
+                    )}
+                    <div className={`max-w-[75%] rounded-2xl px-4 py-2 ${m.deleted ? 'bg-white/5 border border-edge text-slate-500 italic' : m.mine ? 'bg-gradient-to-br from-brand to-violet-600 text-white rounded-br-sm' : 'bg-white/5 border border-edge rounded-bl-sm'}`}>{m.text}</div>
                   </div>
                 ))}
                 <div ref={endRef} />

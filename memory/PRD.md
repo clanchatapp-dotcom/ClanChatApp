@@ -81,3 +81,12 @@ Discussion Boards, group chats (T3 max 15), comments, 18+/NSFW + age verificatio
 - ROOT CAUSE of APK "Please wait..." hang: Render free-tier COLD START (~35s; backend returned HTTP 000 then 200 after 35s) + api.ts req() had no timeout -> button hung forever.
 - FIX: api.ts req() now uses 60s AbortController timeout + friendly errors ("server waking up" / "could not reach server"). Verified backend login 21/21, avg 0.195s, seeded admin login OK.
 - USER DEPLOY TODO for full resolution: (1) Save to GitHub so Render redeploys (creates seeded admin@clanchat.app on Atlas + carries all new features); (2) consider Render paid tier to avoid ~35s cold starts; (3) Google [16]: rebuild APK (bakes new webClientId 24500940599-ps9ka...) + add that Web client ID to Supabase > Auth > Providers > Google > Authorized Client IDs + ensure Android client 24500940599-bbuca (pkg app.clanchat.mobile, SHA-1 23:C2...) exists.
+
+## Roadmap — porting old app features (Facebook wall + IG media + TikTok scroll + Telegram DMs)
+Phase 1 DONE (backend 48/48 tests): post reactions (like/love/haha/wow/sad/angry, single per user), threaded comments (add/reply/delete, comment_count), DM message delete (soft, WS broadcast). Frontend: PostCard reactions bar + comments/replies UI; Messages delete-on-hover + deleted state.
+Phase 2 TODO (Telegram DMs): voice messages, GIF/stickers (Giphy/Tenor), pin messages, edit.
+Phase 3 TODO (IG/TikTok): multi-image/video posts, full-screen vertical reels scroll.
+Phase 4 TODO: Wall posts+replies, Discussion Boards, Group chats (max 15).
+Phase 5 TODO: theme/display prefs (light/dark/accent/font), tier sorting/Connections, block/mute/restrict, notifications (FCM), follow requests.
+Phase 6 TODO: admin watchlist, CSAM/CEOP queue, NSFW scan, moderation extras, forgot/reset password.
+NOTE: old zip has committed secrets to rotate (SUPABASE_SERVICE_ROLE_KEY etc).

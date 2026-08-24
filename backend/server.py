@@ -292,12 +292,17 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
 async def post_out(p: dict, viewer_id: str) -> dict:
     author = await db.profiles.find_one({'id': p['author_id']}, {'_id': 0})
     liked = viewer_id in p.get('likes', [])
+    reactions = p.get('reactions', {}) or {}
+    counts = {k: len(v) for k, v in reactions.items() if v}
+    my_reaction = next((k for k, v in reactions.items() if viewer_id in v), None)
     return {
         'id': p['id'], 'tier': p['tier'], 'text': p.get('text', ''),
         'media_url': p.get('media_url'), 'media_type': p.get('media_type'),
         'tags': p.get('tags', []), 'created_at': p['created_at'],
         'like_count': len(p.get('likes', [])), 'liked': liked,
         'likeable': p['tier'] == 'public',
+        'reactions': counts, 'reaction_total': sum(counts.values()), 'my_reaction': my_reaction,
+        'comment_count': await db.comments.count_documents({'post_id': p['id']}),
         'author': {'id': author['id'], 'handle': author['handle'],
                    'display_name': author['display_name'], 'avatar_url': author.get('avatar_url'),
                    'account_type': author.get('account_type', 'standard')} if author else None,
@@ -337,6 +342,15 @@ class PostCreate(BaseModel):
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     tags: Optional[list] = None
+
+class ReactBody(BaseModel):
+    emoji: str  # like | love | haha | wow | sad | angry
+
+class CommentCreate(BaseModel):
+    text: str
+    parent_id: Optional[str] = None
+
+REACTIONS = ['like', 'love', 'haha', 'wow', 'sad', 'angry']
 
 class DMSend(BaseModel):
     text: str
@@ -543,6 +557,7 @@ async def _purge_user(uid: str):
     await db.profiles.delete_one({'id': uid})
     await db.auth.delete_many({'user_id': uid})
     await db.posts.delete_many({'author_id': uid})
+    await db.comments.delete_many({'author_id': uid})
     await db.follows.delete_many({'$or': [{'follower_id': uid}, {'target_id': uid}]})
     await db.inner.delete_many({'$or': [{'owner_id': uid}, {'member_id': uid}]})
     await db.dms.delete_many({'participants': uid})
@@ -695,7 +710,100 @@ async def like_post(post_id: str, u: dict = Depends(get_current_user)):
     return {'liked': not liked, 'like_count': len(p.get('likes', []))}
 
 
-# ----------------------------- Search / trending -----------------------------
+@app.post('/api/posts/{post_id}/react')
+async def react_post(post_id: str, body: ReactBody, u: dict = Depends(get_current_user)):
+    if body.emoji not in REACTIONS:
+        raise HTTPException(400, 'Invalid reaction')
+    p = await db.posts.find_one({'id': post_id})
+    if not p:
+        raise HTTPException(404, 'Post not found')
+    if not await can_view(u['id'], p):
+        raise HTTPException(403, 'Cannot view')
+    reactions = p.get('reactions', {}) or {}
+    current = next((k for k, v in reactions.items() if u['id'] in v), None)
+    # Clear any existing reaction from this user
+    for k in list(reactions.keys()):
+        if u['id'] in reactions[k]:
+            reactions[k] = [x for x in reactions[k] if x != u['id']]
+    toggled_off = current == body.emoji
+    if not toggled_off:
+        reactions.setdefault(body.emoji, [])
+        reactions[body.emoji].append(u['id'])
+        if p['author_id'] != u['id']:
+            await add_activity(p['author_id'], 'react', u, f'reacted {body.emoji} to your post', post_id)
+    await db.posts.update_one({'id': post_id}, {'$set': {'reactions': reactions}})
+    counts = {k: len(v) for k, v in reactions.items() if v}
+    return {'reactions': counts, 'reaction_total': sum(counts.values()),
+            'my_reaction': None if toggled_off else body.emoji}
+
+
+async def comment_out(c: dict, viewer_id: str) -> dict:
+    a = await db.profiles.find_one({'id': c['author_id']}, {'_id': 0})
+    return {'id': c['id'], 'post_id': c['post_id'], 'parent_id': c.get('parent_id'),
+            'text': c['text'], 'created_at': c['created_at'],
+            'is_mine': c['author_id'] == viewer_id,
+            'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'],
+                       'avatar_url': a.get('avatar_url')} if a else None}
+
+
+@app.get('/api/posts/{post_id}/comments')
+async def list_comments(post_id: str, u: dict = Depends(get_current_user)):
+    p = await db.posts.find_one({'id': post_id})
+    if not p:
+        raise HTTPException(404, 'Post not found')
+    if not await can_view(u['id'], p):
+        raise HTTPException(403, 'Cannot view')
+    out = []
+    async for c in db.comments.find({'post_id': post_id}).sort('created_at', 1).limit(500):
+        out.append(await comment_out(c, u['id']))
+    return out
+
+
+@app.post('/api/posts/{post_id}/comments')
+async def add_comment(post_id: str, body: CommentCreate, u: dict = Depends(get_current_user)):
+    p = await db.posts.find_one({'id': post_id})
+    if not p:
+        raise HTTPException(404, 'Post not found')
+    if not await can_view(u['id'], p):
+        raise HTTPException(403, 'Cannot view')
+    text = (body.text or '').strip()
+    if not text:
+        raise HTTPException(400, 'Empty comment')
+    if body.parent_id and not await db.comments.find_one({'id': body.parent_id, 'post_id': post_id}):
+        raise HTTPException(400, 'Parent comment not found')
+    doc = {'id': str(uuid.uuid4()), 'post_id': post_id, 'author_id': u['id'],
+           'text': text[:2000], 'parent_id': body.parent_id,
+           'created_at': datetime.now(timezone.utc).isoformat()}
+    await db.comments.insert_one(dict(doc))
+    if p['author_id'] != u['id']:
+        await add_activity(p['author_id'], 'comment', u, 'commented on your post', post_id)
+    return await comment_out(doc, u['id'])
+
+
+@app.delete('/api/comments/{comment_id}')
+async def delete_comment(comment_id: str, u: dict = Depends(get_current_user)):
+    c = await db.comments.find_one({'id': comment_id})
+    if not c:
+        raise HTTPException(404, 'Comment not found')
+    p = await db.posts.find_one({'id': c['post_id']})
+    is_owner = c['author_id'] == u['id'] or (p and p['author_id'] == u['id']) or is_admin_user(u)
+    if not is_owner:
+        raise HTTPException(403, 'Not allowed')
+    # delete the comment and any direct replies
+    await db.comments.delete_many({'$or': [{'id': comment_id}, {'parent_id': comment_id}]})
+    return {'ok': True}
+
+
+@app.delete('/api/dms/{handle}/{message_id}')
+async def delete_dm(handle: str, message_id: str, u: dict = Depends(get_current_user)):
+    m = await db.dms.find_one({'id': message_id})
+    if not m:
+        raise HTTPException(404, 'Message not found')
+    if m['sender_id'] != u['id']:
+        raise HTTPException(403, 'You can only delete your own messages')
+    await db.dms.update_one({'id': message_id}, {'$set': {'deleted': True}})
+    await manager.broadcast(m['room'], {'type': 'dm_deleted', 'id': message_id})
+    return {'ok': True}
 
 @app.get('/api/trending')
 async def trending(u: dict = Depends(get_current_user)):
@@ -749,8 +857,10 @@ async def dm_history(handle: str, u: dict = Depends(get_current_user)):
     room = dm_room(u['id'], other['id'])
     out = []
     async for m in db.dms.find({'room': room}).sort('created_at', 1).limit(300):
-        out.append({'id': m['id'], 'sender_id': m['sender_id'], 'text': dec(m['content_enc']),
-                    'created_at': m['created_at'], 'mine': m['sender_id'] == u['id']})
+        deleted = bool(m.get('deleted'))
+        out.append({'id': m['id'], 'sender_id': m['sender_id'],
+                    'text': 'This message was deleted' if deleted else dec(m['content_enc']),
+                    'deleted': deleted, 'created_at': m['created_at'], 'mine': m['sender_id'] == u['id']})
     return {'peer': {'id': other['id'], 'handle': other['handle'],
                      'display_name': other['display_name'], 'avatar_url': other.get('avatar_url')},
             'can_dm': await can_dm(u['id'], other['id']), 'messages': out}
