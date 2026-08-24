@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api } from '../lib/api'
-import { Avatar } from '../lib/ui'
+import { Avatar, timeAgo } from '../lib/ui'
 import PostCard from '../components/PostCard'
 import { useAuth } from '../lib/auth'
-import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera } from 'lucide-react'
+import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera, Trash2 } from 'lucide-react'
 
 const TABS = ['media', 'wall', 'audio'] as const
 type Tab = typeof TABS[number]
@@ -156,10 +156,49 @@ export default function Profile() {
 
       {/* Tab content */}
       <div className="max-w-xl mx-auto px-4 py-6 space-y-4">
-        {current.length === 0
-          ? <p className="text-center text-slate-500 py-14">No {tab} posts yet.</p>
-          : current.map(post => <PostCard key={post.id} post={post} onDelete={p.is_self ? del : undefined} />)}
+        {tab === 'wall'
+          ? <WallTab handle={p.handle} />
+          : current.length === 0
+            ? <p className="text-center text-slate-500 py-14">No {tab} posts yet.</p>
+            : current.map(post => <PostCard key={post.id} post={post} onDelete={p.is_self ? del : undefined} />)}
       </div>
+    </div>
+  )
+}
+
+function WallTab({ handle }: { handle: string }) {
+  const [data, setData] = useState<any>({ can_post: false, posts: [] })
+  const [text, setText] = useState('')
+  const load = () => api.getWall(handle).then(setData).catch(() => {})
+  useEffect(() => { load() }, [handle])
+  const submit = async () => {
+    const t = text.trim(); if (!t) return
+    try { const w = await api.postWall(handle, t); setData((d: any) => ({ ...d, posts: [w, ...d.posts] })); setText('') } catch (e: any) { alert(e.message) }
+  }
+  const remove = async (id: string) => { try { await api.deleteWall(id); setData((d: any) => ({ ...d, posts: d.posts.filter((x: any) => x.id !== id) })) } catch {} }
+  return (
+    <div className="space-y-4">
+      {data.can_post && (
+        <div className="bg-panel border border-edge rounded-2xl p-3">
+          <textarea value={text} onChange={e => setText(e.target.value)} rows={2} placeholder="Write on this wall…"
+            className="w-full bg-ink border border-edge rounded-xl px-3 py-2 outline-none focus:border-brand resize-none" />
+          <div className="flex justify-end mt-2"><button onClick={submit} className="px-4 py-2 rounded-xl bg-brand font-medium">Post to wall</button></div>
+        </div>
+      )}
+      {data.posts.length === 0 && <p className="text-center text-slate-500 py-10">No wall posts yet.{data.can_post ? ' Be the first!' : ' Only followers & Inner Circle can post here.'}</p>}
+      {data.posts.map((w: any) => (
+        <div key={w.id} className="bg-panel border border-edge rounded-2xl p-3 flex gap-3">
+          <Link to={`/u/${w.author?.handle}`}><Avatar id={w.author?.id} name={w.author?.display_name} url={w.author?.avatar_url} size={38} /></Link>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <Link to={`/u/${w.author?.handle}`} className="font-semibold hover:underline">{w.author?.display_name}</Link>
+              <span className="text-xs text-slate-500">{timeAgo(w.created_at)}</span>
+              {w.can_delete && <button onClick={() => remove(w.id)} className="ml-auto text-slate-500 hover:text-rose-400"><Trash2 className="h-4 w-4" /></button>}
+            </div>
+            <p className="mt-1 whitespace-pre-wrap break-words">{w.text}</p>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

@@ -561,6 +561,7 @@ async def _purge_user(uid: str):
     await db.auth.delete_many({'user_id': uid})
     await db.posts.delete_many({'author_id': uid})
     await db.comments.delete_many({'author_id': uid})
+    await db.wall.delete_many({'$or': [{'owner_id': uid}, {'author_id': uid}]})
     await db.follows.delete_many({'$or': [{'follower_id': uid}, {'target_id': uid}]})
     await db.inner.delete_many({'$or': [{'owner_id': uid}, {'member_id': uid}]})
     await db.dms.delete_many({'participants': uid})
@@ -684,6 +685,62 @@ async def reels(u: dict = Depends(get_current_user)):
         if len(out) >= 40:
             break
     return out
+
+
+class WallPost(BaseModel):
+    text: str
+
+
+async def can_wall(viewer: str, owner: str) -> bool:
+    return viewer == owner or await in_inner(owner, viewer) or await is_follower(viewer, owner)
+
+
+@app.get('/api/wall/{handle}')
+async def get_wall(handle: str, u: dict = Depends(get_current_user)):
+    owner = await db.profiles.find_one({'handle': handle}, {'_id': 0})
+    if not owner:
+        raise HTTPException(404, 'Not found')
+    can = await can_wall(u['id'], owner['id'])
+    items = []
+    if can or owner['id'] == u['id']:
+        async for w in db.wall.find({'owner_id': owner['id']}).sort('created_at', -1).limit(100):
+            a = await db.profiles.find_one({'id': w['author_id']}, {'_id': 0})
+            items.append({'id': w['id'], 'text': w['text'], 'created_at': w['created_at'],
+                          'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'],
+                                     'avatar_url': a.get('avatar_url')} if a else None,
+                          'can_delete': w['author_id'] == u['id'] or owner['id'] == u['id'] or is_admin_user(u)})
+    return {'can_post': can, 'posts': items}
+
+
+@app.post('/api/wall/{handle}')
+async def post_wall(handle: str, body: WallPost, u: dict = Depends(get_current_user)):
+    owner = await db.profiles.find_one({'handle': handle}, {'_id': 0})
+    if not owner:
+        raise HTTPException(404, 'Not found')
+    if not await can_wall(u['id'], owner['id']):
+        raise HTTPException(403, 'Only followers and Inner Circle can post on this wall')
+    text = (body.text or '').strip()
+    if not text:
+        raise HTTPException(400, 'Empty post')
+    doc = {'id': str(uuid.uuid4()), 'owner_id': owner['id'], 'author_id': u['id'],
+           'text': text[:2000], 'created_at': datetime.now(timezone.utc).isoformat()}
+    await db.wall.insert_one(dict(doc))
+    if owner['id'] != u['id']:
+        await add_activity(owner['id'], 'wall', u, 'posted on your wall', doc['id'])
+    a = await db.profiles.find_one({'id': u['id']}, {'_id': 0})
+    return {'id': doc['id'], 'text': doc['text'], 'created_at': doc['created_at'], 'can_delete': True,
+            'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'], 'avatar_url': a.get('avatar_url')}}
+
+
+@app.delete('/api/wall/{wall_id}')
+async def delete_wall(wall_id: str, u: dict = Depends(get_current_user)):
+    w = await db.wall.find_one({'id': wall_id})
+    if not w:
+        raise HTTPException(404, 'Not found')
+    if not (w['author_id'] == u['id'] or w['owner_id'] == u['id'] or is_admin_user(u)):
+        raise HTTPException(403, 'Not allowed')
+    await db.wall.delete_one({'id': wall_id})
+    return {'ok': True}
 
 @app.post('/api/posts')
 async def create_post(body: PostCreate, u: dict = Depends(get_current_user)):
