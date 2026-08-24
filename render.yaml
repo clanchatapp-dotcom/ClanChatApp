@@ -53,6 +53,9 @@ services:
       - key: REACT_APP_SUPABASE_ANON_KEY
         sync: false
       - key: REACT_APP_GOOGLE_WEB_CLIENT_ID
-        value: 286762294730-2hu26blabiqf39os0vfpv5i8ap645dqr.apps.googleusercontent.com
+        # Web OAuth client in the SAME Google Cloud project (24500940599) as the
+        # Android client. Must match nativeGoogle.ts + the android-apk.yml default,
+        # otherwise native Google sign-in throws [16] "reauth failed".
+        value: 24500940599-ps9kauvvquoh2ldh2iacsb04piui40cs.apps.googleusercontent.com
       - key: REACT_APP_API_URL   # absolute backend URL (e.g. https://clanchat-backend.onrender.com)
         sync: false

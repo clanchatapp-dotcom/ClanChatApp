@@ -8,7 +8,7 @@ Code implements build steps 1-7 (Firebase removed; Supabase client, web + native
 - Delete the duplicate Android client; rotate any publicly-posted keys.
 
 ## B. Supabase Dashboard
-- Auth -> Providers -> Google: enable, paste Web Client ID (`286762294730-2hu26blabiqf39os0vfpv5i8ap645dqr.apps.googleusercontent.com`) + secret.
+- Auth -> Providers -> Google: enable, paste Web Client ID (`24500940599-ps9kauvvquoh2ldh2iacsb04piui40cs.apps.googleusercontent.com`) + secret.
 - Auth -> URL Configuration: Site URL `https://clanchatapp.onrender.com`; redirect allowlist `https://clanchatapp.onrender.com/auth/callback` + `http://localhost:3000/auth/callback`.
 
 ## C. Render env vars
@@ -16,7 +16,7 @@ Frontend service:
 ```
 REACT_APP_SUPABASE_URL=https://fkhsijjwkrwbwjjaapbb.supabase.co
 REACT_APP_SUPABASE_ANON_KEY=<anon public key>
-REACT_APP_GOOGLE_WEB_CLIENT_ID=286762294730-2hu26blabiqf39os0vfpv5i8ap645dqr.apps.googleusercontent.com
+REACT_APP_GOOGLE_WEB_CLIENT_ID=24500940599-ps9kauvvquoh2ldh2iacsb04piui40cs.apps.googleusercontent.com
 ```
 Backend service (secrets):
 ```
