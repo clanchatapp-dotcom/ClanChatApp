@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth } from '../lib/auth'
-import { Lock, Users, Sparkles, Mail } from 'lucide-react'
+import { warmup } from '../lib/api'
+import { Lock, Users, Sparkles, Mail, Loader2 } from 'lucide-react'
 
 export default function Login() {
   const { loginEmail, registerEmail, loginGoogle } = useAuth()
@@ -9,20 +10,38 @@ export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('')
   const [err, setErr] = useState('')
 
+  // Wake a sleeping backend the moment the login screen opens so the user's
+  // actual sign-in lands on an already-warming server (Render cold starts).
+  useEffect(() => { warmup() }, [])
+
+  const WAIT_MSGS = [
+    'Waking up the server — hang tight…',
+    'Almost there, connecting…',
+    'Still connecting, thanks for your patience…',
+    'One more moment…',
+  ]
+  const onProgress = (n: number) => setStatus(WAIT_MSGS[Math.min(n - 1, WAIT_MSGS.length - 1)])
+
   const google = async () => {
-    setErr(''); setBusy(true)
+    setErr(''); setBusy(true); setStatus('Opening Google…')
     try { await loginGoogle() } catch (e: any) { setErr(e.message || 'Google sign-in failed') }
-    finally { setBusy(false) }
+    finally { setBusy(false); setStatus('') }
   }
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setErr(''); setBusy(true)
+    setStatus(mode === 'register' ? 'Creating your account…' : 'Signing you in…')
     try {
-      if (mode === 'register') await registerEmail(email.trim(), password, name.trim() || email.split('@')[0])
-      else await loginEmail(email.trim(), password)
-    } catch (e: any) { setErr(e.message || 'Something went wrong') }
-    finally { setBusy(false) }
+      if (mode === 'register') await registerEmail(email.trim(), password, name.trim() || email.split('@')[0], onProgress)
+      else await loginEmail(email.trim(), password, onProgress)
+    } catch (e: any) {
+      // Invalid credentials / validation -> show the real message. Anything else
+      // (server still unreachable after retries) -> gentle, non-scary prompt.
+      if (e?.status === 400 || e?.status === 401 || e?.status === 409) setErr(e.message || 'Please check your details and try again.')
+      else setErr("We couldn't reach the server just yet. Please tap the button again in a moment.")
+    } finally { setBusy(false); setStatus('') }
   }
 
   return (
@@ -83,11 +102,12 @@ export default function Login() {
             <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="Password (min 6 chars)"
               className="w-full bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand transition" />
             <button disabled={busy}
-              className="w-full bg-gradient-to-r from-brand to-violet-600 font-semibold rounded-xl py-3 hover:opacity-95 transition disabled:opacity-60">
-              {busy ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}
+              className="w-full bg-gradient-to-r from-brand to-violet-600 font-semibold rounded-xl py-3 hover:opacity-95 transition disabled:opacity-80 flex items-center justify-center gap-2">
+              {busy ? (<><Loader2 className="h-4 w-4 animate-spin" />{status || 'Please wait…'}</>) : (mode === 'register' ? 'Create account' : 'Sign in')}
             </button>
           </form>
 
+          {busy && !err && <p className="text-slate-400 text-xs mt-3 text-center">This can take a few seconds the first time while the server wakes up.</p>}
           {err && <p className="text-rose-400 text-sm mt-4">{err}</p>}
 
           <p className="text-sm text-slate-400 mt-5 text-center">

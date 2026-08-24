@@ -37,9 +37,13 @@ async function req(path: string, opts: RequestInit = {}) {
     res = await fetch(`${API_BASE}/api${path}`, { ...opts, headers, signal: controller.signal })
   } catch (e: any) {
     if (e?.name === 'AbortError') {
-      throw new Error('The server is taking too long to respond — it may be waking up. Please try again in a moment.')
+      const err: any = new Error('The server is taking too long to respond — it may be waking up. Please try again in a moment.')
+      err.retryable = true
+      throw err
     }
-    throw new Error('Could not reach the server. Check your connection and try again.')
+    const err: any = new Error('Could not reach the server. Check your connection and try again.')
+    err.retryable = true // network blip / server asleep -> safe to retry
+    throw err
   } finally {
     clearTimeout(timer)
   }
@@ -48,11 +52,42 @@ async function req(path: string, opts: RequestInit = {}) {
     try { d = (await res.json()).detail || d } catch {}
     const err: any = new Error(d)
     err.status = res.status
+    err.retryable = res.status >= 500 || res.status === 429 // transient server states
     throw err
   }
   return res.status === 204 ? null : res.json()
 }
 const j = (b: any) => JSON.stringify(b)
+
+// Fire-and-forget health ping to wake a sleeping backend early (e.g. on the login
+// screen) so the user's actual sign-in lands on an already-warming server.
+export async function warmup(): Promise<void> {
+  try {
+    const c = new AbortController()
+    const t = setTimeout(() => c.abort(), 60000)
+    await fetch(`${API_BASE}/api/`, { signal: c.signal }).catch(() => {})
+    clearTimeout(t)
+  } catch { /* ignore */ }
+}
+
+// Retry a request through transient failures (server asleep, network blip, 5xx)
+// with gentle backoff. Non-retryable errors (401 bad creds, 400) throw immediately.
+// `onProgress(attempt)` lets the UI show an escalating "please wait" message.
+export async function withRetry<T>(fn: () => Promise<T>, onProgress?: (attempt: number) => void): Promise<T> {
+  const backoff = [1200, 2500, 4000, 6000] // 5 attempts total
+  let lastErr: any
+  for (let i = 0; i <= backoff.length; i++) {
+    try { return await fn() }
+    catch (e: any) {
+      lastErr = e
+      if (!e?.retryable) throw e
+      if (i === backoff.length) break
+      onProgress?.(i + 1)
+      await new Promise(r => setTimeout(r, backoff[i]))
+    }
+  }
+  throw lastErr
+}
 
 export const api = {
   devLogin: (name: string) => req('/dev/token', { method: 'POST', body: j({ name }) }),

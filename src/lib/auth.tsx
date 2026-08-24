@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import { supabase, signInGoogleWeb } from './supabase'
 import { isNative, signInGoogleNative } from './nativeGoogle'
-import { api, getToken, setToken } from './api'
+import { api, getToken, setToken, withRetry } from './api'
 
 type User = { id: string; name: string; email?: string; avatar_url?: string | null }
 
@@ -9,8 +9,8 @@ type AuthCtx = {
   user: User | null
   loading: boolean
   loginDev: (name: string) => Promise<void>
-  loginEmail: (email: string, password: string) => Promise<void>
-  registerEmail: (email: string, password: string, name: string) => Promise<void>
+  loginEmail: (email: string, password: string, onProgress?: (n: number) => void) => Promise<void>
+  registerEmail: (email: string, password: string, name: string, onProgress?: (n: number) => void) => Promise<void>
   loginGoogle: () => Promise<void>
   logout: () => Promise<void>
   // Returns the loaded user (or null) so callers such as the OAuth callback can
@@ -87,14 +87,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(user)
   }
 
-  const loginEmail = async (email: string, password: string) => {
-    const { access_token, user } = await api.authLogin(email, password)
+  const loginEmail = async (email: string, password: string, onProgress?: (n: number) => void) => {
+    const { access_token, user } = await withRetry(() => api.authLogin(email, password), onProgress)
     setToken(access_token)
     setUser(user)
   }
 
-  const registerEmail = async (email: string, password: string, name: string) => {
-    const { access_token, user } = await api.authRegister(email, password, name)
+  const registerEmail = async (email: string, password: string, name: string, onProgress?: (n: number) => void) => {
+    const { access_token, user } = await withRetry(() => api.authRegister(email, password, name), onProgress)
     setToken(access_token)
     setUser(user)
   }
