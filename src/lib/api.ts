@@ -80,6 +80,9 @@ export const api = {
   addComment: (id: string, text: string, parent_id?: string) => req(`/posts/${id}/comments`, { method: 'POST', body: j({ text, parent_id }) }),
   deleteComment: (id: string) => req(`/comments/${id}`, { method: 'DELETE' }),
   deleteDm: (handle: string, id: string) => req(`/dms/${handle}/${id}`, { method: 'DELETE' }),
+  pinDm: (handle: string, id: string) => req(`/dms/${handle}/${id}/pin`, { method: 'POST' }),
+  sendDmMedia: (handle: string, media_url: string, media_type: string, duration?: number, text?: string) =>
+    req(`/dms/${handle}`, { method: 'POST', body: j({ media_url, media_type, duration, text }) }),
   trending: () => req('/trending'),
   search: (q: string) => req(`/search?q=${encodeURIComponent(q)}`),
   dmThreads: () => req('/dms'),

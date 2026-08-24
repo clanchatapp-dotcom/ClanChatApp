@@ -90,3 +90,5 @@ Phase 4 TODO: Wall posts+replies, Discussion Boards, Group chats (max 15).
 Phase 5 TODO: theme/display prefs (light/dark/accent/font), tier sorting/Connections, block/mute/restrict, notifications (FCM), follow requests.
 Phase 6 TODO: admin watchlist, CSAM/CEOP queue, NSFW scan, moderation extras, forgot/reset password.
 NOTE: old zip has committed secrets to rotate (SUPABASE_SERVICE_ROLE_KEY etc).
+
+## Phase 2 DONE (backend 38/38): voice messages (MediaRecorder->Supabase upload->audio DM), media-only messages, pin/unpin messages (WS broadcast, pinned banner), audio playback in bubble. GIFs/stickers still TODO (needs Giphy/Tenor API key from user).

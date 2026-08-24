@@ -353,7 +353,10 @@ class CommentCreate(BaseModel):
 REACTIONS = ['like', 'love', 'haha', 'wow', 'sad', 'angry']
 
 class DMSend(BaseModel):
-    text: str
+    text: Optional[str] = ''
+    media_url: Optional[str] = None
+    media_type: Optional[str] = None  # audio | image
+    duration: Optional[float] = None
 
 class TokenReq(BaseModel):
     room: str
@@ -845,7 +848,7 @@ async def dm_threads(u: dict = Depends(get_current_user)):
             continue
         seen[oid] = {'user': {'id': prof['id'], 'handle': prof['handle'],
                               'display_name': prof['display_name'], 'avatar_url': prof.get('avatar_url')},
-                     'last': dec(m['content_enc'])[:80], 'created_at': m['created_at'],
+                     'last': ('🎤 Voice message' if m.get('media_type') == 'audio' else '📷 Photo' if m.get('media_url') else dec(m['content_enc'])[:80]), 'created_at': m['created_at'],
                      'mine': m['sender_id'] == u['id']}
     return list(seen.values())
 
@@ -860,7 +863,10 @@ async def dm_history(handle: str, u: dict = Depends(get_current_user)):
         deleted = bool(m.get('deleted'))
         out.append({'id': m['id'], 'sender_id': m['sender_id'],
                     'text': 'This message was deleted' if deleted else dec(m['content_enc']),
-                    'deleted': deleted, 'created_at': m['created_at'], 'mine': m['sender_id'] == u['id']})
+                    'media_url': None if deleted else m.get('media_url'),
+                    'media_type': m.get('media_type'), 'duration': m.get('duration'),
+                    'pinned': bool(m.get('pinned')), 'deleted': deleted,
+                    'created_at': m['created_at'], 'mine': m['sender_id'] == u['id']})
     return {'peer': {'id': other['id'], 'handle': other['handle'],
                      'display_name': other['display_name'], 'avatar_url': other.get('avatar_url')},
             'can_dm': await can_dm(u['id'], other['id']), 'messages': out}
@@ -872,18 +878,32 @@ async def dm_send(handle: str, body: DMSend, u: dict = Depends(get_current_user)
         raise HTTPException(404, 'User not found')
     if not await can_dm(u['id'], other['id']):
         raise HTTPException(403, 'DMs not allowed with this user (tier-gated)')
-    text = body.text.strip()
-    if not text:
+    text = (body.text or '').strip()
+    if not text and not body.media_url:
         raise HTTPException(400, 'Empty message')
     room = dm_room(u['id'], other['id'])
     doc = {'id': str(uuid.uuid4()), 'room': room, 'participants': [u['id'], other['id']],
            'sender_id': u['id'], 'content_enc': enc(text),
-           'created_at': datetime.now(timezone.utc).isoformat()}
+           'media_url': body.media_url, 'media_type': body.media_type, 'duration': body.duration,
+           'pinned': False, 'created_at': datetime.now(timezone.utc).isoformat()}
     await db.dms.insert_one(dict(doc))
-    payload = {'type': 'dm', 'message': {'id': doc['id'], 'sender_id': u['id'],
-               'text': text, 'created_at': doc['created_at']}}
-    await manager.broadcast(room, payload)
-    return {'id': doc['id'], 'sender_id': u['id'], 'text': text, 'created_at': doc['created_at'], 'mine': True}
+    msg = {'id': doc['id'], 'sender_id': u['id'], 'text': text, 'media_url': body.media_url,
+           'media_type': body.media_type, 'duration': body.duration, 'created_at': doc['created_at']}
+    await manager.broadcast(room, {'type': 'dm', 'message': msg})
+    return {**msg, 'mine': True, 'pinned': False}
+
+
+@app.post('/api/dms/{handle}/{message_id}/pin')
+async def pin_dm(handle: str, message_id: str, u: dict = Depends(get_current_user)):
+    m = await db.dms.find_one({'id': message_id})
+    if not m:
+        raise HTTPException(404, 'Message not found')
+    if u['id'] not in m['participants']:
+        raise HTTPException(403, 'Not allowed')
+    newp = not m.get('pinned')
+    await db.dms.update_one({'id': message_id}, {'$set': {'pinned': newp}})
+    await manager.broadcast(m['room'], {'type': 'dm_pin', 'id': message_id, 'pinned': newp})
+    return {'ok': True, 'pinned': newp}
 
 
 # ----------------------------- Activity -----------------------------
