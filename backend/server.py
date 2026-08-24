@@ -67,6 +67,13 @@ REPORT_CATEGORIES = {'csam', 'underage', 'harassment', 'hate', 'self_harm',
 def is_admin_user(prof: dict) -> bool:
     return bool(prof.get('is_admin')) or (prof.get('email') or '').lower() in ADMIN_EMAILS
 
+
+async def email_is_allowlisted(email: Optional[str]) -> bool:
+    """True if this email was added to the DB-backed admin allowlist (from the panel)."""
+    if not email:
+        return False
+    return bool(await db.admin_allow.find_one({'email': email.strip().lower()}))
+
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
@@ -172,10 +179,13 @@ async def ensure_profile(sub: str, email: Optional[str], name: Optional[str],
     while await db.profiles.find_one({'handle': handle}):
         i += 1
         handle = f'{base}{i}'
+    email_l = (email or '').lower()
+    grant_admin = email_l in ADMIN_EMAILS or await email_is_allowlisted(email_l)
     prof = {
         'id': sub, 'handle': handle, 'display_name': display, 'real_name': None,
         'email': email, 'bio': '', 'links': [], 'avatar_url': avatar,
         'account_type': 'standard', 'follow_mode': 'open', 'dm_open': True,
+        'is_admin': grant_admin, 'role': 'admin' if grant_admin else 'user',
         'created_at': datetime.now(timezone.utc).isoformat(),
     }
     await db.profiles.insert_one(dict(prof))
@@ -406,6 +416,20 @@ async def startup():
         await ensure_bucket()
     except Exception as e:
         log.warning('bucket: %s', e)
+    # Seed a bootstrap super-admin login (email+password) you fully control.
+    try:
+        seed_email = os.environ.get('SEED_ADMIN_EMAIL', 'admin@clanchat.app').strip().lower()
+        seed_pw = os.environ.get('SEED_ADMIN_PASSWORD', 'ClanChatAdmin!2025')
+        if seed_email and not await db.auth.find_one({'email': seed_email}):
+            salt = secrets.token_hex(16)
+            uid = str(uuid.uuid4())
+            await db.auth.insert_one({'email': seed_email, 'salt': salt,
+                                      'hash': _pw_hash(seed_pw, salt), 'user_id': uid})
+            prof = await ensure_profile(uid, seed_email, 'ClanChat Admin', None)
+            await db.profiles.update_one({'id': uid}, {'$set': {'is_admin': True, 'role': 'admin', 'account_type': 'verified'}})
+            log.info('seeded super-admin account: %s', seed_email)
+    except Exception as e:
+        log.warning('admin seed skipped: %s', e)
 
 
 # ----------------------------- Auth routes -----------------------------
@@ -938,6 +962,58 @@ async def admin_purge_demo(body: PurgeBody, a: dict = Depends(require_admin)):
     await incr_deleted(len(purged))
     await audit(a, 'purge_demo', ','.join(purged) or 'none', f'include_admin={body.include_admin}')
     return {'ok': True, 'purged': purged, 'count': len(purged)}
+
+
+class AdminEmailBody(BaseModel):
+    email: str
+
+
+@app.get('/api/admin/admins')
+async def admin_list_admins(a: dict = Depends(require_admin)):
+    """List current admins + any allowlisted emails that don't yet have an account."""
+    admins = await db.profiles.find(
+        {'is_admin': True},
+        {'_id': 0, 'id': 1, 'handle': 1, 'display_name': 1, 'email': 1, 'avatar_url': 1}
+    ).to_list(500)
+    for x in admins:
+        x['super'] = (x.get('email') or '').lower() in ADMIN_EMAILS
+    have = {(x.get('email') or '').lower() for x in admins}
+    allow = [d['email'] async for d in db.admin_allow.find({}, {'_id': 0, 'email': 1})]
+    pending = sorted(e for e in allow if e not in have)
+    return {'admins': admins, 'pending': pending}
+
+
+@app.post('/api/admin/admins')
+async def admin_add_admin(body: AdminEmailBody, a: dict = Depends(require_admin)):
+    """Add an email as admin. Promotes the account if it exists, otherwise
+    allowlists the email so it becomes admin the moment they sign up."""
+    email = (body.email or '').strip().lower()
+    if '@' not in email or '.' not in email.split('@')[-1]:
+        raise HTTPException(400, 'Enter a valid email')
+    await db.admin_allow.update_one({'email': email}, {'$set': {'email': email}}, upsert=True)
+    prof = await db.profiles.find_one({'email': {'$regex': f'^{re.escape(email)}$', '$options': 'i'}}, {'_id': 0})
+    promoted = False
+    if prof:
+        await db.profiles.update_one({'id': prof['id']}, {'$set': {'is_admin': True, 'role': 'admin'}})
+        promoted = True
+    await audit(a, 'add_admin', email, 'promoted existing account' if promoted else 'allowlisted (no account yet)')
+    return {'ok': True, 'email': email, 'promoted': promoted}
+
+
+@app.post('/api/admin/admins/remove')
+async def admin_remove_admin(body: AdminEmailBody, a: dict = Depends(require_admin)):
+    """Revoke admin from an email. Cannot remove env super-admins or yourself."""
+    email = (body.email or '').strip().lower()
+    if email in ADMIN_EMAILS:
+        raise HTTPException(400, 'That is a protected super-admin and cannot be removed here')
+    await db.admin_allow.delete_one({'email': email})
+    prof = await db.profiles.find_one({'email': {'$regex': f'^{re.escape(email)}$', '$options': 'i'}}, {'_id': 0})
+    if prof:
+        if prof['id'] == a['id']:
+            raise HTTPException(400, 'You cannot remove your own admin access')
+        await db.profiles.update_one({'id': prof['id']}, {'$set': {'is_admin': False, 'role': 'user'}})
+    await audit(a, 'remove_admin', email, '')
+    return {'ok': True, 'email': email}
 
 @app.get('/api/admin/reports')
 async def admin_reports(status: str = 'open', a: dict = Depends(require_admin)):

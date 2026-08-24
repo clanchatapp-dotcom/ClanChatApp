@@ -62,3 +62,9 @@ Discussion Boards, group chats (T3 max 15), comments, 18+/NSFW + age verificatio
 - Updated in: src/lib/nativeGoogle.ts (PUBLIC_GOOGLE_WEB_CLIENT_ID), .github/workflows/android-apk.yml fallback, .env.
 - Android client (same project): 24500940599-bbuca... pkg app.clanchat.mobile SHA-1 23:C2:C4:7F:B8:6D:1B:4A:9F:5B:4F:21:20:C6:1E:F2:CD:6B:E0:9B (matches keystore in GitHub secret, verified).
 - USER TODO: add new Web client ID to Supabase Google provider Authorized Client IDs; ensure no stale GitHub secret REACT_APP_GOOGLE_WEB_CLIENT_ID overrides new value; Save to GitHub + rebuild APK.
+
+## Changelog — Admin account + admin management (this session, cont.)
+- Seeded super-admin login: admin@clanchat.app / ClanChatAdmin!2025 (env SEED_ADMIN_EMAIL/PASSWORD override on Render). is_admin + in ADMIN_EMAILS. Saved to memory/test_credentials.md.
+- DB admin allowlist (db.admin_allow); ensure_profile grants is_admin on creation if email in ADMIN_EMAILS or allowlist.
+- Endpoints: GET /api/admin/admins (admins[] with super flag + pending[]), POST /api/admin/admins (add: promote existing or allowlist), POST /api/admin/admins/remove (revoke; blocks env super-admins + self). Tested 32/32.
+- Admin panel: new "Admins" tab -> add admin by email, list admins (super badge / protected), remove, pending allowlist section.

@@ -83,6 +83,9 @@ export const api = {
   adminAudit: () => req('/admin/audit'),
   adminPromote: (email: string) => req('/admin/promote', { method: 'POST', body: j({ email }) }),
   adminPurgeDemo: (include_admin: boolean) => req('/admin/purge-demo', { method: 'POST', body: j({ include_admin }) }),
+  adminListAdmins: () => req('/admin/admins'),
+  adminAddAdmin: (email: string) => req('/admin/admins', { method: 'POST', body: j({ email }) }),
+  adminRemoveAdmin: (email: string) => req('/admin/admins/remove', { method: 'POST', body: j({ email }) }),
 }
 
 export function wsDmUrl(handle: string, token: string) {

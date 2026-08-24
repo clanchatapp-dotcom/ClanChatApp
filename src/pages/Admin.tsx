@@ -3,12 +3,13 @@ import { Navigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { timeAgo } from '../lib/ui'
-import { Shield, Flag, AlertTriangle, Users, ScrollText, Ban, Loader2, Check, Trash2, Eye, X, Lock } from 'lucide-react'
+import { Shield, Flag, AlertTriangle, Users, ScrollText, Ban, Loader2, Check, Trash2, Eye, X, Lock, UserCog, Crown } from 'lucide-react'
 
 const TABS = [
   { key: 'reports', label: 'Reports', icon: Flag },
   { key: 'csam', label: 'CSAM', icon: AlertTriangle },
   { key: 'users', label: 'Users', icon: Users },
+  { key: 'admins', label: 'Admins', icon: UserCog },
   { key: 'audit', label: 'Audit log', icon: ScrollText },
 ]
 
@@ -30,14 +31,18 @@ export default function Admin() {
   const [q, setQ] = useState('')
   const [dm, setDm] = useState<any>(null)
   const [dmLoading, setDmLoading] = useState(false)
+  const [adminsData, setAdminsData] = useState<any>({ admins: [], pending: [] })
+  const [newAdminEmail, setNewAdminEmail] = useState('')
 
   const loadStats = () => api.adminStats().then(setStats).catch(() => {})
+  const loadAdmins = async () => { try { setAdminsData(await api.adminListAdmins()) } catch {} }
   const load = async () => {
     setLoading(true)
     try {
       if (tab === 'reports') setData(await api.adminReports('open'))
       else if (tab === 'csam') setData(await api.adminCsam())
       else if (tab === 'users') setData(await api.adminUsers(q))
+      else if (tab === 'admins') { await loadAdmins(); setData([]) }
       else if (tab === 'audit') setData(await api.adminAudit())
     } catch { setData([]) } finally { setLoading(false) }
   }
@@ -63,6 +68,20 @@ export default function Admin() {
     await api.adminFlag(handle, r || 'suspicious activity'); await load(); await loadStats()
   }
   const unflag = async (handle: string) => { await api.adminUnflag(handle); await load(); await loadStats() }
+  const addAdmin = async () => {
+    const email = newAdminEmail.trim()
+    if (!email) return
+    try {
+      const r = await api.adminAddAdmin(email)
+      setNewAdminEmail(''); await loadAdmins(); await loadStats()
+      alert(r.promoted ? `${r.email} is now an admin.` : `${r.email} allowlisted — they'll become admin the moment they sign up.`)
+    } catch (e: any) { alert(e.message || 'Could not add admin') }
+  }
+  const removeAdmin = async (email: string) => {
+    if (!window.confirm(`Revoke admin access for ${email}?`)) return
+    try { await api.adminRemoveAdmin(email); await loadAdmins(); await loadStats() }
+    catch (e: any) { alert(e.message || 'Could not remove admin') }
+  }
   const [dz, setDz] = useState(false)
   const promote = async () => {
     const email = window.prompt('Enter the email address to promote to admin:', '')
@@ -122,7 +141,51 @@ export default function Admin() {
 
         {loading ? <div className="py-16 grid place-items-center text-slate-500"><Loader2 className="h-6 w-6 animate-spin" /></div> : (
           <div className="space-y-2">
-            {data.length === 0 && <p className="text-center text-slate-500 py-10">Nothing here.</p>}
+            {data.length === 0 && tab !== 'admins' && <p className="text-center text-slate-500 py-10">Nothing here.</p>}
+
+            {tab === 'admins' && (
+              <div className="space-y-4">
+                <div className="bg-panel border border-edge rounded-2xl p-4">
+                  <div className="text-sm font-medium mb-2">Add an admin by email</div>
+                  <div className="flex gap-2">
+                    <input value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} onKeyDown={e => e.key === 'Enter' && addAdmin()}
+                      placeholder="name@email.com" className="flex-1 bg-ink border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand" />
+                    <button onClick={addAdmin} className="px-4 rounded-xl bg-brand font-medium">Make admin</button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">If they already have an account they're promoted instantly; otherwise they become admin the moment they sign up.</p>
+                </div>
+
+                {adminsData.admins?.map((m: any) => (
+                  <div key={m.id} className="bg-panel border border-edge rounded-2xl p-3 flex items-center gap-3">
+                    <div className="h-9 w-9 rounded-full bg-brand/20 grid place-items-center overflow-hidden shrink-0">
+                      {m.avatar_url ? <img src={m.avatar_url} className="h-full w-full object-cover" /> : <UserCog className="h-4 w-4 text-brand" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium truncate flex items-center gap-1.5">
+                        {m.display_name || m.handle}
+                        {m.super && <span className="inline-flex items-center gap-1 text-[10px] bg-amber-500/15 text-amber-300 px-1.5 py-0.5 rounded-full"><Crown className="h-3 w-3" />super</span>}
+                      </div>
+                      <div className="text-xs text-slate-500 truncate">{m.email || `#${m.handle}`}</div>
+                    </div>
+                    {m.super
+                      ? <span className="text-xs text-slate-600">protected</span>
+                      : <button onClick={() => removeAdmin((m.email || '').toLowerCase())} className="text-rose-400 hover:bg-rose-500/10 rounded-lg px-2.5 py-1.5 text-sm flex items-center gap-1"><Trash2 className="h-4 w-4" />Remove</button>}
+                  </div>
+                ))}
+
+                {adminsData.pending?.length > 0 && (
+                  <div className="bg-panel border border-edge rounded-2xl p-3">
+                    <div className="text-xs text-slate-500 mb-2">Allowlisted (no account yet — become admin on signup)</div>
+                    {adminsData.pending.map((e: string) => (
+                      <div key={e} className="flex items-center gap-2 py-1">
+                        <span className="text-sm flex-1 truncate">{e}</span>
+                        <button onClick={() => removeAdmin(e)} className="text-rose-400 hover:bg-rose-500/10 rounded-lg px-2 py-1 text-xs">Remove</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {tab === 'reports' && data.map(r => (
               <div key={r.id} className="bg-panel border border-edge rounded-2xl p-4">
