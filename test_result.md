@@ -558,6 +558,18 @@ backend:
 
 
 frontend:
+  - task: "Mobile fit: prevent horizontal overflow / sidebar bleed on phones"
+    implemented: true
+    working: "NA"
+    file: "src/index.css, src/components/Layout.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "User reported app 'doesn't fit in the phone' with purple sidebar/nav bleeding off the right edge = horizontal overflow. Fix: global overflow-x:hidden + max-width:100% on html/body/#root, * { min-width:0 }, media max-width:100%, and Layout wrapper now w-full overflow-x-hidden. Needs verification at ~390px width across Settings/Feed/Profile/Messages that documentElement.scrollWidth <= innerWidth (no horizontal scroll)."
+
   - task: "Groups + DM unread badges + Restrict-comment badge + Phase 6 Admin UI (NSFW/Watchlist/Notes/CEOP)"
     implemented: true
     working: "NA"

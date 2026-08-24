@@ -28,7 +28,7 @@ export default function Layout() {
     `flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium transition ${active ? 'bg-brand/15 text-white border border-brand/30' : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'}`
 
   return (
-    <div className="min-h-full max-w-7xl mx-auto flex">
+    <div className="min-h-full w-full max-w-7xl mx-auto flex overflow-x-hidden">
       {/* Desktop sidebar */}
       <aside className="hidden md:flex flex-col w-64 shrink-0 h-screen sticky top-0 p-4 gap-1">
         <div className="flex items-center gap-2 px-2 py-3">

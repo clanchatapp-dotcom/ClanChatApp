@@ -31,6 +31,10 @@ html.light {
 }
 
 html, body, #root { height: 100%; }
+html, body { overflow-x: hidden; max-width: 100%; }
+#root { overflow-x: hidden; width: 100%; }
+* { min-width: 0; }
+img, video, audio, canvas, svg { max-width: 100%; }
 body {
   margin: 0;
   background:
