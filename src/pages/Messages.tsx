@@ -4,7 +4,7 @@ import { api, getToken, wsDmUrl } from '../lib/api'
 import { Avatar } from '../lib/ui'
 import { useAuth } from '../lib/auth'
 import CallModal from '../components/CallModal'
-import { Send, Phone, Video, Lock, ArrowLeft, Loader2 } from 'lucide-react'
+import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark } from 'lucide-react'
 
 export default function Messages() {
   const { handle } = useParams()
@@ -56,6 +56,9 @@ export default function Messages() {
   }
 
   const callRoom = handle && user ? `dm-${[user.handle, handle].sort().join('-')}` : ''
+  const isSelf = !!handle && handle === user?.handle
+  const selfThread = threads.find(t => t.user.handle === user?.handle)
+  const otherThreads = threads.filter(t => t.user.handle !== user?.handle)
 
   return (
     <div className="flex h-screen">
@@ -64,8 +67,17 @@ export default function Messages() {
       <div className={`${handle ? 'hidden lg:flex' : 'flex'} flex-col w-full lg:w-80 shrink-0 border-r border-edge`}>
         <div className="px-4 py-3 border-b border-edge font-extrabold text-xl">Messages</div>
         <div className="flex-1 overflow-y-auto">
-          {threads.length === 0 && <p className="text-slate-500 text-sm p-4">No conversations yet. Open someone's profile and start a chat (DMs are tier-gated).</p>}
-          {threads.map(t => (
+          {/* Me, Myself & I — Saved Messages (always pinned at top) */}
+          <button onClick={() => nav(`/messages/${user?.handle}`)}
+            className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 text-left border-b border-edge/60 ${isSelf ? 'bg-white/5' : ''}`}>
+            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-brand to-violet-600 grid place-items-center shrink-0"><Bookmark className="h-5 w-5 text-white" /></div>
+            <div className="min-w-0 flex-1">
+              <div className="font-medium truncate">Me, Myself &amp; I</div>
+              <div className="text-sm text-slate-500 truncate">{selfThread ? `${selfThread.mine ? 'You: ' : ''}${selfThread.last}` : 'Notes, links & things to remember'}</div>
+            </div>
+          </button>
+          {otherThreads.length === 0 && <p className="text-slate-500 text-sm p-4">No conversations yet. Open someone's profile and start a chat (DMs are tier-gated).</p>}
+          {otherThreads.map(t => (
             <button key={t.user.id} onClick={() => nav(`/messages/${t.user.handle}`)}
               className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 text-left ${handle === t.user.handle ? 'bg-white/5' : ''}`}>
               <Avatar id={t.user.id} name={t.user.display_name} url={t.user.avatar_url} />
@@ -86,13 +98,27 @@ export default function Messages() {
             <>
               <div className="h-16 shrink-0 border-b border-edge px-4 flex items-center gap-3">
                 <button onClick={() => nav('/messages')} className="lg:hidden"><ArrowLeft className="h-5 w-5" /></button>
-                <Avatar id={thread.peer.id} name={thread.peer.display_name} url={thread.peer.avatar_url} size={38} />
-                <div className="flex-1 min-w-0"><div className="font-semibold truncate">{thread.peer.display_name}</div><div className="text-xs text-slate-500">#{thread.peer.handle}</div></div>
+                {isSelf
+                  ? <div className="h-[38px] w-[38px] rounded-full bg-gradient-to-br from-brand to-violet-600 grid place-items-center shrink-0"><Bookmark className="h-5 w-5 text-white" /></div>
+                  : <Avatar id={thread.peer.id} name={thread.peer.display_name} url={thread.peer.avatar_url} size={38} />}
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold truncate">{isSelf ? 'Me, Myself & I' : thread.peer.display_name}</div>
+                  <div className="text-xs text-slate-500 truncate">{isSelf ? 'Your private space · only you can see this' : `#${thread.peer.handle}`}</div>
+                </div>
                 <div className="flex items-center gap-1 text-xs text-emerald-400 mr-2"><Lock className="h-3 w-3" />Encrypted</div>
-                <button onClick={() => setCall(callRoom)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Phone className="h-4 w-4" /></button>
-                <button onClick={() => setCall(callRoom)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Video className="h-4 w-4" /></button>
+                {!isSelf && <>
+                  <button onClick={() => setCall(callRoom)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Phone className="h-4 w-4" /></button>
+                  <button onClick={() => setCall(callRoom)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Video className="h-4 w-4" /></button>
+                </>}
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                {isSelf && msgs.length === 0 && (
+                  <div className="text-center text-slate-500 py-10 px-6">
+                    <Bookmark className="h-8 w-8 mx-auto mb-3 text-brand" />
+                    <div className="font-medium text-slate-300">Me, Myself &amp; I</div>
+                    <p className="text-sm mt-1">Your own private, encrypted space. Jot notes, save links, or drop reminders — only you can see them.</p>
+                  </div>
+                )}
                 {msgs.map(m => (
                   <div key={m.id} className={`flex ${m.mine ? 'justify-end' : ''}`}>
                     <div className={`max-w-[75%] rounded-2xl px-4 py-2 ${m.mine ? 'bg-gradient-to-br from-brand to-violet-600 text-white rounded-br-sm' : 'bg-white/5 border border-edge rounded-bl-sm'}`}>{m.text}</div>

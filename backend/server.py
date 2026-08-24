@@ -230,7 +230,7 @@ async def can_view(viewer: str, post: dict) -> bool:
 
 async def can_dm(viewer: str, target: str) -> bool:
     if viewer == target:
-        return False
+        return True  # "Me, Myself & I" — you can always message yourself (Saved Messages)
     if await in_inner(target, viewer) or await in_inner(viewer, target):
         return True  # Tier 3 both directions
     tp = await db.profiles.find_one({'id': target})

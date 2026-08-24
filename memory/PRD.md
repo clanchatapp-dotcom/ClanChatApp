@@ -72,3 +72,7 @@ Discussion Boards, group chats (T3 max 15), comments, 18+/NSFW + age verificatio
 ## Changelog — Change password
 - POST /api/auth/change-password {current_password,new_password}: verifies current (pbkdf2), rotates salt+hash, 400 for Google-only accounts / wrong current / <6 chars. /api/me returns has_password (self).
 - Settings: "Change password" card (current/new/confirm) shown only for email/password accounts. Tested 21/21.
+
+## Changelog — "Me, Myself & I" self-DM (Saved Messages)
+- Backend: can_dm(me,me)=True; self room dm:<id>:<id>, encrypted, isolated per user; dm_threads shows self thread. Tested 26/26.
+- Frontend (Messages): pinned "Me, Myself & I" entry at top of thread list (Bookmark icon, gradient), opens /messages/<own handle>; self view header shows "Me, Myself & I / Your private space", hides call buttons, empty-state hint. Normal threads exclude the self entry (dedup).

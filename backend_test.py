@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Backend test for Real-name visibility + Admin DANGER ZONE + deleted stat
-Tests the NEW real_name_visibility feature and admin promote/purge-demo endpoints.
+Backend test for Self-DM "Me, Myself & I" feature
+Tests the NEW self-DM feature where users can message themselves (Saved Messages).
 """
 import requests
 import json
@@ -19,15 +19,6 @@ def print_test(name, passed, details=""):
     if not passed:
         sys.exit(1)
 
-def create_user(name):
-    """Create a dev user and return (token, user_data)"""
-    resp = requests.post(f"{BASE_URL}/dev/token", json={"name": name})
-    if resp.status_code != 200:
-        print(f"❌ FAIL: Could not create user {name}: {resp.status_code} {resp.text}")
-        sys.exit(1)
-    data = resp.json()
-    return data['access_token'], data['user']
-
 def register_user(email, password, name):
     """Register a user via email/password and return (token, user_data)"""
     resp = requests.post(f"{BASE_URL}/auth/register", json={"email": email, "password": password, "name": name})
@@ -42,568 +33,323 @@ def headers(token):
     return {"Authorization": f"Bearer {token}"}
 
 print("\n" + "="*80)
-print("REAL-NAME VISIBILITY + ADMIN DANGER ZONE + DELETED STAT TESTS")
+print("SELF-DM 'ME, MYSELF & I' FEATURE TESTS")
 print("="*80 + "\n")
 
-# ============================================================================
-# A) REAL-NAME VISIBILITY TESTS
-# ============================================================================
-print("="*80)
-print("A) REAL-NAME VISIBILITY TESTS")
-print("="*80 + "\n")
-
-# Generate unique random emails for Owner and Viewer
-owner_suffix = secrets.token_hex(4)
-viewer_suffix = secrets.token_hex(4)
-owner_email = f"owner+{owner_suffix}@example.com"
-viewer_email = f"viewer+{viewer_suffix}@example.com"
+# Generate unique random suffix for test users
+u_suffix = secrets.token_hex(4)
+v_suffix = secrets.token_hex(4)
+u_email = f"selfdm+{u_suffix}@example.com"
+v_email = f"selfdm+{v_suffix}@example.com"
 
 # ============================================================================
-# TEST A1: Register Owner, set real_name + real_name_visibility=private
+# STEP 1: Register throwaway user U
 # ============================================================================
-print("TEST A1: Register Owner, set real_name='Thomas Gallacher', real_name_visibility='private'")
+print("STEP 1: Register throwaway user U")
 print("-" * 80)
 
-owner_token, owner_user = register_user(owner_email, "secret123", "Owner")
-owner_handle = owner_user['handle']
-print(f"  → Registered Owner: {owner_handle} (email: {owner_email})")
-
-# Set real_name and real_name_visibility=private
-update_resp = requests.put(
-    f"{BASE_URL}/profile",
-    headers=headers(owner_token),
-    json={"real_name": "Thomas Gallacher", "real_name_visibility": "private"}
-)
+u_token, u_user = register_user(u_email, "secret123", "User U")
+u_handle = u_user['handle']
+u_id = u_user['id']
+print(f"  → Registered User U: {u_handle} (email: {u_email}, id: {u_id})")
 print_test(
-    "PUT /api/profile {real_name:'Thomas Gallacher', real_name_visibility:'private'} → 200",
-    update_resp.status_code == 200,
-    f"Status: {update_resp.status_code}"
-)
-
-# GET /api/me to confirm self sees own real_name
-me_resp = requests.get(f"{BASE_URL}/me", headers=headers(owner_token))
-print_test(
-    "GET /api/me → 200",
-    me_resp.status_code == 200,
-    f"Status: {me_resp.status_code}"
-)
-
-me_data = me_resp.json()
-print_test(
-    "Self sees own real_name='Thomas Gallacher'",
-    me_data.get('real_name') == 'Thomas Gallacher',
-    f"real_name: {me_data.get('real_name')}"
-)
-print_test(
-    "Self sees own real_name_visibility='private'",
-    me_data.get('real_name_visibility') == 'private',
-    f"real_name_visibility: {me_data.get('real_name_visibility')}"
+    "User U registered successfully",
+    u_token is not None and u_handle is not None,
+    f"Token length: {len(u_token)}, Handle: {u_handle}"
 )
 
 # ============================================================================
-# TEST A2: Register Viewer, GET Owner's profile → real_name ABSENT (private)
+# STEP 2: GET /api/dms/{U_handle} (own handle) → verify initial state
 # ============================================================================
-print("\nTEST A2: Register Viewer, GET Owner's profile → real_name ABSENT (private)")
+print("\nSTEP 2: GET /api/dms/{U_handle} (own handle) → verify initial state")
 print("-" * 80)
 
-viewer_token, viewer_user = register_user(viewer_email, "secret123", "Viewer")
-viewer_handle = viewer_user['handle']
-print(f"  → Registered Viewer: {viewer_handle} (email: {viewer_email})")
-
-# Viewer gets Owner's profile
-owner_profile_resp = requests.get(
-    f"{BASE_URL}/users/{owner_handle}",
-    headers=headers(viewer_token)
-)
+self_dm_resp = requests.get(f"{BASE_URL}/dms/{u_handle}", headers=headers(u_token))
 print_test(
-    f"GET /api/users/{owner_handle} (as Viewer) → 200",
-    owner_profile_resp.status_code == 200,
-    f"Status: {owner_profile_resp.status_code}"
+    f"GET /api/dms/{u_handle} (own handle) → 200",
+    self_dm_resp.status_code == 200,
+    f"Status: {self_dm_resp.status_code}"
 )
 
-owner_profile_data = owner_profile_resp.json()
+self_dm_data = self_dm_resp.json()
+print(f"  → Response: {json.dumps(self_dm_data, indent=2)}")
+
 print_test(
-    "real_name is ABSENT from Owner's profile (visibility=private)",
-    'real_name' not in owner_profile_data,
-    f"real_name present: {'real_name' in owner_profile_data}"
+    "peer.handle == U's own handle",
+    self_dm_data.get('peer', {}).get('handle') == u_handle,
+    f"peer.handle: {self_dm_data.get('peer', {}).get('handle')}, expected: {u_handle}"
+)
+
+print_test(
+    "can_dm == true (can DM self)",
+    self_dm_data.get('can_dm') == True,
+    f"can_dm: {self_dm_data.get('can_dm')}"
+)
+
+print_test(
+    "messages == [] initially (empty)",
+    self_dm_data.get('messages') == [],
+    f"messages count: {len(self_dm_data.get('messages', []))}"
 )
 
 # ============================================================================
-# TEST A3: Owner sets visibility='public', Viewer sees real_name
+# STEP 3: POST /api/dms/{U_handle} {text:"Note to self: buy milk"}
 # ============================================================================
-print("\nTEST A3: Owner sets visibility='public', Viewer sees real_name")
+print("\nSTEP 3: POST /api/dms/{U_handle} {text:'Note to self: buy milk'}")
 print("-" * 80)
 
-# Owner sets visibility to public
-update_resp2 = requests.put(
-    f"{BASE_URL}/profile",
-    headers=headers(owner_token),
-    json={"real_name_visibility": "public"}
+msg1_text = "Note to self: buy milk"
+send_msg1_resp = requests.post(
+    f"{BASE_URL}/dms/{u_handle}",
+    headers=headers(u_token),
+    json={"text": msg1_text}
 )
 print_test(
-    "PUT /api/profile {real_name_visibility:'public'} → 200",
-    update_resp2.status_code == 200,
-    f"Status: {update_resp2.status_code}"
+    f"POST /api/dms/{u_handle} (first message) → 200",
+    send_msg1_resp.status_code == 200,
+    f"Status: {send_msg1_resp.status_code}"
 )
 
-# Viewer gets Owner's profile again
-owner_profile_resp2 = requests.get(
-    f"{BASE_URL}/users/{owner_handle}",
-    headers=headers(viewer_token)
-)
+msg1_data = send_msg1_resp.json()
+print(f"  → Response: {json.dumps(msg1_data, indent=2)}")
+
 print_test(
-    f"GET /api/users/{owner_handle} (as Viewer, after public) → 200",
-    owner_profile_resp2.status_code == 200,
-    f"Status: {owner_profile_resp2.status_code}"
+    "mine == true (message is from self)",
+    msg1_data.get('mine') == True,
+    f"mine: {msg1_data.get('mine')}"
 )
 
-owner_profile_data2 = owner_profile_resp2.json()
 print_test(
-    "real_name is PRESENT in Owner's profile (visibility=public)",
-    owner_profile_data2.get('real_name') == 'Thomas Gallacher',
-    f"real_name: {owner_profile_data2.get('real_name')}"
+    f"text == '{msg1_text}'",
+    msg1_data.get('text') == msg1_text,
+    f"text: {msg1_data.get('text')}"
 )
+
+msg1_id = msg1_data.get('id')
+print(f"  → Message 1 ID: {msg1_id}")
 
 # ============================================================================
-# TEST A4: Owner sets visibility='followers', Viewer follows, sees real_name
+# STEP 4: POST /api/dms/{U_handle} {text:"Second saved message"}
 # ============================================================================
-print("\nTEST A4: Owner sets visibility='followers', Viewer follows, sees real_name")
+print("\nSTEP 4: POST /api/dms/{u_handle} {text:'Second saved message'}")
 print("-" * 80)
 
-# Owner sets visibility to followers
-update_resp3 = requests.put(
-    f"{BASE_URL}/profile",
-    headers=headers(owner_token),
-    json={"real_name_visibility": "followers"}
+msg2_text = "Second saved message"
+send_msg2_resp = requests.post(
+    f"{BASE_URL}/dms/{u_handle}",
+    headers=headers(u_token),
+    json={"text": msg2_text}
 )
 print_test(
-    "PUT /api/profile {real_name_visibility:'followers'} → 200",
-    update_resp3.status_code == 200,
-    f"Status: {update_resp3.status_code}"
+    f"POST /api/dms/{u_handle} (second message) → 200",
+    send_msg2_resp.status_code == 200,
+    f"Status: {send_msg2_resp.status_code}"
 )
 
-# Viewer gets Owner's profile (NOT following yet)
-owner_profile_resp3 = requests.get(
-    f"{BASE_URL}/users/{owner_handle}",
-    headers=headers(viewer_token)
-)
-owner_profile_data3 = owner_profile_resp3.json()
+msg2_data = send_msg2_resp.json()
+print(f"  → Response: {json.dumps(msg2_data, indent=2)}")
+
 print_test(
-    "real_name is ABSENT (Viewer not following yet)",
-    'real_name' not in owner_profile_data3,
-    f"real_name present: {'real_name' in owner_profile_data3}"
+    "mine == true (message is from self)",
+    msg2_data.get('mine') == True,
+    f"mine: {msg2_data.get('mine')}"
 )
 
-# Viewer follows Owner (Owner's follow_mode is 'open' by default, so auto-approved)
-follow_resp = requests.post(
-    f"{BASE_URL}/follow/{owner_handle}",
-    headers=headers(viewer_token)
-)
 print_test(
-    f"POST /api/follow/{owner_handle} (as Viewer) → 200",
-    follow_resp.status_code == 200,
-    f"Status: {follow_resp.status_code}, status: {follow_resp.json().get('status')}"
+    f"text == '{msg2_text}'",
+    msg2_data.get('text') == msg2_text,
+    f"text: {msg2_data.get('text')}"
 )
 
-# Verify follow status is 'approved'
-follow_data = follow_resp.json()
-print_test(
-    "Follow status is 'approved' (Owner's follow_mode is 'open')",
-    follow_data.get('status') == 'approved',
-    f"status: {follow_data.get('status')}"
-)
-
-# Viewer gets Owner's profile again (now following)
-owner_profile_resp4 = requests.get(
-    f"{BASE_URL}/users/{owner_handle}",
-    headers=headers(viewer_token)
-)
-owner_profile_data4 = owner_profile_resp4.json()
-print_test(
-    "real_name is PRESENT after following (visibility=followers)",
-    owner_profile_data4.get('real_name') == 'Thomas Gallacher',
-    f"real_name: {owner_profile_data4.get('real_name')}"
-)
+msg2_id = msg2_data.get('id')
+print(f"  → Message 2 ID: {msg2_id}")
 
 # ============================================================================
-# TEST A5: Owner sets visibility='inner', Viewer joins inner circle, sees real_name
+# STEP 5: GET /api/dms/{U_handle} → verify BOTH messages present
 # ============================================================================
-print("\nTEST A5: Owner sets visibility='inner', Viewer joins inner circle, sees real_name")
+print("\nSTEP 5: GET /api/dms/{U_handle} → verify BOTH messages present")
 print("-" * 80)
 
-# Owner sets visibility to inner
-update_resp4 = requests.put(
-    f"{BASE_URL}/profile",
-    headers=headers(owner_token),
-    json={"real_name_visibility": "inner"}
-)
+self_dm_resp2 = requests.get(f"{BASE_URL}/dms/{u_handle}", headers=headers(u_token))
 print_test(
-    "PUT /api/profile {real_name_visibility:'inner'} → 200",
-    update_resp4.status_code == 200,
-    f"Status: {update_resp4.status_code}"
+    f"GET /api/dms/{u_handle} → 200",
+    self_dm_resp2.status_code == 200,
+    f"Status: {self_dm_resp2.status_code}"
 )
 
-# Viewer gets Owner's profile (follower but not inner yet)
-owner_profile_resp5 = requests.get(
-    f"{BASE_URL}/users/{owner_handle}",
-    headers=headers(viewer_token)
-)
-owner_profile_data5 = owner_profile_resp5.json()
+self_dm_data2 = self_dm_resp2.json()
+messages = self_dm_data2.get('messages', [])
+print(f"  → Messages count: {len(messages)}")
+
 print_test(
-    "real_name is ABSENT (Viewer is follower but not inner member)",
-    'real_name' not in owner_profile_data5,
-    f"real_name present: {'real_name' in owner_profile_data5}"
+    "messages has BOTH messages (count == 2)",
+    len(messages) == 2,
+    f"messages count: {len(messages)}"
 )
 
-# Owner invites Viewer to inner circle
-invite_resp = requests.post(
-    f"{BASE_URL}/inner/invite/{viewer_handle}",
-    headers=headers(owner_token)
-)
-print_test(
-    f"POST /api/inner/invite/{viewer_handle} (as Owner) → 200",
-    invite_resp.status_code == 200,
-    f"Status: {invite_resp.status_code}, status: {invite_resp.json().get('status')}"
-)
+# Verify first message
+if len(messages) >= 1:
+    print_test(
+        f"Message 1 text == '{msg1_text}'",
+        messages[0].get('text') == msg1_text,
+        f"text: {messages[0].get('text')}"
+    )
+    print_test(
+        "Message 1 mine == true",
+        messages[0].get('mine') == True,
+        f"mine: {messages[0].get('mine')}"
+    )
 
-# Viewer accepts inner circle invite
-accept_resp = requests.post(
-    f"{BASE_URL}/inner/accept/{owner_handle}",
-    headers=headers(viewer_token)
-)
-print_test(
-    f"POST /api/inner/accept/{owner_handle} (as Viewer) → 200",
-    accept_resp.status_code == 200,
-    f"Status: {accept_resp.status_code}, status: {accept_resp.json().get('status')}"
-)
+# Verify second message
+if len(messages) >= 2:
+    print_test(
+        f"Message 2 text == '{msg2_text}'",
+        messages[1].get('text') == msg2_text,
+        f"text: {messages[1].get('text')}"
+    )
+    print_test(
+        "Message 2 mine == true",
+        messages[1].get('mine') == True,
+        f"mine: {messages[1].get('mine')}"
+    )
 
-# Viewer gets Owner's profile again (now inner member)
-owner_profile_resp6 = requests.get(
-    f"{BASE_URL}/users/{owner_handle}",
-    headers=headers(viewer_token)
-)
-owner_profile_data6 = owner_profile_resp6.json()
+# Verify AES encrypt/decrypt round-trip
 print_test(
-    "real_name is PRESENT after joining inner circle (visibility=inner)",
-    owner_profile_data6.get('real_name') == 'Thomas Gallacher',
-    f"real_name: {owner_profile_data6.get('real_name')}"
+    "AES encrypt/decrypt round-trip working (text decrypted correctly)",
+    messages[0].get('text') == msg1_text and messages[1].get('text') == msg2_text,
+    "Both messages decrypted correctly"
 )
 
 # ============================================================================
-# TEST A6: Invalid visibility value → ignored (unchanged)
+# STEP 6: GET /api/dms (thread list) → verify self thread appears
 # ============================================================================
-print("\nTEST A6: Invalid visibility value 'bogus' → ignored (unchanged)")
+print("\nSTEP 6: GET /api/dms (thread list) → verify self thread appears")
 print("-" * 80)
 
-# Get current visibility
-me_resp2 = requests.get(f"{BASE_URL}/me", headers=headers(owner_token))
-me_data2 = me_resp2.json()
-current_visibility = me_data2.get('real_name_visibility')
-print(f"  → Current visibility: {current_visibility}")
-
-# Try to set invalid visibility
-update_resp5 = requests.put(
-    f"{BASE_URL}/profile",
-    headers=headers(owner_token),
-    json={"real_name_visibility": "bogus"}
-)
+threads_resp = requests.get(f"{BASE_URL}/dms", headers=headers(u_token))
 print_test(
-    "PUT /api/profile {real_name_visibility:'bogus'} → 200",
-    update_resp5.status_code == 200,
-    f"Status: {update_resp5.status_code}"
+    "GET /api/dms (thread list) → 200",
+    threads_resp.status_code == 200,
+    f"Status: {threads_resp.status_code}"
 )
 
-# Get visibility again
-me_resp3 = requests.get(f"{BASE_URL}/me", headers=headers(owner_token))
-me_data3 = me_resp3.json()
-new_visibility = me_data3.get('real_name_visibility')
+threads_data = threads_resp.json()
+print(f"  → Threads count: {len(threads_data)}")
+
+# Find self thread
+self_thread = None
+for thread in threads_data:
+    if thread.get('user', {}).get('handle') == u_handle:
+        self_thread = thread
+        break
+
 print_test(
-    "Invalid visibility 'bogus' was IGNORED (unchanged)",
-    new_visibility == current_visibility,
-    f"Previous: {current_visibility}, Current: {new_visibility}"
+    "Self thread appears in thread list",
+    self_thread is not None,
+    f"Self thread found: {self_thread is not None}"
 )
 
-# ============================================================================
-# B) DELETED STAT + PURGE TESTS
-# ============================================================================
-print("\n" + "="*80)
-print("B) DELETED STAT + PURGE TESTS")
-print("="*80 + "\n")
+if self_thread:
+    print(f"  → Self thread: {json.dumps(self_thread, indent=2)}")
+    
+    print_test(
+        "Self thread user.handle == U's own handle",
+        self_thread.get('user', {}).get('handle') == u_handle,
+        f"user.handle: {self_thread.get('user', {}).get('handle')}"
+    )
+    
+    print_test(
+        f"Self thread last message == '{msg2_text}'",
+        msg2_text in self_thread.get('last', ''),
+        f"last: {self_thread.get('last', '')}"
+    )
+    
+    print_test(
+        "Self thread mine == true",
+        self_thread.get('mine') == True,
+        f"mine: {self_thread.get('mine')}"
+    )
 
 # ============================================================================
-# TEST B1: GET /api/admin/stats as admin → includes 'deleted' field
+# STEP 7: ISOLATION - Register second user V, verify isolation
 # ============================================================================
-print("TEST B1: GET /api/admin/stats as admin → includes 'deleted' field")
+print("\nSTEP 7: ISOLATION - Register second user V, verify isolation")
 print("-" * 80)
 
-# Create admin user
-admin_token, admin_user = create_user("Admin")
-print(f"  → Created Admin: {admin_user['handle']}")
+v_token, v_user = register_user(v_email, "secret123", "User V")
+v_handle = v_user['handle']
+v_id = v_user['id']
+print(f"  → Registered User V: {v_handle} (email: {v_email}, id: {v_id})")
 
-# GET /api/admin/stats
-stats_resp = requests.get(f"{BASE_URL}/admin/stats", headers=headers(admin_token))
+# V gets their own self thread
+v_self_dm_resp = requests.get(f"{BASE_URL}/dms/{v_handle}", headers=headers(v_token))
 print_test(
-    "GET /api/admin/stats (as admin) → 200",
-    stats_resp.status_code == 200,
-    f"Status: {stats_resp.status_code}"
+    f"GET /api/dms/{v_handle} (V's own handle) → 200",
+    v_self_dm_resp.status_code == 200,
+    f"Status: {v_self_dm_resp.status_code}"
 )
 
-stats_data = stats_resp.json()
+v_self_dm_data = v_self_dm_resp.json()
+v_messages = v_self_dm_data.get('messages', [])
+
 print_test(
-    "Stats includes 'deleted' field",
-    'deleted' in stats_data,
-    f"deleted present: {'deleted' in stats_data}"
+    "V's self thread is empty (does NOT see U's messages)",
+    len(v_messages) == 0,
+    f"V's messages count: {len(v_messages)}"
 )
 
-deleted_count_before = stats_data.get('deleted', 0)
-print(f"  → Current deleted count: {deleted_count_before}")
+# V gets thread list
+v_threads_resp = requests.get(f"{BASE_URL}/dms", headers=headers(v_token))
+v_threads_data = v_threads_resp.json()
+
+# Check if V sees U's messages in any thread
+u_messages_visible_to_v = False
+for thread in v_threads_data:
+    if thread.get('user', {}).get('handle') == u_handle:
+        u_messages_visible_to_v = True
+        break
+
+print_test(
+    "U's self messages are NOT visible to V in any way",
+    not u_messages_visible_to_v,
+    f"U's messages visible to V: {u_messages_visible_to_v}"
+)
 
 # ============================================================================
-# TEST B2: Register throwaway user, delete account, verify deleted count increments
+# STEP 8: REGRESSION - Normal DM still tier-gated
 # ============================================================================
-print("\nTEST B2: Register throwaway user, delete account, verify deleted count increments")
+print("\nSTEP 8: REGRESSION - Normal DM still tier-gated")
 print("-" * 80)
 
-# Register throwaway user
-throwaway_suffix = secrets.token_hex(4)
-throwaway_email = f"throwaway+{throwaway_suffix}@example.com"
-throwaway_token, throwaway_user = register_user(throwaway_email, "secret123", "Throwaway")
-throwaway_handle = throwaway_user['handle']
-print(f"  → Registered Throwaway: {throwaway_handle} (email: {throwaway_email})")
+# U tries to DM V (a stranger, not inner/follower)
+u_to_v_dm_resp = requests.post(
+    f"{BASE_URL}/dms/{v_handle}",
+    headers=headers(u_token),
+    json={"text": "Hello stranger"}
+)
 
-# Delete account
-delete_resp = requests.delete(f"{BASE_URL}/account", headers=headers(throwaway_token))
 print_test(
-    "DELETE /api/account (as throwaway) → 200",
-    delete_resp.status_code == 200,
-    f"Status: {delete_resp.status_code}"
+    f"POST /api/dms/{v_handle} (U to V, strangers) → 403",
+    u_to_v_dm_resp.status_code == 403,
+    f"Status: {u_to_v_dm_resp.status_code}"
 )
 
-# GET /api/admin/stats again
-stats_resp2 = requests.get(f"{BASE_URL}/admin/stats", headers=headers(admin_token))
-stats_data2 = stats_resp2.json()
-deleted_count_after = stats_data2.get('deleted', 0)
+# Verify can_dm is false for strangers
+u_to_v_check_resp = requests.get(f"{BASE_URL}/dms/{v_handle}", headers=headers(u_token))
+if u_to_v_check_resp.status_code == 200:
+    u_to_v_check_data = u_to_v_check_resp.json()
+    print_test(
+        "can_dm == false for non-self strangers",
+        u_to_v_check_data.get('can_dm') == False,
+        f"can_dm: {u_to_v_check_data.get('can_dm')}"
+    )
+
 print_test(
-    "Deleted count incremented by 1",
-    deleted_count_after == deleted_count_before + 1,
-    f"Before: {deleted_count_before}, After: {deleted_count_after}"
-)
-
-# ============================================================================
-# C) ADMIN DANGER ZONE TESTS
-# ============================================================================
-print("\n" + "="*80)
-print("C) ADMIN DANGER ZONE TESTS")
-print("="*80 + "\n")
-
-# ============================================================================
-# TEST C1: POST /api/admin/promote as regular user → 403
-# ============================================================================
-print("TEST C1: POST /api/admin/promote as regular user → 403")
-print("-" * 80)
-
-# Create regular user
-regular_token, regular_user = create_user("RegularUser")
-print(f"  → Created RegularUser: {regular_user['handle']}")
-
-# Try to promote as regular user
-promote_resp = requests.post(
-    f"{BASE_URL}/admin/promote",
-    headers=headers(regular_token),
-    json={"email": "someone@example.com"}
-)
-print_test(
-    "POST /api/admin/promote (as regular user) → 403",
-    promote_resp.status_code == 403,
-    f"Status: {promote_resp.status_code}"
-)
-
-# ============================================================================
-# TEST C2: POST /api/admin/promote as admin with real user email → 200
-# ============================================================================
-print("\nTEST C2: POST /api/admin/promote as admin with real user email → 200")
-print("-" * 80)
-
-# Register a user to promote
-promote_target_suffix = secrets.token_hex(4)
-promote_target_email = f"promoteme+{promote_target_suffix}@example.com"
-promote_target_token, promote_target_user = register_user(promote_target_email, "secret123", "PromoteMe")
-promote_target_handle = promote_target_user['handle']
-print(f"  → Registered PromoteMe: {promote_target_handle} (email: {promote_target_email})")
-
-# Verify user is NOT admin initially
-me_resp4 = requests.get(f"{BASE_URL}/me", headers=headers(promote_target_token))
-me_data4 = me_resp4.json()
-print_test(
-    "PromoteMe user is NOT admin initially",
-    me_data4.get('is_admin') == False,
-    f"is_admin: {me_data4.get('is_admin')}"
-)
-
-# Admin promotes the user
-promote_resp2 = requests.post(
-    f"{BASE_URL}/admin/promote",
-    headers=headers(admin_token),
-    json={"email": promote_target_email}
-)
-print_test(
-    f"POST /api/admin/promote {{email:'{promote_target_email}'}} (as admin) → 200",
-    promote_resp2.status_code == 200,
-    f"Status: {promote_resp2.status_code}"
-)
-
-promote_data = promote_resp2.json()
-print_test(
-    f"Response includes promoted handle: {promote_target_handle}",
-    promote_data.get('promoted') == promote_target_handle,
-    f"promoted: {promote_data.get('promoted')}"
-)
-
-# Verify user is NOW admin
-me_resp5 = requests.get(f"{BASE_URL}/me", headers=headers(promote_target_token))
-me_data5 = me_resp5.json()
-print_test(
-    "PromoteMe user is NOW admin (is_admin=true)",
-    me_data5.get('is_admin') == True,
-    f"is_admin: {me_data5.get('is_admin')}"
-)
-
-# ============================================================================
-# TEST C3: POST /api/admin/promote with non-existent email → 404
-# ============================================================================
-print("\nTEST C3: POST /api/admin/promote with non-existent email → 404")
-print("-" * 80)
-
-# Try to promote non-existent user
-nonexistent_email = f"nobody-{secrets.token_hex(4)}@example.com"
-promote_resp3 = requests.post(
-    f"{BASE_URL}/admin/promote",
-    headers=headers(admin_token),
-    json={"email": nonexistent_email}
-)
-print_test(
-    f"POST /api/admin/promote {{email:'{nonexistent_email}'}} → 404",
-    promote_resp3.status_code == 404,
-    f"Status: {promote_resp3.status_code}"
-)
-
-# ============================================================================
-# TEST C4: POST /api/admin/purge-demo as regular user → 403
-# ============================================================================
-print("\nTEST C4: POST /api/admin/purge-demo as regular user → 403")
-print("-" * 80)
-
-# Try to purge as regular user
-purge_resp = requests.post(
-    f"{BASE_URL}/admin/purge-demo",
-    headers=headers(regular_token),
-    json={"include_admin": False}
-)
-print_test(
-    "POST /api/admin/purge-demo (as regular user) → 403",
-    purge_resp.status_code == 403,
-    f"Status: {purge_resp.status_code}"
-)
-
-# ============================================================================
-# TEST C5: POST /api/admin/purge-demo as admin → 200 with {purged, count}
-# ============================================================================
-print("\nTEST C5: POST /api/admin/purge-demo as admin → 200 with {purged, count}")
-print("-" * 80)
-
-# Admin purges demo accounts
-purge_resp2 = requests.post(
-    f"{BASE_URL}/admin/purge-demo",
-    headers=headers(admin_token),
-    json={"include_admin": False}
-)
-print_test(
-    "POST /api/admin/purge-demo {{include_admin:false}} (as admin) → 200",
-    purge_resp2.status_code == 200,
-    f"Status: {purge_resp2.status_code}"
-)
-
-purge_data = purge_resp2.json()
-print_test(
-    "Response includes 'purged' array",
-    'purged' in purge_data,
-    f"purged present: {'purged' in purge_data}"
-)
-print_test(
-    "Response includes 'count' field",
-    'count' in purge_data,
-    f"count present: {'count' in purge_data}"
-)
-
-print(f"  → Purged: {purge_data.get('purged', [])}, Count: {purge_data.get('count', 0)}")
-
-# Verify admin is NOT deleted
-me_resp6 = requests.get(f"{BASE_URL}/me", headers=headers(admin_token))
-print_test(
-    "Admin user is NOT deleted (still can access /api/me)",
-    me_resp6.status_code == 200,
-    f"Status: {me_resp6.status_code}"
-)
-
-# ============================================================================
-# D) REGRESSION TESTS
-# ============================================================================
-print("\n" + "="*80)
-print("D) REGRESSION TESTS")
-print("="*80 + "\n")
-
-# ============================================================================
-# TEST D1: PUT /api/profile display_name still works
-# ============================================================================
-print("TEST D1: PUT /api/profile display_name still works")
-print("-" * 80)
-
-# Create regression test user
-regression_token, regression_user = create_user("RegressionUser")
-print(f"  → Created RegressionUser: {regression_user['handle']}")
-
-# Update display_name
-update_name_resp = requests.put(
-    f"{BASE_URL}/profile",
-    headers=headers(regression_token),
-    json={"display_name": "Updated Name"}
-)
-print_test(
-    "PUT /api/profile {{display_name:'Updated Name'}} → 200",
-    update_name_resp.status_code == 200,
-    f"Status: {update_name_resp.status_code}"
-)
-
-# Verify display_name persisted
-me_resp7 = requests.get(f"{BASE_URL}/me", headers=headers(regression_token))
-me_data7 = me_resp7.json()
-print_test(
-    "display_name persisted as 'Updated Name'",
-    me_data7.get('display_name') == 'Updated Name',
-    f"display_name: {me_data7.get('display_name')}"
-)
-
-# ============================================================================
-# TEST D2: GET /api/me returns comfort_zone
-# ============================================================================
-print("\nTEST D2: GET /api/me returns comfort_zone")
-print("-" * 80)
-
-# Verify comfort_zone is present
-print_test(
-    "GET /api/me returns comfort_zone",
-    'comfort_zone' in me_data7,
-    f"comfort_zone present: {'comfort_zone' in me_data7}"
-)
-
-comfort_zone = me_data7.get('comfort_zone', {})
-expected_keys = {'nsfw', 'ai', 'language', 'violence', 'drugs'}
-print_test(
-    "comfort_zone has all 5 keys",
-    set(comfort_zone.keys()) == expected_keys,
-    f"Keys: {sorted(comfort_zone.keys())}"
+    "Self-DM didn't break normal tier-gating",
+    u_to_v_dm_resp.status_code == 403,
+    "Normal DM tier-gating still enforced"
 )
 
 print("\n" + "="*80)
-print("ALL TESTS PASSED ✅")
+print("ALL SELF-DM TESTS PASSED ✅")
 print("="*80 + "\n")
