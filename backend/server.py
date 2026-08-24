@@ -18,6 +18,7 @@ from fastapi import (
     WebSocket, WebSocketDisconnect,
 )
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -143,8 +144,11 @@ async def email_is_allowlisted(email: Optional[str]) -> bool:
         return False
     return bool(await db.admin_allow.find_one({'email': email.strip().lower()}))
 
-client = AsyncIOMotorClient(MONGO_URL)
+client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=8000, connectTimeoutMS=8000)
 db = client[DB_NAME]
+if MONGO_URL.startswith('mongodb://localhost'):
+    log.warning('MONGO_URL is not set — falling back to localhost. On Render this WILL fail; '
+                'set MONGO_URL to your Atlas URI and allowlist 0.0.0.0/0 in Atlas Network Access.')
 
 app = FastAPI(title='ClanChat API')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_credentials=False,
@@ -604,6 +608,21 @@ async def _bootstrap():
 @app.get('/api/')
 async def root():
     return {'ok': True, 'service': 'clanchat', 'time': datetime.now(timezone.utc).isoformat()}
+
+@app.get('/api/health/db')
+async def health_db():
+    """Quick DB connectivity probe — open this URL to see if the backend can reach Mongo.
+    Never leaks the connection string; only reports reachability + which host type."""
+    configured = not MONGO_URL.startswith('mongodb://localhost')
+    try:
+        await client.admin.command('ping')
+        return {'db': 'ok', 'mongo_url_configured': configured, 'db_name': DB_NAME}
+    except Exception as e:
+        return JSONResponse(status_code=503, content={
+            'db': 'unreachable', 'mongo_url_configured': configured, 'db_name': DB_NAME,
+            'hint': ('MONGO_URL is not set on this service — set it to your Atlas URI.' if not configured
+                     else 'MONGO_URL is set but the database is unreachable — check the Atlas IP allowlist (add 0.0.0.0/0) and the credentials.'),
+            'error': str(e)[:200]})
 
 def mint_token(uid: str, email: str, name: str) -> str:
     now = int(time.time())
