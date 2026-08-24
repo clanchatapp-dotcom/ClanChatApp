@@ -21,6 +21,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorClient
+import asyncio
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from livekit import api as lk_api
 from pathlib import Path
@@ -552,6 +553,13 @@ async def upload_and_sign(path: str, content: bytes, content_type: str,
 
 @app.on_event('startup')
 async def startup():
+    # Run one-time bootstrap (seeding, bucket, admin) in the BACKGROUND so the
+    # server starts accepting requests immediately. This keeps cold-start
+    # time-to-first-response fast — login no longer waits on Supabase/DB seeding.
+    asyncio.create_task(_bootstrap())
+
+
+async def _bootstrap():
     sys_id = 'system-clanchat'
     try:
         if not await db.profiles.find_one({'id': sys_id}):

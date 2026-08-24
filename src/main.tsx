@@ -5,9 +5,13 @@ import '@livekit/components-styles'
 import App from './App'
 import { AuthProvider } from './lib/auth'
 import { initGoogle } from './lib/nativeGoogle'
+import { warmup } from './lib/api'
 import './index.css'
 
 initGoogle().catch(() => {})
+// Kick the backend awake the instant the app's JS loads (before React/auth even
+// mounts), so a cold Render instance is already booting while the UI paints.
+warmup()
 
 // Visible fallback so a startup crash (bad config, JS error) is never a silent
 // black screen — critical for the Android WebView where there's no dev console.
