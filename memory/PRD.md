@@ -76,3 +76,8 @@ Discussion Boards, group chats (T3 max 15), comments, 18+/NSFW + age verificatio
 ## Changelog — "Me, Myself & I" self-DM (Saved Messages)
 - Backend: can_dm(me,me)=True; self room dm:<id>:<id>, encrypted, isolated per user; dm_threads shows self thread. Tested 26/26.
 - Frontend (Messages): pinned "Me, Myself & I" entry at top of thread list (Bookmark icon, gradient), opens /messages/<own handle>; self view header shows "Me, Myself & I / Your private space", hides call buttons, empty-state hint. Normal threads exclude the self entry (dedup).
+
+## Changelog — Login hang fix (Render cold start)
+- ROOT CAUSE of APK "Please wait..." hang: Render free-tier COLD START (~35s; backend returned HTTP 000 then 200 after 35s) + api.ts req() had no timeout -> button hung forever.
+- FIX: api.ts req() now uses 60s AbortController timeout + friendly errors ("server waking up" / "could not reach server"). Verified backend login 21/21, avg 0.195s, seeded admin login OK.
+- USER DEPLOY TODO for full resolution: (1) Save to GitHub so Render redeploys (creates seeded admin@clanchat.app on Atlas + carries all new features); (2) consider Render paid tier to avoid ~35s cold starts; (3) Google [16]: rebuild APK (bakes new webClientId 24500940599-ps9ka...) + add that Web client ID to Supabase > Auth > Providers > Google > Authorized Client IDs + ensure Android client 24500940599-bbuca (pkg app.clanchat.mobile, SHA-1 23:C2...) exists.

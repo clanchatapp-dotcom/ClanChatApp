@@ -28,7 +28,21 @@ async function req(path: string, opts: RequestInit = {}) {
   const headers: Record<string, string> = { ...(opts.headers as any) }
   if (token) headers['Authorization'] = `Bearer ${token}`
   if (opts.body && !(opts.body instanceof FormData)) headers['Content-Type'] = 'application/json'
-  const res = await fetch(`${API_BASE}/api${path}`, { ...opts, headers })
+  // Bounded timeout so a slow/asleep backend (e.g. Render free-tier cold start,
+  // which can take ~30-40s) fails with a clear message instead of hanging forever.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 60000)
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}/api${path}`, { ...opts, headers, signal: controller.signal })
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      throw new Error('The server is taking too long to respond — it may be waking up. Please try again in a moment.')
+    }
+    throw new Error('Could not reach the server. Check your connection and try again.')
+  } finally {
+    clearTimeout(timer)
+  }
   if (!res.ok) {
     let d = res.statusText
     try { d = (await res.json()).detail || d } catch {}

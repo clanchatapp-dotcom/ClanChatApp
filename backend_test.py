@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Backend test for Self-DM "Me, Myself & I" feature
-Tests the NEW self-DM feature where users can message themselves (Saved Messages).
+Backend test for Login Verification (email/password + seeded admin)
+Tests login endpoints after request-timeout client fix to ensure NO regression.
 """
 import requests
 import json
 import sys
 import secrets
+import time
 
 # Base URL from .env
 BASE_URL = "https://auth-consolidation-3.preview.emergentagent.com/api"
@@ -19,337 +20,298 @@ def print_test(name, passed, details=""):
     if not passed:
         sys.exit(1)
 
-def register_user(email, password, name):
-    """Register a user via email/password and return (token, user_data)"""
-    resp = requests.post(f"{BASE_URL}/auth/register", json={"email": email, "password": password, "name": name})
-    if resp.status_code != 200:
-        print(f"❌ FAIL: Could not register user {email}: {resp.status_code} {resp.text}")
-        sys.exit(1)
-    data = resp.json()
-    return data['access_token'], data['user']
-
-def headers(token):
-    """Return auth headers"""
-    return {"Authorization": f"Bearer {token}"}
-
 print("\n" + "="*80)
-print("SELF-DM 'ME, MYSELF & I' FEATURE TESTS")
+print("LOGIN VERIFICATION TESTS (email/password + seeded admin)")
 print("="*80 + "\n")
 
-# Generate unique random suffix for test users
-u_suffix = secrets.token_hex(4)
-v_suffix = secrets.token_hex(4)
-u_email = f"selfdm+{u_suffix}@example.com"
-v_email = f"selfdm+{v_suffix}@example.com"
-
 # ============================================================================
-# STEP 1: Register throwaway user U
+# TEST 1: Seeded super-admin login
 # ============================================================================
-print("STEP 1: Register throwaway user U")
+print("TEST 1: Seeded super-admin login")
 print("-" * 80)
 
-u_token, u_user = register_user(u_email, "secret123", "User U")
-u_handle = u_user['handle']
-u_id = u_user['id']
-print(f"  → Registered User U: {u_handle} (email: {u_email}, id: {u_id})")
+# Step 1a: POST /api/auth/login with seeded admin credentials
+admin_email = "admin@clanchat.app"
+admin_password = "ClanChatAdmin!2025"
+
+start_time = time.time()
+admin_login_resp = requests.post(
+    f"{BASE_URL}/auth/login",
+    json={"email": admin_email, "password": admin_password}
+)
+admin_login_time = time.time() - start_time
+
+print(f"  → POST /api/auth/login (admin) took {admin_login_time:.3f}s")
+
 print_test(
-    "User U registered successfully",
-    u_token is not None and u_handle is not None,
-    f"Token length: {len(u_token)}, Handle: {u_handle}"
+    "POST /api/auth/login (seeded admin) → 200",
+    admin_login_resp.status_code == 200,
+    f"Status: {admin_login_resp.status_code}, Response: {admin_login_resp.text[:200]}"
+)
+
+admin_login_data = admin_login_resp.json()
+admin_token = admin_login_data.get('access_token')
+
+print_test(
+    "Response contains access_token",
+    admin_token is not None and len(admin_token) > 0,
+    f"Token length: {len(admin_token) if admin_token else 0}"
+)
+
+# Step 1b: GET /api/me with admin token
+start_time = time.time()
+admin_me_resp = requests.get(
+    f"{BASE_URL}/me",
+    headers={"Authorization": f"Bearer {admin_token}"}
+)
+admin_me_time = time.time() - start_time
+
+print(f"  → GET /api/me (admin) took {admin_me_time:.3f}s")
+
+print_test(
+    "GET /api/me (with admin token) → 200",
+    admin_me_resp.status_code == 200,
+    f"Status: {admin_me_resp.status_code}"
+)
+
+admin_me_data = admin_me_resp.json()
+print(f"  → Admin profile: handle={admin_me_data.get('handle')}, is_admin={admin_me_data.get('is_admin')}")
+
+print_test(
+    "is_admin == true",
+    admin_me_data.get('is_admin') == True,
+    f"is_admin: {admin_me_data.get('is_admin')}"
+)
+
+print_test(
+    "Admin login response time < 1 second",
+    admin_login_time < 1.0,
+    f"Login took {admin_login_time:.3f}s"
 )
 
 # ============================================================================
-# STEP 2: GET /api/dms/{U_handle} (own handle) → verify initial state
+# TEST 2: Wrong password
 # ============================================================================
-print("\nSTEP 2: GET /api/dms/{U_handle} (own handle) → verify initial state")
+print("\nTEST 2: Wrong password")
 print("-" * 80)
 
-self_dm_resp = requests.get(f"{BASE_URL}/dms/{u_handle}", headers=headers(u_token))
-print_test(
-    f"GET /api/dms/{u_handle} (own handle) → 200",
-    self_dm_resp.status_code == 200,
-    f"Status: {self_dm_resp.status_code}"
-)
-
-self_dm_data = self_dm_resp.json()
-print(f"  → Response: {json.dumps(self_dm_data, indent=2)}")
-
-print_test(
-    "peer.handle == U's own handle",
-    self_dm_data.get('peer', {}).get('handle') == u_handle,
-    f"peer.handle: {self_dm_data.get('peer', {}).get('handle')}, expected: {u_handle}"
+wrong_pw_resp = requests.post(
+    f"{BASE_URL}/auth/login",
+    json={"email": admin_email, "password": "wrongwrong"}
 )
 
 print_test(
-    "can_dm == true (can DM self)",
-    self_dm_data.get('can_dm') == True,
-    f"can_dm: {self_dm_data.get('can_dm')}"
+    "POST /api/auth/login (wrong password) → 401",
+    wrong_pw_resp.status_code == 401,
+    f"Status: {wrong_pw_resp.status_code}"
 )
 
-print_test(
-    "messages == [] initially (empty)",
-    self_dm_data.get('messages') == [],
-    f"messages count: {len(self_dm_data.get('messages', []))}"
-)
-
-# ============================================================================
-# STEP 3: POST /api/dms/{U_handle} {text:"Note to self: buy milk"}
-# ============================================================================
-print("\nSTEP 3: POST /api/dms/{U_handle} {text:'Note to self: buy milk'}")
-print("-" * 80)
-
-msg1_text = "Note to self: buy milk"
-send_msg1_resp = requests.post(
-    f"{BASE_URL}/dms/{u_handle}",
-    headers=headers(u_token),
-    json={"text": msg1_text}
-)
-print_test(
-    f"POST /api/dms/{u_handle} (first message) → 200",
-    send_msg1_resp.status_code == 200,
-    f"Status: {send_msg1_resp.status_code}"
-)
-
-msg1_data = send_msg1_resp.json()
-print(f"  → Response: {json.dumps(msg1_data, indent=2)}")
-
-print_test(
-    "mine == true (message is from self)",
-    msg1_data.get('mine') == True,
-    f"mine: {msg1_data.get('mine')}"
-)
-
-print_test(
-    f"text == '{msg1_text}'",
-    msg1_data.get('text') == msg1_text,
-    f"text: {msg1_data.get('text')}"
-)
-
-msg1_id = msg1_data.get('id')
-print(f"  → Message 1 ID: {msg1_id}")
-
-# ============================================================================
-# STEP 4: POST /api/dms/{U_handle} {text:"Second saved message"}
-# ============================================================================
-print("\nSTEP 4: POST /api/dms/{u_handle} {text:'Second saved message'}")
-print("-" * 80)
-
-msg2_text = "Second saved message"
-send_msg2_resp = requests.post(
-    f"{BASE_URL}/dms/{u_handle}",
-    headers=headers(u_token),
-    json={"text": msg2_text}
-)
-print_test(
-    f"POST /api/dms/{u_handle} (second message) → 200",
-    send_msg2_resp.status_code == 200,
-    f"Status: {send_msg2_resp.status_code}"
-)
-
-msg2_data = send_msg2_resp.json()
-print(f"  → Response: {json.dumps(msg2_data, indent=2)}")
-
-print_test(
-    "mine == true (message is from self)",
-    msg2_data.get('mine') == True,
-    f"mine: {msg2_data.get('mine')}"
-)
-
-print_test(
-    f"text == '{msg2_text}'",
-    msg2_data.get('text') == msg2_text,
-    f"text: {msg2_data.get('text')}"
-)
-
-msg2_id = msg2_data.get('id')
-print(f"  → Message 2 ID: {msg2_id}")
-
-# ============================================================================
-# STEP 5: GET /api/dms/{U_handle} → verify BOTH messages present
-# ============================================================================
-print("\nSTEP 5: GET /api/dms/{U_handle} → verify BOTH messages present")
-print("-" * 80)
-
-self_dm_resp2 = requests.get(f"{BASE_URL}/dms/{u_handle}", headers=headers(u_token))
-print_test(
-    f"GET /api/dms/{u_handle} → 200",
-    self_dm_resp2.status_code == 200,
-    f"Status: {self_dm_resp2.status_code}"
-)
-
-self_dm_data2 = self_dm_resp2.json()
-messages = self_dm_data2.get('messages', [])
-print(f"  → Messages count: {len(messages)}")
-
-print_test(
-    "messages has BOTH messages (count == 2)",
-    len(messages) == 2,
-    f"messages count: {len(messages)}"
-)
-
-# Verify first message
-if len(messages) >= 1:
-    print_test(
-        f"Message 1 text == '{msg1_text}'",
-        messages[0].get('text') == msg1_text,
-        f"text: {messages[0].get('text')}"
-    )
-    print_test(
-        "Message 1 mine == true",
-        messages[0].get('mine') == True,
-        f"mine: {messages[0].get('mine')}"
-    )
-
-# Verify second message
-if len(messages) >= 2:
-    print_test(
-        f"Message 2 text == '{msg2_text}'",
-        messages[1].get('text') == msg2_text,
-        f"text: {messages[1].get('text')}"
-    )
-    print_test(
-        "Message 2 mine == true",
-        messages[1].get('mine') == True,
-        f"mine: {messages[1].get('mine')}"
-    )
-
-# Verify AES encrypt/decrypt round-trip
-print_test(
-    "AES encrypt/decrypt round-trip working (text decrypted correctly)",
-    messages[0].get('text') == msg1_text and messages[1].get('text') == msg2_text,
-    "Both messages decrypted correctly"
-)
-
-# ============================================================================
-# STEP 6: GET /api/dms (thread list) → verify self thread appears
-# ============================================================================
-print("\nSTEP 6: GET /api/dms (thread list) → verify self thread appears")
-print("-" * 80)
-
-threads_resp = requests.get(f"{BASE_URL}/dms", headers=headers(u_token))
-print_test(
-    "GET /api/dms (thread list) → 200",
-    threads_resp.status_code == 200,
-    f"Status: {threads_resp.status_code}"
-)
-
-threads_data = threads_resp.json()
-print(f"  → Threads count: {len(threads_data)}")
-
-# Find self thread
-self_thread = None
-for thread in threads_data:
-    if thread.get('user', {}).get('handle') == u_handle:
-        self_thread = thread
-        break
-
-print_test(
-    "Self thread appears in thread list",
-    self_thread is not None,
-    f"Self thread found: {self_thread is not None}"
-)
-
-if self_thread:
-    print(f"  → Self thread: {json.dumps(self_thread, indent=2)}")
+if wrong_pw_resp.status_code == 401:
+    wrong_pw_data = wrong_pw_resp.json()
+    error_detail = wrong_pw_data.get('detail', '')
+    print(f"  → Error detail: {error_detail}")
     
     print_test(
-        "Self thread user.handle == U's own handle",
-        self_thread.get('user', {}).get('handle') == u_handle,
-        f"user.handle: {self_thread.get('user', {}).get('handle')}"
-    )
-    
-    print_test(
-        f"Self thread last message == '{msg2_text}'",
-        msg2_text in self_thread.get('last', ''),
-        f"last: {self_thread.get('last', '')}"
-    )
-    
-    print_test(
-        "Self thread mine == true",
-        self_thread.get('mine') == True,
-        f"mine: {self_thread.get('mine')}"
+        "Error message contains 'Invalid email or password'",
+        'Invalid email or password' in error_detail,
+        f"Detail: {error_detail}"
     )
 
 # ============================================================================
-# STEP 7: ISOLATION - Register second user V, verify isolation
+# TEST 3: Fresh register + login
 # ============================================================================
-print("\nSTEP 7: ISOLATION - Register second user V, verify isolation")
+print("\nTEST 3: Fresh register + login")
 print("-" * 80)
 
-v_token, v_user = register_user(v_email, "secret123", "User V")
-v_handle = v_user['handle']
-v_id = v_user['id']
-print(f"  → Registered User V: {v_handle} (email: {v_email}, id: {v_id})")
+# Generate unique random email
+rand_suffix = secrets.token_hex(4)
+fresh_email = f"loginqa+{rand_suffix}@example.com"
+fresh_password = "secret123"
+fresh_name = "Login QA"
 
-# V gets their own self thread
-v_self_dm_resp = requests.get(f"{BASE_URL}/dms/{v_handle}", headers=headers(v_token))
+print(f"  → Testing with email: {fresh_email}")
+
+# Step 3a: POST /api/auth/register
+start_time = time.time()
+register_resp = requests.post(
+    f"{BASE_URL}/auth/register",
+    json={"email": fresh_email, "password": fresh_password, "name": fresh_name}
+)
+register_time = time.time() - start_time
+
+print(f"  → POST /api/auth/register took {register_time:.3f}s")
+
 print_test(
-    f"GET /api/dms/{v_handle} (V's own handle) → 200",
-    v_self_dm_resp.status_code == 200,
-    f"Status: {v_self_dm_resp.status_code}"
+    "POST /api/auth/register → 200",
+    register_resp.status_code == 200,
+    f"Status: {register_resp.status_code}, Response: {register_resp.text[:200]}"
 )
 
-v_self_dm_data = v_self_dm_resp.json()
-v_messages = v_self_dm_data.get('messages', [])
+register_data = register_resp.json()
+register_token = register_data.get('access_token')
 
 print_test(
-    "V's self thread is empty (does NOT see U's messages)",
-    len(v_messages) == 0,
-    f"V's messages count: {len(v_messages)}"
+    "Register response contains access_token",
+    register_token is not None and len(register_token) > 0,
+    f"Token length: {len(register_token) if register_token else 0}"
 )
 
-# V gets thread list
-v_threads_resp = requests.get(f"{BASE_URL}/dms", headers=headers(v_token))
-v_threads_data = v_threads_resp.json()
-
-# Check if V sees U's messages in any thread
-u_messages_visible_to_v = False
-for thread in v_threads_data:
-    if thread.get('user', {}).get('handle') == u_handle:
-        u_messages_visible_to_v = True
-        break
+# Step 3b: GET /api/me with registration token
+me_resp = requests.get(
+    f"{BASE_URL}/me",
+    headers={"Authorization": f"Bearer {register_token}"}
+)
 
 print_test(
-    "U's self messages are NOT visible to V in any way",
-    not u_messages_visible_to_v,
-    f"U's messages visible to V: {u_messages_visible_to_v}"
+    "GET /api/me (with registration token) → 200",
+    me_resp.status_code == 200,
+    f"Status: {me_resp.status_code}"
+)
+
+me_data = me_resp.json()
+print(f"  → User profile: handle={me_data.get('handle')}, display_name={me_data.get('display_name')}")
+
+# Step 3c: POST /api/auth/login with same credentials
+start_time = time.time()
+login_resp = requests.post(
+    f"{BASE_URL}/auth/login",
+    json={"email": fresh_email, "password": fresh_password}
+)
+login_time = time.time() - start_time
+
+print(f"  → POST /api/auth/login took {login_time:.3f}s")
+
+print_test(
+    "POST /api/auth/login (fresh user) → 200",
+    login_resp.status_code == 200,
+    f"Status: {login_resp.status_code}"
+)
+
+login_data = login_resp.json()
+login_token = login_data.get('access_token')
+
+print_test(
+    "Login response contains access_token",
+    login_token is not None and len(login_token) > 0,
+    f"Token length: {len(login_token) if login_token else 0}"
+)
+
+print_test(
+    "Register response time < 1 second",
+    register_time < 1.0,
+    f"Register took {register_time:.3f}s"
+)
+
+print_test(
+    "Login response time < 1 second",
+    login_time < 1.0,
+    f"Login took {login_time:.3f}s"
 )
 
 # ============================================================================
-# STEP 8: REGRESSION - Normal DM still tier-gated
+# TEST 4: Unknown email
 # ============================================================================
-print("\nSTEP 8: REGRESSION - Normal DM still tier-gated")
+print("\nTEST 4: Unknown email")
 print("-" * 80)
 
-# U tries to DM V (a stranger, not inner/follower)
-u_to_v_dm_resp = requests.post(
-    f"{BASE_URL}/dms/{v_handle}",
-    headers=headers(u_token),
-    json={"text": "Hello stranger"}
+unknown_suffix = secrets.token_hex(4)
+unknown_email = f"nobody-{unknown_suffix}@example.com"
+unknown_password = "whatever1"
+
+print(f"  → Testing with unknown email: {unknown_email}")
+
+unknown_resp = requests.post(
+    f"{BASE_URL}/auth/login",
+    json={"email": unknown_email, "password": unknown_password}
 )
 
 print_test(
-    f"POST /api/dms/{v_handle} (U to V, strangers) → 403",
-    u_to_v_dm_resp.status_code == 403,
-    f"Status: {u_to_v_dm_resp.status_code}"
+    "POST /api/auth/login (unknown email) → 401",
+    unknown_resp.status_code == 401,
+    f"Status: {unknown_resp.status_code}"
 )
 
-# Verify can_dm is false for strangers
-u_to_v_check_resp = requests.get(f"{BASE_URL}/dms/{v_handle}", headers=headers(u_token))
-if u_to_v_check_resp.status_code == 200:
-    u_to_v_check_data = u_to_v_check_resp.json()
+if unknown_resp.status_code == 401:
+    unknown_data = unknown_resp.json()
+    error_detail = unknown_data.get('detail', '')
+    print(f"  → Error detail: {error_detail}")
+    
     print_test(
-        "can_dm == false for non-self strangers",
-        u_to_v_check_data.get('can_dm') == False,
-        f"can_dm: {u_to_v_check_data.get('can_dm')}"
+        "Error message contains 'Invalid email or password'",
+        'Invalid email or password' in error_detail,
+        f"Detail: {error_detail}"
     )
 
+# ============================================================================
+# TEST 5: /api/me with no token and malformed token
+# ============================================================================
+print("\nTEST 5: /api/me with no token and malformed token")
+print("-" * 80)
+
+# Step 5a: GET /api/me with no token
+no_token_resp = requests.get(f"{BASE_URL}/me")
+
 print_test(
-    "Self-DM didn't break normal tier-gating",
-    u_to_v_dm_resp.status_code == 403,
-    "Normal DM tier-gating still enforced"
+    "GET /api/me (no token) → 401",
+    no_token_resp.status_code == 401,
+    f"Status: {no_token_resp.status_code}"
+)
+
+# Step 5b: GET /api/me with malformed token
+malformed_token = "this-is-not-a-valid-jwt-token"
+malformed_resp = requests.get(
+    f"{BASE_URL}/me",
+    headers={"Authorization": f"Bearer {malformed_token}"}
+)
+
+print_test(
+    "GET /api/me (malformed token) → 401",
+    malformed_resp.status_code == 401,
+    f"Status: {malformed_resp.status_code}"
+)
+
+# Step 5c: GET /api/me with invalid JWT format
+invalid_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid.signature"
+invalid_resp = requests.get(
+    f"{BASE_URL}/me",
+    headers={"Authorization": f"Bearer {invalid_jwt}"}
+)
+
+print_test(
+    "GET /api/me (invalid JWT) → 401",
+    invalid_resp.status_code == 401,
+    f"Status: {invalid_resp.status_code}"
+)
+
+# ============================================================================
+# TEST 6: Response time summary
+# ============================================================================
+print("\nTEST 6: Response time summary")
+print("-" * 80)
+
+print(f"  → Admin login: {admin_login_time:.3f}s")
+print(f"  → Admin /me: {admin_me_time:.3f}s")
+print(f"  → Fresh register: {register_time:.3f}s")
+print(f"  → Fresh login: {login_time:.3f}s")
+
+avg_time = (admin_login_time + admin_me_time + register_time + login_time) / 4
+
+print_test(
+    "Average response time < 1 second",
+    avg_time < 1.0,
+    f"Average: {avg_time:.3f}s (well under 1 second, rules out server-side slowness)"
 )
 
 print("\n" + "="*80)
-print("ALL SELF-DM TESTS PASSED ✅")
+print("ALL LOGIN VERIFICATION TESTS PASSED ✅")
 print("="*80 + "\n")
+
+print("SUMMARY:")
+print("  ✅ Seeded super-admin login working (admin@clanchat.app)")
+print("  ✅ Wrong password correctly returns 401")
+print("  ✅ Fresh register + login round-trip working")
+print("  ✅ Unknown email correctly returns 401")
+print("  ✅ /api/me with no token → 401")
+print("  ✅ /api/me with malformed token → 401")
+print("  ✅ Response times fast (< 1s), no server-side slowness")
+print("\nCONCLUSION: NO REGRESSION detected. Login endpoints working correctly.")
