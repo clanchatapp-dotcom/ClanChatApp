@@ -47,6 +47,7 @@ export const api = {
   me: () => req('/me'),
   updateProfile: (b: any) => req('/profile', { method: 'PUT', body: j(b) }),
   deleteAccount: () => req('/account', { method: 'DELETE' }),
+  changePassword: (current_password: string, new_password: string) => req('/auth/change-password', { method: 'POST', body: j({ current_password, new_password }) }),
   getUser: (h: string) => req(`/users/${h}`),
   getUserPosts: (h: string) => req(`/users/${h}/posts`),
   follow: (h: string) => req(`/follow/${h}`, { method: 'POST' }),

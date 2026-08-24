@@ -269,6 +269,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         out['real_name'] = prof.get('real_name')
         out['real_name_visibility'] = prof.get('real_name_visibility', 'private')
         out['email'] = prof.get('email')
+        out['has_password'] = bool(await db.auth.find_one({'user_id': prof['id']}))
         out['followers_count'] = followers_count  # private: owner only
         out['is_admin'] = is_admin_user(prof)
         out['strikes'] = prof.get('strikes', 0)
@@ -314,6 +315,10 @@ class EmailAuth(BaseModel):
     email: str
     password: str
     name: Optional[str] = None
+
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str
 
 class ProfileUpdate(BaseModel):
     display_name: Optional[str] = None
@@ -492,6 +497,21 @@ async def auth_login(body: EmailAuth):
 @app.get('/api/me')
 async def me(u: dict = Depends(get_current_user)):
     return await public_profile(u, u['id'])
+
+
+@app.post('/api/auth/change-password')
+async def change_password(body: ChangePassword, u: dict = Depends(get_current_user)):
+    """Change the password for an email/password account."""
+    rec = await db.auth.find_one({'user_id': u['id']})
+    if not rec:
+        raise HTTPException(400, 'This account signs in with Google, so it has no password to change')
+    if not hmac.compare_digest(rec['hash'], _pw_hash(body.current_password or '', rec['salt'])):
+        raise HTTPException(400, 'Current password is incorrect')
+    if not body.new_password or len(body.new_password) < 6:
+        raise HTTPException(400, 'New password must be at least 6 characters')
+    salt = secrets.token_hex(16)
+    await db.auth.update_one({'user_id': u['id']}, {'$set': {'salt': salt, 'hash': _pw_hash(body.new_password, salt)}})
+    return {'ok': True}
 
 @app.put('/api/profile')
 async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user)):

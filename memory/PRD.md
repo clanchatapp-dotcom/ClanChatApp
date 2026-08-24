@@ -68,3 +68,7 @@ Discussion Boards, group chats (T3 max 15), comments, 18+/NSFW + age verificatio
 - DB admin allowlist (db.admin_allow); ensure_profile grants is_admin on creation if email in ADMIN_EMAILS or allowlist.
 - Endpoints: GET /api/admin/admins (admins[] with super flag + pending[]), POST /api/admin/admins (add: promote existing or allowlist), POST /api/admin/admins/remove (revoke; blocks env super-admins + self). Tested 32/32.
 - Admin panel: new "Admins" tab -> add admin by email, list admins (super badge / protected), remove, pending allowlist section.
+
+## Changelog — Change password
+- POST /api/auth/change-password {current_password,new_password}: verifies current (pbkdf2), rotates salt+hash, 400 for Google-only accounts / wrong current / <6 chars. /api/me returns has_password (self).
+- Settings: "Change password" card (current/new/confirm) shown only for email/password accounts. Tested 21/21.

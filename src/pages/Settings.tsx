@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, User as UserIcon, AlertTriangle, Lock, Flame, Sparkles, MessageSquare, Swords, Pill, Eye } from 'lucide-react'
+import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, User as UserIcon, AlertTriangle, Lock, Flame, Sparkles, MessageSquare, Swords, Pill, Eye, KeyRound } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Avatar } from '../lib/ui'
@@ -38,6 +38,10 @@ export default function Settings() {
   const [savedName, setSavedName] = useState(false)
   const [realName, setRealName] = useState('')
   const [savedRN, setSavedRN] = useState(false)
+  const [curPw, setCurPw] = useState('')
+  const [newPw, setNewPw] = useState('')
+  const [confPw, setConfPw] = useState('')
+  const [pwMsg, setPwMsg] = useState<{ ok?: boolean; text: string } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmText, setConfirmText] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -85,6 +89,16 @@ export default function Settings() {
     try { await api.deleteAccount() } catch {}
     await logout()
     nav('/', { replace: true })
+  }
+
+  const changePw = async () => {
+    setPwMsg(null)
+    if (newPw.length < 6) { setPwMsg({ text: 'New password must be at least 6 characters' }); return }
+    if (newPw !== confPw) { setPwMsg({ text: 'New passwords do not match' }); return }
+    setSaving('password')
+    try { await api.changePassword(curPw, newPw); setPwMsg({ ok: true, text: 'Password updated' }); setCurPw(''); setNewPw(''); setConfPw('') }
+    catch (e: any) { setPwMsg({ text: e.message || 'Could not change password' }) }
+    setSaving(null)
   }
 
   if (loading) return <div className="h-full grid place-items-center py-20"><Loader2 className="h-6 w-6 animate-spin text-slate-500" /></div>
@@ -217,6 +231,22 @@ export default function Settings() {
             ))}
           </div>
         </section>
+
+        {/* Change password (email/password accounts only) */}
+        {p?.has_password && (
+          <section className="bg-panel border border-edge rounded-2xl p-5">
+            <h2 className="font-semibold mb-3 text-slate-300 flex items-center gap-2"><KeyRound className="h-4 w-4" /> Change password</h2>
+            <div className="space-y-2">
+              <input type="password" value={curPw} onChange={e => setCurPw(e.target.value)} placeholder="Current password" className="w-full bg-black/40 border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand/60" />
+              <input type="password" value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="New password (min 6 chars)" className="w-full bg-black/40 border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand/60" />
+              <input type="password" value={confPw} onChange={e => setConfPw(e.target.value)} placeholder="Confirm new password" className="w-full bg-black/40 border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand/60" />
+            </div>
+            {pwMsg && <div className={`text-sm mt-2 ${pwMsg.ok ? 'text-emerald-400' : 'text-rose-400'}`}>{pwMsg.text}</div>}
+            <button onClick={changePw} disabled={saving === 'password' || !curPw || !newPw} className="mt-3 px-4 py-2.5 rounded-xl bg-brand font-medium disabled:opacity-40 flex items-center gap-2">
+              {saving === 'password' ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />} Update password
+            </button>
+          </section>
+        )}
 
         {/* Account actions */}
         <section className="bg-panel border border-edge rounded-2xl p-5 space-y-3">
