@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { api, getToken, wsGroupUrl } from '../lib/api'
 import { Avatar, timeAgo } from '../lib/ui'
 import { useAuth } from '../lib/auth'
-import { Users, Plus, Send, Loader2, ArrowLeft, Lock, Settings2, X, UserPlus, LogOut, Trash2, Check } from 'lucide-react'
+import { Users, Plus, Send, Loader2, ArrowLeft, Lock, Settings2, X, UserPlus, LogOut, Trash2, Check, Mic, Square, Image as ImageIcon, CheckCheck } from 'lucide-react'
 
 const MAX = 15
 
@@ -57,6 +57,54 @@ export default function Groups() {
     try { const m = await api.groupSend(sel.id, { text: body }); if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) } }
     catch (err: any) { alert(err.message); setText(body) }
   }
+
+  const pushMsg = (m: any) => { if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) } }
+
+  // Photo upload
+  const [busy, setBusy] = useState(false)
+  const onPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file || !sel) return
+    setBusy(true)
+    try { const { signed_url } = await api.upload(file); pushMsg(await api.groupSend(sel.id, { media_url: signed_url, media_type: 'image' })) }
+    catch (err: any) { alert(err.message || 'Could not send photo') }
+    setBusy(false); e.target.value = ''
+  }
+
+  // Voice recording
+  const recRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const recStart = useRef<number>(0)
+  const [recording, setRecording] = useState(false)
+  const startRec = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mr = new MediaRecorder(stream); recRef.current = mr; chunksRef.current = []; recStart.current = Date.now()
+      mr.ondataavailable = ev => chunksRef.current.push(ev.data)
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        const dur = Math.round((Date.now() - recStart.current) / 1000)
+        if (dur < 1 || !sel) return
+        setBusy(true)
+        try {
+          const { signed_url } = await api.upload(new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' }))
+          pushMsg(await api.groupSend(sel.id, { media_url: signed_url, media_type: 'audio', duration: dur }))
+        } catch (err: any) { alert(err.message || 'Could not send voice message') }
+        setBusy(false)
+      }
+      mr.start(); setRecording(true)
+    } catch { alert('Microphone permission needed to record a voice message.') }
+  }
+  const stopRec = () => { recRef.current?.stop(); setRecording(false) }
+
+  // Read receipts for the last message I sent
+  const lastMine = [...msgs].reverse().find(m => m.mine && !m.deleted)
+  const seenByNames = (() => {
+    if (!lastMine || !sel?.reads || !sel?.members) return []
+    return sel.members
+      .filter((mem: any) => mem.id !== user?.id && (sel.reads[mem.id] || '') >= lastMine.created_at)
+      .map((mem: any) => mem.display_name)
+  })()
 
   return (
     <div className="flex h-screen">
@@ -116,9 +164,24 @@ export default function Groups() {
                 <div ref={endRef} />
               </div>
 
+              {seenByNames.length > 0 && (
+                <div className="px-4 pb-1 -mt-1 text-right text-[11px] text-slate-500 flex items-center justify-end gap-1">
+                  <CheckCheck className="h-3.5 w-3.5 text-brand" />
+                  Seen by {seenByNames.length <= 2 ? seenByNames.join(' & ') : `${seenByNames.slice(0, 2).join(', ')} +${seenByNames.length - 2}`}
+                </div>
+              )}
+
               <form onSubmit={send} className="p-3 flex gap-2 items-center border-t border-edge">
-                <input value={text} onChange={e => setText(e.target.value)} placeholder="Message the group (encrypted)…"
-                  className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand" />
+                <label className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 cursor-pointer ${busy ? 'opacity-50' : 'bg-white/10 hover:bg-white/20'}`}>
+                  <ImageIcon className="h-5 w-5" />
+                  <input type="file" accept="image/*" className="hidden" onChange={onPhoto} disabled={busy} />
+                </label>
+                <input value={text} onChange={e => setText(e.target.value)} placeholder={recording ? 'Recording…' : 'Message the group (encrypted)…'} disabled={recording}
+                  className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand disabled:opacity-60" />
+                <button type="button" onClick={recording ? stopRec : startRec} disabled={busy}
+                  className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${recording ? 'bg-rose-600 animate-pulse' : 'bg-white/10 hover:bg-white/20'}`}>
+                  {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : recording ? <Square className="h-4 w-4" /> : <Mic className="h-5 w-5" />}
+                </button>
                 <button className="h-11 w-11 grid place-items-center rounded-xl bg-gradient-to-r from-brand to-violet-600 shrink-0"><Send className="h-5 w-5" /></button>
               </form>
             </>

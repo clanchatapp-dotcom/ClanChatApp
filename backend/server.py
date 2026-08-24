@@ -1395,6 +1395,12 @@ async def group_detail(gid: str, u: dict = Depends(get_current_user)):
     await mark_read('group', gid, u['id'])
     base = await group_out(g, u['id'])
     base['messages'] = msgs
+    # Read receipts: last_read time per member (computed BEFORE this viewer's open is
+    # persisted above only for others; the frontend uses this to show "Seen by…").
+    reads = {}
+    for mid in g['members']:
+        reads[mid] = await read_marker('group', gid, mid)
+    base['reads'] = reads
     return base
 
 
