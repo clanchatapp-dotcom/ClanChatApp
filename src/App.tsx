@@ -12,6 +12,7 @@ import Activity from './pages/Activity'
 import Admin from './pages/Admin'
 import Settings from './pages/Settings'
 import Connections from './pages/Connections'
+import Groups from './pages/Groups'
 import Reels from './pages/Reels'
 import AuthCallback from './pages/AuthCallback'
 import { Loader2 } from 'lucide-react'
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="/activity" element={<Activity />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/connections" element={<Connections />} />
+          <Route path="/groups" element={<Groups />} />
           <Route path="/reels" element={<Reels />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/u/:handle" element={<Profile />} />

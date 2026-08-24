@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { Home, Search, MessageCircle, Bell, User, LogOut, Sparkles, PenSquare, Shield, Settings, Film, Users2 } from 'lucide-react'
+import { Home, Search, MessageCircle, Bell, User, LogOut, Sparkles, PenSquare, Shield, Settings, Film, Users2, Users } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 import { api } from '../lib/api'
 import { Avatar } from '../lib/ui'
@@ -16,7 +16,13 @@ export default function Layout() {
   const { user, logout } = useAuth()
   const nav = useNavigate()
   const [trending, setTrending] = useState<any[]>([])
+  const [unread, setUnread] = useState(0)
   useEffect(() => { api.trending().then(setTrending).catch(() => {}) }, [])
+  useEffect(() => {
+    const tick = () => api.unread().then((u: any) => setUnread(u?.total || 0)).catch(() => {})
+    tick(); const id = setInterval(tick, 20000)
+    return () => clearInterval(id)
+  }, [])
 
   const linkCls = (active: boolean) =>
     `flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium transition ${active ? 'bg-brand/15 text-white border border-brand/30' : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'}`
@@ -32,8 +38,10 @@ export default function Layout() {
         {NAV.map(n => (
           <NavLink key={n.to} to={n.to} end={n.end as any} className={({ isActive }) => linkCls(isActive)}>
             <n.icon className="h-5 w-5" />{n.label}
+            {n.to === '/messages' && unread > 0 && <span className="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-rose-500 text-white text-xs grid place-items-center font-bold">{unread > 99 ? '99+' : unread}</span>}
           </NavLink>
         ))}
+        <NavLink to="/groups" className={({ isActive }) => linkCls(isActive)}><Users className="h-5 w-5" />Groups</NavLink>
         <NavLink to={`/u/${user?.handle}`} className={({ isActive }) => linkCls(isActive)}><User className="h-5 w-5" />My Profile</NavLink>
         <NavLink to="/connections" className={({ isActive }) => linkCls(isActive)}><Users2 className="h-5 w-5" />Connections</NavLink>
         <NavLink to="/settings" className={({ isActive }) => linkCls(isActive)}><Settings className="h-5 w-5" />Settings</NavLink>
@@ -75,8 +83,9 @@ export default function Layout() {
       {/* Mobile bottom nav */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-panel/95 backdrop-blur border-t border-edge flex items-center justify-around h-16">
         {NAV.map(n => (
-          <NavLink key={n.to} to={n.to} end={n.end as any} className={({ isActive }) => `flex flex-col items-center gap-1 text-xs ${isActive ? 'text-brand' : 'text-slate-400'}`}>
+          <NavLink key={n.to} to={n.to} end={n.end as any} className={({ isActive }) => `relative flex flex-col items-center gap-1 text-xs ${isActive ? 'text-brand' : 'text-slate-400'}`}>
             <n.icon className="h-5 w-5" />{n.label.split(' ')[0]}
+            {n.to === '/messages' && unread > 0 && <span className="absolute -top-1 right-2 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white text-[10px] grid place-items-center font-bold">{unread > 9 ? '9+' : unread}</span>}
           </NavLink>
         ))}
         <NavLink to={`/u/${user?.handle}`} className={({ isActive }) => `flex flex-col items-center gap-1 text-xs ${isActive ? 'text-brand' : 'text-slate-400'}`}>

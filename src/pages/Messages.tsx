@@ -4,7 +4,7 @@ import { api, getToken, wsDmUrl } from '../lib/api'
 import { Avatar } from '../lib/ui'
 import { useAuth } from '../lib/auth'
 import CallModal from '../components/CallModal'
-import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark, Trash2, Pin, Mic, Square } from 'lucide-react'
+import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark, Trash2, Pin, Mic, Square, Users, ChevronRight } from 'lucide-react'
 
 export default function Messages() {
   const { handle } = useParams()
@@ -111,6 +111,11 @@ export default function Messages() {
       {/* Threads list */}
       <div className={`${handle ? 'hidden lg:flex' : 'flex'} flex-col w-full lg:w-80 shrink-0 border-r border-edge`}>
         <div className="px-4 py-3 border-b border-edge font-extrabold text-xl">Messages</div>
+        <button onClick={() => nav('/groups')} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 text-left border-b border-edge/60">
+          <div className="h-10 w-10 rounded-full bg-white/5 border border-edge grid place-items-center shrink-0"><Users className="h-5 w-5 text-brand" /></div>
+          <div className="min-w-0 flex-1"><div className="font-medium truncate">Groups</div><div className="text-sm text-slate-500 truncate">Private Inner-Circle group chats</div></div>
+          <ChevronRight className="h-4 w-4 text-slate-500" />
+        </button>
         <div className="flex-1 overflow-y-auto">
           {/* Me, Myself & I — Saved Messages (always pinned at top) */}
           <button onClick={() => nav(`/messages/${user?.handle}`)}
@@ -130,6 +135,7 @@ export default function Messages() {
                 <div className="font-medium truncate">{t.user.display_name}</div>
                 <div className="text-sm text-slate-500 truncate">{t.mine ? 'You: ' : ''}{t.last}</div>
               </div>
+              {t.unread > 0 && <span className="shrink-0 min-w-[20px] h-5 px-1.5 rounded-full bg-rose-500 text-white text-xs grid place-items-center font-bold">{t.unread > 99 ? '99+' : t.unread}</span>}
             </button>
           ))}
         </div>

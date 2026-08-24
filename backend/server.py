@@ -25,6 +25,14 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from livekit import api as lk_api
 from pathlib import Path
 
+# Optional AI image moderation (Emergent LLM key -> Gemini vision). Import guarded
+# so the server still boots if the package/key is missing (scanner just no-ops).
+try:
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    _HAS_EI = True
+except Exception:
+    _HAS_EI = False
+
 # Load .env for local/sandbox; on Render (and other hosts) real env vars are already
 # present in os.environ and load_dotenv does NOT override them.
 for _p in ('/app/.env', str(Path(__file__).resolve().parent.parent / '.env'), '.env'):
@@ -55,6 +63,46 @@ LIVEKIT_URL = os.environ.get('LIVEKIT_URL', '')
 LIVEKIT_API_KEY = os.environ.get('LIVEKIT_API_KEY', '')
 LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get('ADMIN_EMAILS', 'admin@sandbox.clanchat').split(',') if e.strip()}
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
+
+# NSFW threshold: any label >= this (or safe=false) queues media for admin review.
+NSFW_THRESHOLD = 0.70
+_NSFW_SYS = (
+    "You are a conservative image-safety classifier. Return ONLY one valid JSON object, no markdown: "
+    '{"safe": boolean, "confidence": number, '
+    '"labels": {"nudity": number, "sexual_content": number, "violence": number, '
+    '"graphic": number, "self_harm": number, "drugs": number}, "reason": string}. '
+    "Scores are 0..1. Use safe=false when clearly unsafe or any category >= 0.70. "
+    "Keep reason under 160 characters."
+)
+
+
+async def moderate_image(data: bytes, content_type: str) -> Optional[dict]:
+    """Scan image bytes with Gemini vision. Returns a verdict dict, or None if the
+    scanner is unavailable/errored (fail-open for the UPLOAD, but never fabricates 'safe')."""
+    if not (_HAS_EI and EMERGENT_LLM_KEY) or not (content_type or '').startswith('image/'):
+        return None
+    import json as _json
+    try:
+        b64 = base64.b64encode(data).decode('ascii')
+        chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=str(uuid.uuid4()),
+                       system_message=_NSFW_SYS).with_model('gemini', 'gemini-2.5-flash')
+        msg = UserMessage(text='Moderate this image and return the required JSON object.',
+                          file_contents=[ImageContent(image_base64=b64)])
+        resp = await chat.send_message(msg)
+        raw = resp if isinstance(resp, str) else getattr(resp, 'text', str(resp))
+        raw = str(raw).strip().replace('```json', '').replace('```', '').strip()
+        s, e = raw.find('{'), raw.rfind('}')
+        v = _json.loads(raw[s:e + 1])
+        labels = {k: float(v.get('labels', {}).get(k, 0) or 0) for k in
+                  ('nudity', 'sexual_content', 'violence', 'graphic', 'self_harm', 'drugs')}
+        top = max(labels.values()) if labels else 0.0
+        unsafe = (v.get('safe') is False) or top >= NSFW_THRESHOLD
+        return {'safe': not unsafe, 'confidence': float(v.get('confidence', 0) or 0),
+                'labels': labels, 'reason': str(v.get('reason', ''))[:200], 'top_score': top}
+    except Exception as ex:
+        log.warning('moderate_image failed: %s', ex)
+        return None
 
 # Comfort Zone — per-user content preferences (True = show in feed, False = soften/hide).
 COMFORT_ZONE_KEYS = ['nsfw', 'ai', 'language', 'violence', 'drugs']
@@ -449,6 +497,28 @@ def dm_room(a: str, b: str) -> str:
     return 'dm:' + ':'.join(sorted([a, b]))
 
 
+# --- Phase 6-prep: unread tracking (DMs + groups) ---
+
+async def mark_read(scope: str, key: str, uid: str):
+    """Record that user `uid` has read `scope`:`key` up to now."""
+    await db.reads.update_one(
+        {'scope': scope, 'key': key, 'user_id': uid},
+        {'$set': {'last_read_at': datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+
+
+async def read_marker(scope: str, key: str, uid: str) -> str:
+    r = await db.reads.find_one({'scope': scope, 'key': key, 'user_id': uid})
+    return r.get('last_read_at', '') if r else ''
+
+
+async def dm_unread_count(room: str, uid: str, since: str) -> int:
+    q = {'room': room, 'sender_id': {'$ne': uid}}
+    if since:
+        q['created_at'] = {'$gt': since}
+    return await db.dms.count_documents(q)
+
+
 # ----------------------------- Storage -----------------------------
 
 def admin_headers():
@@ -644,6 +714,12 @@ async def _purge_user(uid: str):
     await db.activity.delete_many({'$or': [{'user_id': uid}, {'actor_id': uid}]})
     await db.reports.delete_many({'reporter_id': uid})
     await db.relations.delete_many({'$or': [{'user_id': uid}, {'target_id': uid}]})
+    await db.reads.delete_many({'user_id': uid})
+    await db.group_messages.delete_many({'sender_id': uid})
+    await db.groups.delete_many({'owner_id': uid})
+    await db.groups.update_many({'members': uid}, {'$pull': {'members': uid}})
+    await db.nsfw_queue.delete_many({'user_id': uid})
+    await db.admin_notes.delete_many({'user_id': uid})
 
 
 async def incr_deleted(n: int = 1):
@@ -1021,9 +1097,22 @@ async def list_comments(post_id: str, u: dict = Depends(get_current_user)):
         raise HTTPException(404, 'Post not found')
     if not await can_view(u['id'], p):
         raise HTTPException(403, 'Cannot view')
+    author_id = p['author_id']
+    # Instagram-style Restrict: comments by users the post author restricted are
+    # visible only to that commenter (and the post author, flagged as restricted).
+    restricted_ids = set()
+    async for r in db.relations.find({'user_id': author_id, 'kind': 'restrict'}):
+        restricted_ids.add(r['target_id'])
     out = []
     async for c in db.comments.find({'post_id': post_id}).sort('created_at', 1).limit(500):
-        out.append(await comment_out(c, u['id']))
+        cauthor = c['author_id']
+        is_restricted = cauthor in restricted_ids
+        if is_restricted and u['id'] != cauthor and u['id'] != author_id:
+            continue  # hidden from everyone else
+        co = await comment_out(c, u['id'])
+        if is_restricted:
+            co['restricted'] = True
+        out.append(co)
     return out
 
 
@@ -1118,10 +1207,13 @@ async def dm_threads(u: dict = Depends(get_current_user)):
         prof = await db.profiles.find_one({'id': oid}, {'_id': 0})
         if not prof:
             continue
+        room = dm_room(u['id'], oid)
+        since = await read_marker('dm', room, u['id'])
         seen[oid] = {'user': {'id': prof['id'], 'handle': prof['handle'],
                               'display_name': prof['display_name'], 'avatar_url': prof.get('avatar_url')},
                      'last': ('🎤 Voice message' if m.get('media_type') == 'audio' else '📷 Photo' if m.get('media_url') else dec(m['content_enc'])[:80]), 'created_at': m['created_at'],
-                     'mine': m['sender_id'] == u['id']}
+                     'mine': m['sender_id'] == u['id'],
+                     'unread': await dm_unread_count(room, u['id'], since)}
     return list(seen.values())
 
 @app.get('/api/dms/{handle}')
@@ -1139,6 +1231,7 @@ async def dm_history(handle: str, u: dict = Depends(get_current_user)):
                     'media_type': m.get('media_type'), 'duration': m.get('duration'),
                     'pinned': bool(m.get('pinned')), 'deleted': deleted,
                     'created_at': m['created_at'], 'mine': m['sender_id'] == u['id']})
+    await mark_read('dm', room, u['id'])  # opening a thread marks it read
     return {'peer': {'id': other['id'], 'handle': other['handle'],
                      'display_name': other['display_name'], 'avatar_url': other.get('avatar_url')},
             'can_dm': await can_dm(u['id'], other['id']), 'messages': out}
@@ -1176,6 +1269,229 @@ async def pin_dm(handle: str, message_id: str, u: dict = Depends(get_current_use
     await db.dms.update_one({'id': message_id}, {'$set': {'pinned': newp}})
     await manager.broadcast(m['room'], {'type': 'dm_pin', 'id': message_id, 'pinned': newp})
     return {'ok': True, 'pinned': newp}
+
+
+# ----------------------------- Unread counts (DMs + groups) -----------------------------
+
+@app.get('/api/unread')
+async def unread(u: dict = Depends(get_current_user)):
+    dm_total, seen = 0, set()
+    async for m in db.dms.find({'participants': u['id']}).sort('created_at', -1).limit(400):
+        other = [p for p in m['participants'] if p != u['id']]
+        oid = other[0] if other else u['id']
+        if oid in seen:
+            continue
+        seen.add(oid)
+        room = dm_room(u['id'], oid)
+        since = await read_marker('dm', room, u['id'])
+        dm_total += await dm_unread_count(room, u['id'], since)
+    grp_total = 0
+    async for g in db.groups.find({'members': u['id']}):
+        since = await read_marker('group', g['id'], u['id'])
+        q = {'group_id': g['id'], 'sender_id': {'$ne': u['id']}}
+        if since:
+            q['created_at'] = {'$gt': since}
+        grp_total += await db.group_messages.count_documents(q)
+    return {'dms': dm_total, 'groups': grp_total, 'total': dm_total + grp_total}
+
+
+# ----------------------------- Inner-Circle Groups (encrypted group chat) -----------------------------
+
+GROUP_MAX = 15
+
+class GroupCreate(BaseModel):
+    name: str
+    members: Optional[list] = None  # list of handles (must be in owner's Inner Circle)
+
+class GroupRename(BaseModel):
+    name: str
+
+class GroupMembers(BaseModel):
+    handles: list
+
+class GroupMessage(BaseModel):
+    text: Optional[str] = ''
+    media_url: Optional[str] = None
+    media_type: Optional[str] = None
+    duration: Optional[float] = None
+
+
+async def _members_slim(ids: list) -> list:
+    out = []
+    for mid in ids:
+        p = await db.profiles.find_one({'id': mid}, {'_id': 0})
+        if p:
+            out.append(await relation_slim(p))
+    return out
+
+
+async def group_out(g: dict, uid: str) -> dict:
+    since = await read_marker('group', g['id'], uid)
+    cq = {'group_id': g['id'], 'sender_id': {'$ne': uid}}
+    if since:
+        cq['created_at'] = {'$gt': since}
+    unread = await db.group_messages.count_documents(cq)
+    last_text, last_at = '', g['created_at']
+    async for m in db.group_messages.find({'group_id': g['id']}).sort('created_at', -1).limit(1):
+        last_at = m['created_at']
+        last_text = ('🎤 Voice message' if m.get('media_type') == 'audio'
+                     else '📷 Photo' if m.get('media_url') else dec(m['content_enc'])[:80])
+    return {'id': g['id'], 'name': g['name'], 'owner_id': g['owner_id'],
+            'is_owner': g['owner_id'] == uid, 'member_count': len(g['members']),
+            'members': await _members_slim(g['members']),
+            'last': last_text, 'last_at': last_at, 'unread': unread}
+
+
+@app.post('/api/groups')
+async def create_group(body: GroupCreate, u: dict = Depends(get_current_user)):
+    name = (body.name or '').strip()[:60]
+    if not name:
+        raise HTTPException(400, 'Group needs a name')
+    member_ids = [u['id']]
+    for h in (body.members or []):
+        p = await db.profiles.find_one({'handle': h})
+        if not p or p['id'] == u['id']:
+            continue
+        if not await in_inner(u['id'], p['id']):
+            raise HTTPException(400, f'#{h} must be in your Inner Circle to add to a group')
+        if p['id'] not in member_ids:
+            member_ids.append(p['id'])
+    if len(member_ids) > GROUP_MAX:
+        raise HTTPException(400, f'Groups are capped at {GROUP_MAX} members')
+    doc = {'id': str(uuid.uuid4()), 'name': name, 'owner_id': u['id'],
+           'members': member_ids, 'created_at': datetime.now(timezone.utc).isoformat()}
+    await db.groups.insert_one(dict(doc))
+    return await group_out(doc, u['id'])
+
+
+@app.get('/api/groups')
+async def my_groups(u: dict = Depends(get_current_user)):
+    out = []
+    async for g in db.groups.find({'members': u['id']}):
+        out.append(await group_out(g, u['id']))
+    out.sort(key=lambda x: x['last_at'], reverse=True)
+    return out
+
+
+@app.get('/api/groups/{gid}')
+async def group_detail(gid: str, u: dict = Depends(get_current_user)):
+    g = await db.groups.find_one({'id': gid})
+    if not g:
+        raise HTTPException(404, 'Group not found')
+    if u['id'] not in g['members']:
+        raise HTTPException(403, 'You are not a member of this group')
+    msgs = []
+    async for m in db.group_messages.find({'group_id': gid}).sort('created_at', 1).limit(300):
+        deleted = bool(m.get('deleted'))
+        s = await db.profiles.find_one({'id': m['sender_id']}, {'_id': 0})
+        msgs.append({'id': m['id'], 'sender_id': m['sender_id'],
+                     'sender': {'id': s['id'], 'handle': s['handle'], 'display_name': s['display_name'],
+                                'avatar_url': s.get('avatar_url')} if s else None,
+                     'text': 'This message was deleted' if deleted else dec(m['content_enc']),
+                     'media_url': None if deleted else m.get('media_url'),
+                     'media_type': m.get('media_type'), 'duration': m.get('duration'),
+                     'deleted': deleted, 'created_at': m['created_at'],
+                     'mine': m['sender_id'] == u['id']})
+    await mark_read('group', gid, u['id'])
+    base = await group_out(g, u['id'])
+    base['messages'] = msgs
+    return base
+
+
+@app.post('/api/groups/{gid}/messages')
+async def group_send(gid: str, body: GroupMessage, u: dict = Depends(get_current_user)):
+    g = await db.groups.find_one({'id': gid})
+    if not g:
+        raise HTTPException(404, 'Group not found')
+    if u['id'] not in g['members']:
+        raise HTTPException(403, 'You are not a member of this group')
+    text = (body.text or '').strip()
+    if not text and not body.media_url:
+        raise HTTPException(400, 'Empty message')
+    doc = {'id': str(uuid.uuid4()), 'group_id': gid, 'sender_id': u['id'],
+           'content_enc': enc(text), 'media_url': body.media_url, 'media_type': body.media_type,
+           'duration': body.duration, 'created_at': datetime.now(timezone.utc).isoformat()}
+    await db.group_messages.insert_one(dict(doc))
+    s = await db.profiles.find_one({'id': u['id']}, {'_id': 0})
+    msg = {'id': doc['id'], 'sender_id': u['id'],
+           'sender': {'id': s['id'], 'handle': s['handle'], 'display_name': s['display_name'],
+                      'avatar_url': s.get('avatar_url')},
+           'text': text, 'media_url': body.media_url, 'media_type': body.media_type,
+           'duration': body.duration, 'created_at': doc['created_at']}
+    await manager.broadcast('group:' + gid, {'type': 'group', 'message': msg})
+    return {**msg, 'mine': True}
+
+
+@app.put('/api/groups/{gid}')
+async def rename_group(gid: str, body: GroupRename, u: dict = Depends(get_current_user)):
+    g = await db.groups.find_one({'id': gid})
+    if not g:
+        raise HTTPException(404, 'Group not found')
+    if g['owner_id'] != u['id']:
+        raise HTTPException(403, 'Only the group owner can rename it')
+    name = (body.name or '').strip()[:60]
+    if not name:
+        raise HTTPException(400, 'Group needs a name')
+    await db.groups.update_one({'id': gid}, {'$set': {'name': name}})
+    return {'ok': True, 'name': name}
+
+
+@app.post('/api/groups/{gid}/members')
+async def add_group_members(gid: str, body: GroupMembers, u: dict = Depends(get_current_user)):
+    g = await db.groups.find_one({'id': gid})
+    if not g:
+        raise HTTPException(404, 'Group not found')
+    if g['owner_id'] != u['id']:
+        raise HTTPException(403, 'Only the group owner can add members')
+    members = list(g['members'])
+    for h in (body.handles or []):
+        p = await db.profiles.find_one({'handle': h})
+        if not p or p['id'] in members:
+            continue
+        if not await in_inner(u['id'], p['id']):
+            raise HTTPException(400, f'#{h} must be in your Inner Circle to add')
+        members.append(p['id'])
+    if len(members) > GROUP_MAX:
+        raise HTTPException(400, f'Groups are capped at {GROUP_MAX} members')
+    await db.groups.update_one({'id': gid}, {'$set': {'members': members}})
+    g['members'] = members
+    return await group_out(g, u['id'])
+
+
+@app.delete('/api/groups/{gid}/members/{handle}')
+async def remove_group_member(gid: str, handle: str, u: dict = Depends(get_current_user)):
+    g = await db.groups.find_one({'id': gid})
+    if not g:
+        raise HTTPException(404, 'Group not found')
+    target = await db.profiles.find_one({'handle': handle})
+    if not target:
+        raise HTTPException(404, 'User not found')
+    tid = target['id']
+    is_self_leave = tid == u['id']
+    if not is_self_leave and g['owner_id'] != u['id']:
+        raise HTTPException(403, 'Only the owner can remove other members')
+    members = [m for m in g['members'] if m != tid]
+    if not members:
+        await db.groups.delete_one({'id': gid})
+        await db.group_messages.delete_many({'group_id': gid})
+        return {'ok': True, 'deleted': True}
+    upd = {'members': members}
+    if g['owner_id'] == tid:  # owner left -> hand ownership to first remaining member
+        upd['owner_id'] = members[0]
+    await db.groups.update_one({'id': gid}, {'$set': upd})
+    return {'ok': True, 'deleted': False}
+
+
+@app.delete('/api/groups/{gid}')
+async def delete_group(gid: str, u: dict = Depends(get_current_user)):
+    g = await db.groups.find_one({'id': gid})
+    if not g:
+        raise HTTPException(404, 'Group not found')
+    if g['owner_id'] != u['id']:
+        raise HTTPException(403, 'Only the group owner can delete it')
+    await db.groups.delete_one({'id': gid})
+    await db.group_messages.delete_many({'group_id': gid})
+    return {'ok': True}
 
 
 GIPHY_API_KEY = os.environ.get('GIPHY_API_KEY', '')
@@ -1248,9 +1564,19 @@ async def upload(u: dict = Depends(get_current_user), file: UploadFile = File(..
         raise HTTPException(413, 'File too large (max 50MB)')
     ext = (file.filename or 'file').split('.')[-1][:8]
     path = f"{u['id']}/{uuid.uuid4().hex}.{ext}"
-    url = await upload_and_sign(path, data, file.content_type or 'application/octet-stream')
+    ctype = file.content_type or 'application/octet-stream'
+    url = await upload_and_sign(path, data, ctype)
+    # NSFW scan (images only). If flagged, queue for admin review; report to uploader.
+    verdict = await moderate_image(data, ctype)
+    if verdict and not verdict['safe']:
+        await db.nsfw_queue.insert_one({
+            'id': str(uuid.uuid4()), 'user_id': u['id'], 'handle': u['handle'],
+            'path': path, 'signed_url': url, 'verdict': verdict, 'status': 'open',
+            'created_at': datetime.now(timezone.utc).isoformat()})
     return {'path': path, 'signed_url': url,
-            'media_type': (file.content_type or '').split('/')[0]}
+            'media_type': ctype.split('/')[0],
+            'nsfw': (verdict and not verdict['safe']) or False,
+            'nsfw_reason': verdict['reason'] if (verdict and not verdict['safe']) else None}
 
 
 # ----------------------------- LiveKit -----------------------------
@@ -1282,6 +1608,28 @@ async def ws_dm(ws: WebSocket, handle: str):
     if not other:
         await ws.close(code=1008); return
     room = dm_room(me_id, other['id'])
+    await manager.connect(room, ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(room, ws)
+    except Exception:
+        manager.disconnect(room, ws)
+
+
+@app.websocket('/api/ws/group/{gid}')
+async def ws_group(ws: WebSocket, gid: str):
+    token = ws.query_params.get('token')
+    try:
+        claims = decode_jwt(token) if token else None
+        me_id = claims['sub']
+    except Exception:
+        await ws.close(code=1008); return
+    g = await db.groups.find_one({'id': gid})
+    if not g or me_id not in g['members']:
+        await ws.close(code=1008); return
+    room = 'group:' + gid
     await manager.connect(room, ws)
     try:
         while True:
@@ -1380,6 +1728,8 @@ async def admin_stats(a: dict = Depends(require_admin)):
         'suspended': await db.profiles.count_documents({'suspended_until': {'$exists': True}}),
         'banned': await db.profiles.count_documents({'banned': True}),
         'flagged': await db.profiles.count_documents({'flagged': True}),
+        'watchlisted': await db.profiles.count_documents({'watchlisted': True}),
+        'nsfw_open': await db.nsfw_queue.count_documents({'status': 'open'}),
         'deleted': deleted,
     }
 
@@ -1538,6 +1888,7 @@ async def admin_users(q: str = '', a: dict = Depends(require_admin)):
                     'strikes': p.get('strikes', 0), 'suspended_until': p.get('suspended_until'),
                     'banned': p.get('banned', False), 'is_admin': is_admin_user(p),
                     'flagged': p.get('flagged', False), 'flag_reason': p.get('flag_reason'),
+                    'watchlisted': p.get('watchlisted', False), 'watch_reason': p.get('watch_reason'),
                     'created_at': p.get('created_at')})
     return out
 
@@ -1624,3 +1975,130 @@ async def admin_view_dms(handle: str, a: dict = Depends(require_admin)):
     return {'user': {'handle': prof['handle'], 'display_name': prof['display_name'],
                      'flag_reason': prof.get('flag_reason'), 'flagged_by': prof.get('flagged_by')},
             'threads': out}
+
+
+
+# ----------------------------- Phase 6: Admin+ & Safety -----------------------------
+
+class NoteIn(BaseModel):
+    note: str
+
+class WatchIn(BaseModel):
+    reason: Optional[str] = ''
+
+class NsfwResolve(BaseModel):
+    action: str  # dismiss | remove
+
+
+@app.get('/api/admin/nsfw')
+async def admin_nsfw_queue(status: str = 'open', a: dict = Depends(require_admin)):
+    """AI-flagged media awaiting review."""
+    q = {} if status == 'all' else {'status': status}
+    out = []
+    async for r in db.nsfw_queue.find(q, {'_id': 0}).sort('created_at', -1).limit(200):
+        out.append(r)
+    return out
+
+
+@app.post('/api/admin/nsfw/{item_id}/resolve')
+async def admin_nsfw_resolve(item_id: str, body: NsfwResolve, a: dict = Depends(require_admin)):
+    item = await db.nsfw_queue.find_one({'id': item_id})
+    if not item:
+        raise HTTPException(404, 'Item not found')
+    action = (body.action or '').lower()
+    if action not in ('dismiss', 'remove'):
+        raise HTTPException(400, 'Invalid action')
+    if action == 'remove':
+        # Quarantine any posts that used this media URL.
+        await db.posts.update_many({'media_url': item.get('signed_url')}, {'$set': {'quarantined': True}})
+    await db.nsfw_queue.update_one({'id': item_id}, {'$set': {
+        'status': 'removed' if action == 'remove' else 'dismissed',
+        'resolved_by': a['handle'], 'resolved_at': datetime.now(timezone.utc).isoformat()}})
+    await audit(a, f'nsfw_{action}', item.get('handle', ''), item.get('reason', ''))
+    return {'ok': True, 'status': 'removed' if action == 'remove' else 'dismissed'}
+
+
+@app.get('/api/admin/watchlist')
+async def admin_watchlist(a: dict = Depends(require_admin)):
+    out = []
+    async for p in db.profiles.find({'watchlisted': True}, {'_id': 0}).sort('watched_at', -1).limit(200):
+        out.append({'id': p['id'], 'handle': p['handle'], 'display_name': p['display_name'],
+                    'avatar_url': p.get('avatar_url'), 'email': p.get('email'),
+                    'watch_reason': p.get('watch_reason'), 'watched_by': p.get('watched_by'),
+                    'watched_at': p.get('watched_at'), 'strikes': p.get('strikes', 0),
+                    'flagged': p.get('flagged', False)})
+    return out
+
+
+@app.post('/api/admin/users/{handle}/watch')
+async def admin_watch(handle: str, body: WatchIn, a: dict = Depends(require_admin)):
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    await db.profiles.update_one({'id': prof['id']}, {'$set': {
+        'watchlisted': True, 'watch_reason': (body.reason or 'under review')[:300],
+        'watched_by': a['handle'], 'watched_at': datetime.now(timezone.utc).isoformat()}})
+    await audit(a, 'watch_user', handle, body.reason or '')
+    return {'ok': True, 'watchlisted': True}
+
+
+@app.post('/api/admin/users/{handle}/unwatch')
+async def admin_unwatch(handle: str, a: dict = Depends(require_admin)):
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    await db.profiles.update_one({'id': prof['id']},
+                                 {'$set': {'watchlisted': False}, '$unset': {'watch_reason': '', 'watched_by': '', 'watched_at': ''}})
+    await audit(a, 'unwatch_user', handle, '')
+    return {'ok': True, 'watchlisted': False}
+
+
+@app.get('/api/admin/users/{handle}/notes')
+async def admin_get_notes(handle: str, a: dict = Depends(require_admin)):
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    out = []
+    async for n in db.admin_notes.find({'user_id': prof['id']}, {'_id': 0}).sort('created_at', -1).limit(200):
+        out.append(n)
+    return out
+
+
+@app.post('/api/admin/users/{handle}/note')
+async def admin_add_note(handle: str, body: NoteIn, a: dict = Depends(require_admin)):
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    note = (body.note or '').strip()
+    if not note:
+        raise HTTPException(400, 'Empty note')
+    doc = {'id': str(uuid.uuid4()), 'user_id': prof['id'], 'handle': handle,
+           'note': note[:2000], 'admin_handle': a['handle'],
+           'created_at': datetime.now(timezone.utc).isoformat()}
+    await db.admin_notes.insert_one(dict(doc))
+    return {'id': doc['id'], 'note': doc['note'], 'admin_handle': doc['admin_handle'], 'created_at': doc['created_at']}
+
+
+@app.post('/api/admin/csam/{report_id}/escalate')
+async def admin_csam_escalate(report_id: str, a: dict = Depends(require_admin)):
+    """CEOP-style escalation: mark a CSAM report as escalated to authorities."""
+    r = await db.csam_reports.find_one({'id': report_id})
+    if not r:
+        raise HTTPException(404, 'Report not found')
+    await db.csam_reports.update_one({'id': report_id}, {'$set': {
+        'escalated': True, 'ceop_ref': f"CEOP-{report_id[:8].upper()}",
+        'escalated_by': a['handle'], 'escalated_at': datetime.now(timezone.utc).isoformat()}})
+    await audit(a, 'csam_escalate_ceop', r.get('target_id', ''), report_id)
+    return {'ok': True, 'escalated': True, 'ceop_ref': f"CEOP-{report_id[:8].upper()}"}
+
+
+@app.post('/api/admin/csam/{report_id}/resolve')
+async def admin_csam_resolve(report_id: str, a: dict = Depends(require_admin)):
+    r = await db.csam_reports.find_one({'id': report_id})
+    if not r:
+        raise HTTPException(404, 'Report not found')
+    await db.csam_reports.update_one({'id': report_id}, {'$set': {
+        'status': 'resolved', 'resolved_by': a['handle'],
+        'resolved_at': datetime.now(timezone.utc).isoformat()}})
+    await audit(a, 'csam_resolve', r.get('target_id', ''), report_id)
+    return {'ok': True, 'status': 'resolved'}

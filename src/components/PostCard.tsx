@@ -163,6 +163,7 @@ function Comment({ c, onReply, onDelete }: { c: any; onReply?: () => void; onDel
       <div className="flex-1 min-w-0">
         <div className="bg-ink border border-edge rounded-2xl px-3 py-2">
           <Link to={`/u/${a.handle}`} className="text-sm font-medium hover:underline">{a.display_name}</Link>
+          {c.restricted && <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-400 border border-amber-500/40 rounded-full px-1.5 py-0.5">Restricted · only visible to them</span>}
           <p className="text-sm whitespace-pre-wrap break-words">{c.text}</p>
         </div>
         <div className="flex items-center gap-3 mt-1 text-xs text-slate-500 px-2">

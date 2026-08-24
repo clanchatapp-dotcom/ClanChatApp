@@ -3,11 +3,13 @@ import { Navigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { timeAgo } from '../lib/ui'
-import { Shield, Flag, AlertTriangle, Users, ScrollText, Ban, Loader2, Check, Trash2, Eye, X, Lock, UserCog, Crown } from 'lucide-react'
+import { Shield, Flag, AlertTriangle, Users, ScrollText, Ban, Loader2, Check, Trash2, Eye, X, Lock, UserCog, Crown, ScanEye, Bookmark, StickyNote } from 'lucide-react'
 
 const TABS = [
   { key: 'reports', label: 'Reports', icon: Flag },
   { key: 'csam', label: 'CSAM', icon: AlertTriangle },
+  { key: 'nsfw', label: 'NSFW', icon: ScanEye },
+  { key: 'watchlist', label: 'Watchlist', icon: Bookmark },
   { key: 'users', label: 'Users', icon: Users },
   { key: 'admins', label: 'Admins', icon: UserCog },
   { key: 'audit', label: 'Audit log', icon: ScrollText },
@@ -41,6 +43,8 @@ export default function Admin() {
     try {
       if (tab === 'reports') setData(await api.adminReports('open'))
       else if (tab === 'csam') setData(await api.adminCsam())
+      else if (tab === 'nsfw') setData(await api.adminNsfw('open'))
+      else if (tab === 'watchlist') setData(await api.adminWatchlist())
       else if (tab === 'users') setData(await api.adminUsers(q))
       else if (tab === 'admins') { await loadAdmins(); setData([]) }
       else if (tab === 'audit') setData(await api.adminAudit())
@@ -68,6 +72,25 @@ export default function Admin() {
     await api.adminFlag(handle, r || 'suspicious activity'); await load(); await loadStats()
   }
   const unflag = async (handle: string) => { await api.adminUnflag(handle); await load(); await loadStats() }
+  const watch = async (handle: string) => {
+    const r = window.prompt('Add to watchlist — reason:', 'under review')
+    if (r === null) return
+    await api.adminWatch(handle, r || 'under review'); await load(); await loadStats()
+  }
+  const unwatch = async (handle: string) => { await api.adminUnwatch(handle); await load(); await loadStats() }
+  const addNote = async (handle: string) => {
+    const n = window.prompt(`Add a private admin note about #${handle}:`, '')
+    if (!n) return
+    try { await api.adminAddNote(handle, n); alert('Note saved.') } catch (e: any) { alert(e.message) }
+  }
+  const viewNotes = async (handle: string) => {
+    try { const notes = await api.adminNotes(handle)
+      alert(notes.length ? notes.map((x: any) => `• ${x.note}\n  — #${x.admin_handle}, ${timeAgo(x.created_at)}`).join('\n\n') : 'No notes yet.')
+    } catch (e: any) { alert(e.message) }
+  }
+  const nsfwResolve = async (id: string, action: string) => { await api.adminNsfwResolve(id, action); await load(); await loadStats() }
+  const csamEscalate = async (id: string) => { try { const r = await api.adminCsamEscalate(id); alert(`Escalated. Reference: ${r.ceop_ref}`); await load() } catch (e: any) { alert(e.message) } }
+  const csamResolve = async (id: string) => { await api.adminCsamResolve(id); await load(); await loadStats() }
   const addAdmin = async () => {
     const email = newAdminEmail.trim()
     if (!email) return
@@ -122,10 +145,12 @@ export default function Admin() {
           <Stat label="Suspended" value={stats.suspended} />
           <Stat label="Banned" value={stats.banned} />
           <Stat label="Flagged" value={stats.flagged} danger />
+          <Stat label="Watchlist" value={stats.watchlisted} />
+          <Stat label="NSFW queue" value={stats.nsfw_open} danger />
           <Stat label="Deleted" value={stats.deleted} />
         </div>
 
-        <div className="flex gap-1 bg-panel border border-edge rounded-xl p-1 w-fit">
+        <div className="flex gap-1 bg-panel border border-edge rounded-xl p-1 w-fit overflow-x-auto max-w-full">
           {TABS.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg ${tab === t.key ? 'bg-brand text-white' : 'text-slate-400 hover:text-white'}`}>
@@ -212,11 +237,47 @@ export default function Admin() {
               <div key={r.id} className="bg-rose-500/5 border border-rose-500/30 rounded-2xl p-4">
                 <div className="flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-rose-400" />
                   <span className="font-semibold text-rose-300">{r.category}</span>
+                  {r.escalated && <span className="text-xs bg-rose-500/30 text-rose-200 px-1.5 py-0.5 rounded">{r.ceop_ref || 'escalated'}</span>}
+                  {r.status === 'resolved' && <span className="text-xs bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded">resolved</span>}
                   <span className="text-xs text-slate-500 ml-auto">{timeAgo(r.created_at)}</span></div>
                 <div className="text-sm text-slate-400 mt-1">{r.target_type} · {r.target_id} · reporter #{r.reporter_handle}</div>
-                <div className="text-xs text-rose-400/80 mt-1">Auto-quarantined. Escalate to CEOP/NCMEC (pipeline scaffolded).</div>
+                <div className="flex gap-2 mt-3">
+                  {!r.escalated && <button onClick={() => csamEscalate(r.id)} className="px-3 py-1.5 rounded-lg bg-rose-600 text-white text-sm flex items-center gap-1"><AlertTriangle className="h-3.5 w-3.5" />Escalate to CEOP</button>}
+                  {r.status !== 'resolved' && <button onClick={() => csamResolve(r.id)} className="px-3 py-1.5 rounded-lg border border-edge text-sm flex items-center gap-1"><Check className="h-3.5 w-3.5" />Mark resolved</button>}
+                </div>
               </div>
             ))}
+
+            {tab === 'nsfw' && (data.length === 0
+              ? <p className="text-center text-slate-500 py-10">No AI-flagged media awaiting review.</p>
+              : data.map(r => (
+                <div key={r.id} className="bg-panel border border-edge rounded-2xl p-3 flex gap-3">
+                  <img src={r.signed_url} className="h-20 w-20 rounded-lg object-cover blur-md hover:blur-none transition shrink-0 bg-black/40" title="Hover to reveal" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium">#{r.handle} <span className="text-xs text-slate-500 ml-1">{timeAgo(r.created_at)}</span></div>
+                    <div className="text-xs text-amber-300 mt-0.5">{r.verdict?.reason}</div>
+                    <div className="text-[11px] text-slate-500 mt-1">{Object.entries(r.verdict?.labels || {}).filter(([, v]: any) => v >= 0.3).map(([k, v]: any) => `${k} ${(v * 100).toFixed(0)}%`).join(' · ') || 'low-confidence flags'}</div>
+                    <div className="flex gap-2 mt-2">
+                      <button onClick={() => nsfwResolve(r.id, 'remove')} className="px-3 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 text-xs flex items-center gap-1"><Trash2 className="h-3.5 w-3.5" />Remove content</button>
+                      <button onClick={() => nsfwResolve(r.id, 'dismiss')} className="px-3 py-1.5 rounded-lg border border-edge text-xs">Dismiss (safe)</button>
+                    </div>
+                  </div>
+                </div>
+              )))}
+
+            {tab === 'watchlist' && (data.length === 0
+              ? <p className="text-center text-slate-500 py-10">No accounts on the watchlist.</p>
+              : data.map(u => (
+                <div key={u.id} className="bg-panel border border-edge rounded-2xl p-3 flex items-center gap-3 flex-wrap">
+                  <Bookmark className="h-4 w-4 text-brand shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium truncate">{u.display_name} <span className="text-xs text-slate-500">#{u.handle}</span></div>
+                    <div className="text-xs text-slate-500">{u.watch_reason || 'under review'} · by #{u.watched_by} · {timeAgo(u.watched_at)}</div>
+                  </div>
+                  <button onClick={() => viewNotes(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs flex items-center gap-1"><StickyNote className="h-3 w-3" />Notes</button>
+                  <button onClick={() => unwatch(u.handle)} className="px-2.5 py-1.5 rounded-lg border border-edge text-xs">Remove</button>
+                </div>
+              )))}
 
             {tab === 'users' && data.map(u => (
               <div key={u.id} className="bg-panel border border-edge rounded-2xl p-3 flex items-center gap-3 flex-wrap">
@@ -224,6 +285,7 @@ export default function Admin() {
                   <div className="font-medium truncate flex items-center gap-2">{u.display_name}
                     {u.is_admin && <Shield className="h-3.5 w-3.5 text-brand" />}
                     {u.flagged && <span className="text-xs bg-rose-500/20 text-rose-300 px-1.5 rounded flex items-center gap-1"><Flag className="h-3 w-3" />flagged</span>}
+                    {u.watchlisted && <span className="text-xs bg-brand/20 text-brand px-1.5 rounded flex items-center gap-1"><Bookmark className="h-3 w-3" />watch</span>}
                     {u.banned && <span className="text-xs bg-rose-500/20 text-rose-300 px-1.5 rounded">banned</span>}
                     {u.suspended_until && !u.banned && <span className="text-xs bg-amber-500/20 text-amber-300 px-1.5 rounded">suspended</span>}
                   </div>
@@ -232,6 +294,10 @@ export default function Admin() {
                 {u.flagged
                   ? <button onClick={() => unflag(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Unflag</button>
                   : <button onClick={() => flag(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 text-rose-300 text-xs flex items-center gap-1"><Flag className="h-3 w-3" />Flag</button>}
+                {u.watchlisted
+                  ? <button onClick={() => unwatch(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Unwatch</button>
+                  : <button onClick={() => watch(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-brand/10 text-brand text-xs flex items-center gap-1"><Bookmark className="h-3 w-3" />Watch</button>}
+                <button onClick={() => addNote(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs flex items-center gap-1"><StickyNote className="h-3 w-3" />Note</button>
                 {u.flagged && <button onClick={() => viewDms(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-brand/15 text-brand text-xs flex items-center gap-1"><Eye className="h-3 w-3" />View DMs</button>}
                 <button onClick={() => strike(u.handle, true)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Warn</button>
                 <button onClick={() => strike(u.handle, false)} className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 text-xs">Strike</button>

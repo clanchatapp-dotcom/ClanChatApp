@@ -100,3 +100,16 @@ NOTE: old zip has committed secrets to rotate (SUPABASE_SERVICE_ROLE_KEY etc).
 - Granular notifications: notif_prefs {follows, wall, reactions, comments, dms, inner} gate what appears on the Activity page (server-side filtering in GET /api/activity).
 - Block / Mute / Restrict (db.relations): block = mutual invisibility + no DMs + severs all follow/inner ties both ways (404 on profile, hidden from feed/search); mute = hide their posts from my feed only; restrict = they can't DM me. Managed from Profile menu + Connections page.
 - Connections manager (/connections, GET /api/connections): tabs for Requests, Followers, Following, Inner Circle, Blocked & Muted with quick actions (accept, remove follower, invite/promote to inner, unfollow, remove inner member, unblock/unmute/un-restrict). New endpoints: POST /api/relations/{handle}, DELETE /api/relations/{handle}, GET /api/relations, GET /api/connections, POST /api/followers/{handle}/remove, DELETE /api/inner/{handle}.
+
+## Feature batch (post-Phase-5): Groups + DM Unread + Restrict Comments (COMPLETE, backend 52/52 passed)
+- Inner-Circle Groups: encrypted private group chats capped at 15 members (Inner-Circle only). Collections db.groups + db.group_messages. Endpoints POST/GET /api/groups, GET /api/groups/{id}, POST /api/groups/{id}/messages, PUT rename, POST/DELETE members, DELETE group; realtime WS /api/ws/group/{id}. Frontend: /groups page with create/manage modals.
+- DM Unread: db.reads tracks last_read per dm room; GET /api/dms returns per-thread unread; GET /api/unread aggregates dms+groups. Frontend: badges on Messages nav + thread rows (polled 20s).
+- Restrict Comments (Instagram-style): comments by users the post author restricted are visible only to the commenter + post author (flagged restricted:true), hidden from everyone else.
+
+## Phase 6 — Admin+ & Safety (COMPLETE, backend 58/58 passed)
+- NSFW AI scanner: REAL Gemini vision (gemini-2.5-flash via emergentintegrations + EMERGENT_LLM_KEY) scans image uploads server-side; unsafe media queued to db.nsfw_queue. Fails open for uploads, never fabricates 'safe'. Admin: GET /api/admin/nsfw, POST /api/admin/nsfw/{id}/resolve (dismiss|remove->quarantine posts).
+- Watchlist: POST /api/admin/users/{h}/watch + /unwatch, GET /api/admin/watchlist; stats add watchlisted + nsfw_open.
+- Admin notes: POST /api/admin/users/{h}/note, GET .../notes (private moderator notes).
+- CSAM/CEOP: POST /api/admin/csam/{id}/escalate (generates CEOP ref) + /resolve.
+- Frontend: Admin panel gains NSFW + Watchlist tabs, Watch/Note buttons on users, CEOP escalate/resolve on CSAM, new stat cards.
+- Requires EMERGENT_LLM_KEY in /app/.env; emergentintegrations added to backend/requirements.txt.

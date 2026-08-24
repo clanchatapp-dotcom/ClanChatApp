@@ -100,6 +100,15 @@ export const api = {
   dmHistory: (h: string) => req(`/dms/${h}`),
   dmSend: (h: string, text: string) => req(`/dms/${h}`, { method: 'POST', body: j({ text }) }),
   activity: () => req('/activity'),
+  unread: () => req('/unread'),
+  groups: () => req('/groups'),
+  createGroup: (name: string, members: string[]) => req('/groups', { method: 'POST', body: j({ name, members }) }),
+  group: (id: string) => req(`/groups/${id}`),
+  groupSend: (id: string, body: any) => req(`/groups/${id}/messages`, { method: 'POST', body: j(body) }),
+  renameGroup: (id: string, name: string) => req(`/groups/${id}`, { method: 'PUT', body: j({ name }) }),
+  addGroupMembers: (id: string, handles: string[]) => req(`/groups/${id}/members`, { method: 'POST', body: j({ handles }) }),
+  removeGroupMember: (id: string, handle: string) => req(`/groups/${id}/members/${handle}`, { method: 'DELETE' }),
+  deleteGroup: (id: string) => req(`/groups/${id}`, { method: 'DELETE' }),
   livekitToken: (room: string) => req('/livekit/token', { method: 'POST', body: j({ room }) }),
   upload: (file: File) => { const fd = new FormData(); fd.append('file', file); return req('/upload', { method: 'POST', body: fd }) },
   report: (target_type: string, target_id: string, category: string, note = '') =>
@@ -120,6 +129,15 @@ export const api = {
   adminListAdmins: () => req('/admin/admins'),
   adminAddAdmin: (email: string) => req('/admin/admins', { method: 'POST', body: j({ email }) }),
   adminRemoveAdmin: (email: string) => req('/admin/admins/remove', { method: 'POST', body: j({ email }) }),
+  adminNsfw: (status = 'open') => req(`/admin/nsfw?status=${status}`),
+  adminNsfwResolve: (id: string, action: string) => req(`/admin/nsfw/${id}/resolve`, { method: 'POST', body: j({ action }) }),
+  adminWatchlist: () => req('/admin/watchlist'),
+  adminWatch: (handle: string, reason: string) => req(`/admin/users/${handle}/watch`, { method: 'POST', body: j({ reason }) }),
+  adminUnwatch: (handle: string) => req(`/admin/users/${handle}/unwatch`, { method: 'POST' }),
+  adminNotes: (handle: string) => req(`/admin/users/${handle}/notes`),
+  adminAddNote: (handle: string, note: string) => req(`/admin/users/${handle}/note`, { method: 'POST', body: j({ note }) }),
+  adminCsamEscalate: (id: string) => req(`/admin/csam/${id}/escalate`, { method: 'POST' }),
+  adminCsamResolve: (id: string) => req(`/admin/csam/${id}/resolve`, { method: 'POST' }),
 }
 
 export function wsDmUrl(handle: string, token: string) {
@@ -128,4 +146,12 @@ export function wsDmUrl(handle: string, token: string) {
   if (API_BASE) { try { const u = new URL(API_BASE); host = u.host; secure = u.protocol === 'https:' } catch {} }
   const proto = secure ? 'wss' : 'ws'
   return `${proto}://${host}/api/ws/dm/${handle}?token=${encodeURIComponent(token)}`
+}
+
+export function wsGroupUrl(id: string, token: string) {
+  let host = window.location.host
+  let secure = window.location.protocol === 'https:'
+  if (API_BASE) { try { const u = new URL(API_BASE); host = u.host; secure = u.protocol === 'https:' } catch {} }
+  const proto = secure ? 'wss' : 'ws'
+  return `${proto}://${host}/api/ws/group/${id}?token=${encodeURIComponent(token)}`
 }
