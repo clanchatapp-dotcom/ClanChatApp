@@ -240,8 +240,37 @@ def slugify_handle(name: str) -> str:
     base = re.sub(r'[^a-z0-9]', '', (name or 'member').lower())[:20] or 'member'
     return base
 
+def calc_age(dob_str: Optional[str]) -> Optional[int]:
+    """Age in years from a YYYY-MM-DD string, or None if unparseable."""
+    try:
+        parts = [int(x) for x in str(dob_str).split('T')[0].split('-')[:3]]
+        y, m, d = parts[0], parts[1], parts[2]
+        today = datetime.now(timezone.utc).date()
+        return today.year - y - ((today.month, today.day) < (m, d))
+    except Exception:
+        return None
+
+
+async def is_minor_user(uid: str) -> bool:
+    p = await db.profiles.find_one({'id': uid}, {'is_minor': 1})
+    return bool(p and p.get('is_minor'))
+
+
+async def adult_minor_barrier(a: str, b: str) -> bool:
+    """Hardcoded child-safety wall: True when exactly one of the two users is a minor
+    (i.e. an adult ↔ minor pairing). Used to block follows, DMs, invites & discovery
+    across the age boundary. Two minors or two adults are fine."""
+    if a == b:
+        return False
+    pa = await db.profiles.find_one({'id': a}, {'is_minor': 1})
+    pb = await db.profiles.find_one({'id': b}, {'is_minor': 1})
+    if not pa or not pb:
+        return False
+    return bool(pa.get('is_minor')) != bool(pb.get('is_minor'))
+
+
 async def ensure_profile(sub: str, email: Optional[str], name: Optional[str],
-                         avatar: Optional[str]) -> dict:
+                         avatar: Optional[str], dob: Optional[str] = None) -> dict:
     prof = await db.profiles.find_one({'id': sub}, {'_id': 0})
     if prof:
         return prof
@@ -254,11 +283,13 @@ async def ensure_profile(sub: str, email: Optional[str], name: Optional[str],
         handle = f'{base}{i}'
     email_l = (email or '').lower()
     grant_admin = email_l in ADMIN_EMAILS or await email_is_allowlisted(email_l)
+    age = calc_age(dob) if dob else None
     prof = {
         'id': sub, 'handle': handle, 'display_name': display, 'real_name': None,
         'email': email, 'bio': '', 'links': [], 'avatar_url': avatar,
         'account_type': 'standard', 'follow_mode': 'open', 'dm_open': True,
         'is_admin': grant_admin, 'role': 'admin' if grant_admin else 'user',
+        'dob': dob, 'is_minor': (age is not None and age < 18),
         'created_at': datetime.now(timezone.utc).isoformat(),
     }
     await db.profiles.insert_one(dict(prof))
@@ -339,6 +370,8 @@ async def can_dm(viewer: str, target: str) -> bool:
         return True  # "Me, Myself & I" — you can always message yourself (Saved Messages)
     if await is_blocked_between(viewer, target):
         return False  # blocked either direction -> no DMs
+    if await adult_minor_barrier(viewer, target):
+        return False  # child-safety: no adult ↔ minor DMs
     if await get_relation(target, viewer) == 'restrict':
         return False  # target restricted the viewer -> viewer can't DM them
     if await in_inner(target, viewer) or await in_inner(viewer, target):
@@ -383,7 +416,14 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         out['followers_count'] = followers_count  # private: owner only
         out['is_admin'] = is_admin_user(prof)
         out['strikes'] = prof.get('strikes', 0)
-        out['comfort_zone'] = {**COMFORT_ZONE_DEFAULTS, **(prof.get('comfort_zone') or {})}
+        _minor = bool(prof.get('is_minor'))
+        _cz = {**COMFORT_ZONE_DEFAULTS, **(prof.get('comfort_zone') or {})}
+        if _minor:
+            _cz['nsfw'] = False  # hardcoded: minors can never enable adult content
+        out['comfort_zone'] = _cz
+        out['is_minor'] = _minor
+        out['dob_set'] = bool(prof.get('dob'))
+        out['nsfw_locked'] = _minor  # tells UI the NSFW toggle is locked off
         out['theme'] = prof.get('theme') or DISPLAY_DEFAULTS['theme']
         out['accent'] = prof.get('accent') or DISPLAY_DEFAULTS['accent']
         out['font_size'] = prof.get('font_size') or DISPLAY_DEFAULTS['font_size']
@@ -436,6 +476,10 @@ class EmailAuth(BaseModel):
     email: str
     password: str
     name: Optional[str] = None
+    dob: Optional[str] = None  # YYYY-MM-DD
+
+class DobBody(BaseModel):
+    dob: str  # YYYY-MM-DD
 
 class ChangePassword(BaseModel):
     current_password: str
@@ -654,13 +698,33 @@ async def auth_register(body: EmailAuth):
         raise HTTPException(400, 'Password must be at least 6 characters')
     if await db.auth.find_one({'email': email}):
         raise HTTPException(400, 'That email is already registered — try signing in')
+    age = calc_age(body.dob)
+    if age is None:
+        raise HTTPException(400, 'Please enter your date of birth')
+    if age < 13:
+        raise HTTPException(400, 'You must be at least 13 years old to use ClanChat')
     salt = secrets.token_hex(16)
     uid = str(uuid.uuid4())
     await db.auth.insert_one({'email': email, 'salt': salt, 'hash': _pw_hash(body.password, salt), 'user_id': uid})
     name = (body.name or email.split('@')[0]).strip()
-    prof = await ensure_profile(uid, email, name, None)
+    prof = await ensure_profile(uid, email, name, None, dob=body.dob)
     return {'access_token': mint_token(uid, email, name), 'token_type': 'bearer',
             'user': {'id': uid, 'handle': prof['handle'], 'display_name': prof['display_name'], 'email': email}}
+
+
+@app.post('/api/auth/dob')
+async def set_dob(body: DobBody, u: dict = Depends(get_current_user)):
+    """Set date of birth for accounts created without one (e.g. Google sign-in).
+    DOB is write-once — it can't be changed after it's set."""
+    if u.get('dob'):
+        raise HTTPException(400, 'Your date of birth is already set')
+    age = calc_age(body.dob)
+    if age is None:
+        raise HTTPException(400, 'Enter a valid date of birth')
+    if age < 13:
+        raise HTTPException(400, 'You must be at least 13 years old to use ClanChat')
+    await db.profiles.update_one({'id': u['id']}, {'$set': {'dob': body.dob, 'is_minor': age < 18}})
+    return {'ok': True, 'is_minor': age < 18}
 
 
 @app.post('/api/auth/login')
@@ -704,6 +768,8 @@ async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user
     if 'comfort_zone' in upd:
         cz = upd['comfort_zone'] or {}
         upd['comfort_zone'] = {k: bool(cz.get(k, COMFORT_ZONE_DEFAULTS[k])) for k in COMFORT_ZONE_KEYS}
+        if u.get('is_minor'):
+            upd['comfort_zone']['nsfw'] = False  # hardcoded: minors can't enable adult content
     if 'theme' in upd and upd['theme'] not in THEME_VALUES:
         upd.pop('theme')
     if 'accent' in upd and upd['accent'] not in ACCENT_VALUES:
@@ -783,6 +849,8 @@ async def follow(handle: str, u: dict = Depends(get_current_user)):
         raise HTTPException(400, 'Cannot follow')
     if await is_blocked_between(u['id'], target['id']):
         raise HTTPException(403, 'Cannot follow this user')
+    if await adult_minor_barrier(u['id'], target['id']):
+        raise HTTPException(403, 'This account is not available to you')  # child-safety wall
     status = 'approved' if target.get('follow_mode', 'open') == 'open' else 'pending'
     await db.follows.update_one({'follower_id': u['id'], 'target_id': target['id']},
                                 {'$set': {'status': status,
@@ -816,6 +884,8 @@ async def invite_inner(handle: str, u: dict = Depends(get_current_user)):
         raise HTTPException(400, 'Cannot invite')
     if await is_blocked_between(u['id'], member['id']):
         raise HTTPException(403, 'Cannot invite this user')
+    if await adult_minor_barrier(u['id'], member['id']):
+        raise HTTPException(403, 'This account is not available to you')  # child-safety wall
     await db.inner.update_one({'owner_id': u['id'], 'member_id': member['id']},
                               {'$set': {'status': 'pending',
                                         'created_at': datetime.now(timezone.utc).isoformat()}},
@@ -1209,6 +1279,8 @@ async def search(q: str = '', u: dict = Depends(get_current_user)):
             {'display_name': {'$regex': q, '$options': 'i'}}]}).limit(20):
             if p['id'] != u['id'] and await is_blocked_between(u['id'], p['id']):
                 continue  # hide blocked users from search
+            if p['id'] != u['id'] and await adult_minor_barrier(u['id'], p['id']):
+                continue  # child-safety: minors invisible to adults & vice-versa
             users.append(await public_profile(await db.profiles.find_one({'id': p['id']}, {'_id': 0}), u['id']))
             if len(users) >= 15:
                 break

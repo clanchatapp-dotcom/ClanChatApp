@@ -91,7 +91,8 @@ export async function withRetry<T>(fn: () => Promise<T>, onProgress?: (attempt: 
 
 export const api = {
   devLogin: (name: string) => req('/dev/token', { method: 'POST', body: j({ name }) }),
-  authRegister: (email: string, password: string, name: string) => req('/auth/register', { method: 'POST', body: j({ email, password, name }) }),
+  authRegister: (email: string, password: string, name: string, dob?: string) => req('/auth/register', { method: 'POST', body: j({ email, password, name, dob }) }),
+  setDob: (dob: string) => req('/auth/dob', { method: 'POST', body: j({ dob }) }),
   authLogin: (email: string, password: string) => req('/auth/login', { method: 'POST', body: j({ email, password }) }),
   me: () => req('/me'),
   updateProfile: (b: any) => req('/profile', { method: 'PUT', body: j(b) }),

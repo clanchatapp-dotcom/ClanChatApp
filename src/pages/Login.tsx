@@ -7,6 +7,7 @@ export default function Login() {
   const { loginEmail, registerEmail, loginGoogle } = useAuth()
   const [mode, setMode] = useState<'signin' | 'register'>('signin')
   const [name, setName] = useState('')
+  const [dob, setDob] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
@@ -34,7 +35,7 @@ export default function Login() {
     e.preventDefault(); setErr(''); setBusy(true)
     setStatus(mode === 'register' ? 'Creating your account…' : 'Signing you in…')
     try {
-      if (mode === 'register') await registerEmail(email.trim(), password, name.trim() || email.split('@')[0], onProgress)
+      if (mode === 'register') await registerEmail(email.trim(), password, name.trim() || email.split('@')[0], dob, onProgress)
       else await loginEmail(email.trim(), password, onProgress)
     } catch (e: any) {
       // Invalid credentials / validation -> show the real message. Anything else
@@ -93,6 +94,15 @@ export default function Login() {
             {mode === 'register' && (
               <input value={name} onChange={e => setName(e.target.value)} placeholder="Display name"
                 className="w-full bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand transition" />
+            )}
+            {mode === 'register' && (
+              <div>
+                <label className="block text-xs text-slate-400 mb-1 px-1">Date of birth</label>
+                <input type="date" required value={dob} onChange={e => setDob(e.target.value)}
+                  max={new Date().toISOString().split('T')[0]}
+                  className="w-full bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand transition text-slate-200" />
+                <p className="text-[11px] text-slate-500 mt-1 px-1">You must be 13+. This keeps under-18s protected and can't be changed later.</p>
+              </div>
             )}
             <div className="relative">
               <Mail className="h-4 w-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />

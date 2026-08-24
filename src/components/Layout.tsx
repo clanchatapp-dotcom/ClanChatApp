@@ -13,10 +13,20 @@ const NAV = [
 ]
 
 export default function Layout() {
-  const { user, logout } = useAuth()
+  const { user, logout, refresh } = useAuth()
   const nav = useNavigate()
   const [trending, setTrending] = useState<any[]>([])
   const [unread, setUnread] = useState(0)
+  const [dob, setDob] = useState('')
+  const [dobBusy, setDobBusy] = useState(false)
+  const [dobErr, setDobErr] = useState('')
+  const needsDob = (user as any)?.dob_set === false
+  const saveDob = async () => {
+    setDobErr(''); setDobBusy(true)
+    try { await api.setDob(dob); await refresh() }
+    catch (e: any) { setDobErr(e.message || 'Please enter a valid date of birth') }
+    setDobBusy(false)
+  }
   useEffect(() => { api.trending().then(setTrending).catch(() => {}) }, [])
   useEffect(() => {
     const tick = () => api.unread().then((u: any) => setUnread(u?.total || 0)).catch(() => {})
@@ -95,6 +105,24 @@ export default function Layout() {
           <Settings className="h-5 w-5" />Settings
         </NavLink>
       </nav>
+
+      {/* One-time DOB gate (e.g. Google sign-ups have no DOB yet) */}
+      {needsDob && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/80 backdrop-blur p-4">
+          <div className="bg-panel border border-edge rounded-2xl p-6 max-w-sm w-full">
+            <h3 className="font-bold text-lg">One quick thing</h3>
+            <p className="text-sm text-slate-400 mt-1 mb-4">Please confirm your date of birth. This keeps under-18s protected and can't be changed later. You must be 13+.</p>
+            <input type="date" value={dob} onChange={e => setDob(e.target.value)}
+              max={new Date().toISOString().split('T')[0]}
+              className="w-full bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand text-slate-200" />
+            {dobErr && <p className="text-rose-400 text-sm mt-2">{dobErr}</p>}
+            <button onClick={saveDob} disabled={dobBusy || !dob}
+              className="mt-4 w-full py-3 rounded-xl bg-gradient-to-r from-brand to-violet-600 font-semibold disabled:opacity-50">
+              {dobBusy ? 'Saving…' : 'Continue'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

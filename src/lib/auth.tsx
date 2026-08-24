@@ -10,7 +10,7 @@ type AuthCtx = {
   loading: boolean
   loginDev: (name: string) => Promise<void>
   loginEmail: (email: string, password: string, onProgress?: (n: number) => void) => Promise<void>
-  registerEmail: (email: string, password: string, name: string, onProgress?: (n: number) => void) => Promise<void>
+  registerEmail: (email: string, password: string, name: string, dob?: string, onProgress?: (n: number) => void) => Promise<void>
   loginGoogle: () => Promise<void>
   logout: () => Promise<void>
   // Returns the loaded user (or null) so callers such as the OAuth callback can
@@ -93,8 +93,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(user)
   }
 
-  const registerEmail = async (email: string, password: string, name: string, onProgress?: (n: number) => void) => {
-    const { access_token, user } = await withRetry(() => api.authRegister(email, password, name), onProgress)
+  const registerEmail = async (email: string, password: string, name: string, dob?: string, onProgress?: (n: number) => void) => {
+    const { access_token, user } = await withRetry(() => api.authRegister(email, password, name, dob), onProgress)
     setToken(access_token)
     setUser(user)
   }
