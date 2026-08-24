@@ -56,3 +56,9 @@ Discussion Boards, group chats (T3 max 15), comments, 18+/NSFW + age verificatio
 - Admin DANGER ZONE: POST /api/admin/promote {email} (promote to admin), POST /api/admin/purge-demo {include_admin} (purge alice/bob/teen + optional seeded admin, never self). Deleted counter (db.counters) + admin_stats 'deleted'. UI: DELETED stat card + DANGER ZONE section with 3 buttons + confirm dialogs.
 - Accent color: user chose to KEEP violet/indigo (not switch to old orange).
 - Verified: backend 38/38 passed. Frontend build clean. Frontend UI test pending user go-ahead.
+
+## Changelog — Consolidated Google OAuth to ClanChatApp project
+- Switched Google webClientId from old project (286762294730-2hu26...) to ClanChatApp Web client: 24500940599-ps9kauvvquoh2ldh2iacsb04piui40cs.apps.googleusercontent.com
+- Updated in: src/lib/nativeGoogle.ts (PUBLIC_GOOGLE_WEB_CLIENT_ID), .github/workflows/android-apk.yml fallback, .env.
+- Android client (same project): 24500940599-bbuca... pkg app.clanchat.mobile SHA-1 23:C2:C4:7F:B8:6D:1B:4A:9F:5B:4F:21:20:C6:1E:F2:CD:6B:E0:9B (matches keystore in GitHub secret, verified).
+- USER TODO: add new Web client ID to Supabase Google provider Authorized Client IDs; ensure no stale GitHub secret REACT_APP_GOOGLE_WEB_CLIENT_ID overrides new value; Save to GitHub + rebuild APK.
