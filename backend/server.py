@@ -60,6 +60,26 @@ ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get('ADMIN_EMAILS', 'admin
 COMFORT_ZONE_KEYS = ['nsfw', 'ai', 'language', 'violence', 'drugs']
 COMFORT_ZONE_DEFAULTS = {'nsfw': False, 'ai': True, 'language': True, 'violence': False, 'drugs': False}
 
+# Phase 5 — Display / theme preferences.
+THEME_VALUES = ('dark', 'light')
+ACCENT_VALUES = ('violet', 'blue', 'emerald', 'rose', 'amber', 'cyan')
+FONT_SIZE_VALUES = ('small', 'normal', 'large')
+DISPLAY_DEFAULTS = {'theme': 'dark', 'accent': 'violet', 'font_size': 'normal'}
+
+# Phase 5 — Granular notification preferences (True = show in Activity).
+NOTIF_KEYS = ['follows', 'wall', 'reactions', 'comments', 'dms', 'inner']
+NOTIF_DEFAULTS = {k: True for k in NOTIF_KEYS}
+# Maps an activity 'type' to the notification pref key that gates it.
+ACTIVITY_TYPE_TO_NOTIF = {
+    'follow': 'follows', 'follow_request': 'follows', 'follow_accepted': 'follows',
+    'inner_invite': 'inner', 'inner_accepted': 'inner',
+    'wall': 'wall', 'like': 'reactions', 'react': 'reactions',
+    'comment': 'comments', 'dm': 'dms',
+}
+
+# Phase 5 — Block / Mute / Restrict.
+RELATION_KINDS = ('block', 'mute', 'restrict')
+
 REPORT_CATEGORIES = {'csam', 'underage', 'harassment', 'hate', 'self_harm',
                      'inappropriate', 'unlabelled_ai', 'impersonation', 'spam', 'other'}
 
@@ -214,11 +234,44 @@ async def is_follower(viewer: str, author: str) -> bool:
 async def in_inner(owner: str, member: str) -> bool:
     return bool(await db.inner.find_one({'owner_id': owner, 'member_id': member, 'status': 'accepted'}))
 
+
+# --- Phase 5: block / mute / restrict relations ---
+
+async def get_relation(user_id: str, target_id: str) -> Optional[str]:
+    """Return the kind ('block'|'mute'|'restrict') user_id set toward target_id, else None."""
+    r = await db.relations.find_one({'user_id': user_id, 'target_id': target_id})
+    return r.get('kind') if r else None
+
+
+async def is_blocked_between(a: str, b: str) -> bool:
+    """True if either user has blocked the other (mutual invisibility)."""
+    r = await db.relations.find_one({'kind': 'block', '$or': [
+        {'user_id': a, 'target_id': b}, {'user_id': b, 'target_id': a}]})
+    return bool(r)
+
+
+async def hidden_author_ids(viewer: str) -> set:
+    """Author ids the viewer should not see in their feed: anyone they muted OR
+    anyone blocked in either direction."""
+    ids = set()
+    async for r in db.relations.find({'user_id': viewer, 'kind': {'$in': ['mute', 'block']}}):
+        ids.add(r['target_id'])
+    async for r in db.relations.find({'target_id': viewer, 'kind': 'block'}):
+        ids.add(r['user_id'])
+    return ids
+
+
+async def relation_slim(prof: dict) -> dict:
+    return {'id': prof['id'], 'handle': prof['handle'], 'display_name': prof['display_name'],
+            'avatar_url': prof.get('avatar_url'), 'account_type': prof.get('account_type', 'standard')}
+
 async def can_view(viewer: str, post: dict) -> bool:
     if post.get('quarantined'):
         return False
     if post['author_id'] == viewer:
         return True
+    if await is_blocked_between(viewer, post['author_id']):
+        return False  # block = mutual invisibility
     t = post['tier']
     if t == 'public':
         return True
@@ -231,6 +284,10 @@ async def can_view(viewer: str, post: dict) -> bool:
 async def can_dm(viewer: str, target: str) -> bool:
     if viewer == target:
         return True  # "Me, Myself & I" — you can always message yourself (Saved Messages)
+    if await is_blocked_between(viewer, target):
+        return False  # blocked either direction -> no DMs
+    if await get_relation(target, viewer) == 'restrict':
+        return False  # target restricted the viewer -> viewer can't DM them
     if await in_inner(target, viewer) or await in_inner(viewer, target):
         return True  # Tier 3 both directions
     tp = await db.profiles.find_one({'id': target})
@@ -274,7 +331,13 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         out['is_admin'] = is_admin_user(prof)
         out['strikes'] = prof.get('strikes', 0)
         out['comfort_zone'] = {**COMFORT_ZONE_DEFAULTS, **(prof.get('comfort_zone') or {})}
+        out['theme'] = prof.get('theme') or DISPLAY_DEFAULTS['theme']
+        out['accent'] = prof.get('accent') or DISPLAY_DEFAULTS['accent']
+        out['font_size'] = prof.get('font_size') or DISPLAY_DEFAULTS['font_size']
+        out['notif_prefs'] = {**NOTIF_DEFAULTS, **(prof.get('notif_prefs') or {})}
     else:
+        # My relation (block/mute/restrict) toward this user, for the profile menu.
+        out['my_relation'] = await get_relation(viewer_id, prof['id'])
         # Real name is shown to others only per the owner's chosen visibility.
         vis = prof.get('real_name_visibility', 'private')
         rn = prof.get('real_name')
@@ -335,6 +398,10 @@ class ProfileUpdate(BaseModel):
     comfort_zone: Optional[dict] = None
     real_name: Optional[str] = None
     real_name_visibility: Optional[str] = None  # private | inner | followers | public
+    theme: Optional[str] = None                 # dark | light
+    accent: Optional[str] = None                # violet | blue | emerald | rose | amber | cyan
+    font_size: Optional[str] = None             # small | normal | large
+    notif_prefs: Optional[dict] = None
 
 class PostCreate(BaseModel):
     tier: str = 'public'
@@ -540,6 +607,15 @@ async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user
     if 'comfort_zone' in upd:
         cz = upd['comfort_zone'] or {}
         upd['comfort_zone'] = {k: bool(cz.get(k, COMFORT_ZONE_DEFAULTS[k])) for k in COMFORT_ZONE_KEYS}
+    if 'theme' in upd and upd['theme'] not in THEME_VALUES:
+        upd.pop('theme')
+    if 'accent' in upd and upd['accent'] not in ACCENT_VALUES:
+        upd.pop('accent')
+    if 'font_size' in upd and upd['font_size'] not in FONT_SIZE_VALUES:
+        upd.pop('font_size')
+    if 'notif_prefs' in upd:
+        npf = upd['notif_prefs'] or {}
+        upd['notif_prefs'] = {k: bool(npf.get(k, NOTIF_DEFAULTS[k])) for k in NOTIF_KEYS}
     if upd:
         await db.profiles.update_one({'id': u['id']}, {'$set': upd})
     prof = await db.profiles.find_one({'id': u['id']}, {'_id': 0})
@@ -567,6 +643,7 @@ async def _purge_user(uid: str):
     await db.dms.delete_many({'participants': uid})
     await db.activity.delete_many({'$or': [{'user_id': uid}, {'actor_id': uid}]})
     await db.reports.delete_many({'reporter_id': uid})
+    await db.relations.delete_many({'$or': [{'user_id': uid}, {'target_id': uid}]})
 
 
 async def incr_deleted(n: int = 1):
@@ -581,6 +658,8 @@ async def get_user(handle: str, u: dict = Depends(get_current_user)):
     prof = await db.profiles.find_one({'handle': handle}, {'_id': 0})
     if not prof:
         raise HTTPException(404, 'User not found')
+    if prof['id'] != u['id'] and await is_blocked_between(u['id'], prof['id']):
+        raise HTTPException(404, 'User not found')  # block = mutual invisibility
     return await public_profile(prof, u['id'])
 
 @app.get('/api/users/{handle}/posts')
@@ -599,6 +678,8 @@ async def follow(handle: str, u: dict = Depends(get_current_user)):
     target = await db.profiles.find_one({'handle': handle})
     if not target or target['id'] == u['id']:
         raise HTTPException(400, 'Cannot follow')
+    if await is_blocked_between(u['id'], target['id']):
+        raise HTTPException(403, 'Cannot follow this user')
     status = 'approved' if target.get('follow_mode', 'open') == 'open' else 'pending'
     await db.follows.update_one({'follower_id': u['id'], 'target_id': target['id']},
                                 {'$set': {'status': status,
@@ -630,6 +711,8 @@ async def invite_inner(handle: str, u: dict = Depends(get_current_user)):
     member = await db.profiles.find_one({'handle': handle})
     if not member or member['id'] == u['id']:
         raise HTTPException(400, 'Cannot invite')
+    if await is_blocked_between(u['id'], member['id']):
+        raise HTTPException(403, 'Cannot invite this user')
     await db.inner.update_one({'owner_id': u['id'], 'member_id': member['id']},
                               {'$set': {'status': 'pending',
                                         'created_at': datetime.now(timezone.utc).isoformat()}},
@@ -656,6 +739,116 @@ async def my_inner(u: dict = Depends(get_current_user)):
     return out
 
 
+# ----------------------------- Phase 5: block / mute / restrict -----------------------------
+
+class RelationBody(BaseModel):
+    kind: str  # block | mute | restrict
+
+
+@app.post('/api/relations/{handle}')
+async def set_relation(handle: str, body: RelationBody, u: dict = Depends(get_current_user)):
+    """Block, mute, or restrict a user. Blocking severs all follow + Inner Circle ties both ways."""
+    kind = (body.kind or '').strip().lower()
+    if kind not in RELATION_KINDS:
+        raise HTTPException(400, 'Invalid relation kind')
+    target = await db.profiles.find_one({'handle': handle})
+    if not target or target['id'] == u['id']:
+        raise HTTPException(400, 'Cannot set a relation on this user')
+    tid = target['id']
+    await db.relations.update_one(
+        {'user_id': u['id'], 'target_id': tid},
+        {'$set': {'id': str(uuid.uuid4()), 'kind': kind,
+                  'created_at': datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+    if kind == 'block':
+        # Sever all ties in both directions.
+        await db.follows.delete_many({'$or': [
+            {'follower_id': u['id'], 'target_id': tid},
+            {'follower_id': tid, 'target_id': u['id']}]})
+        await db.inner.delete_many({'$or': [
+            {'owner_id': u['id'], 'member_id': tid},
+            {'owner_id': tid, 'member_id': u['id']}]})
+    return {'ok': True, 'kind': kind}
+
+
+@app.delete('/api/relations/{handle}')
+async def clear_relation(handle: str, u: dict = Depends(get_current_user)):
+    target = await db.profiles.find_one({'handle': handle})
+    if target:
+        await db.relations.delete_one({'user_id': u['id'], 'target_id': target['id']})
+    return {'ok': True}
+
+
+@app.get('/api/relations')
+async def list_relations(u: dict = Depends(get_current_user)):
+    out = {'block': [], 'mute': [], 'restrict': []}
+    async for r in db.relations.find({'user_id': u['id']}):
+        p = await db.profiles.find_one({'id': r['target_id']}, {'_id': 0})
+        if p and r.get('kind') in out:
+            out[r['kind']].append(await relation_slim(p))
+    return out
+
+
+# ----------------------------- Phase 5: Connections manager -----------------------------
+
+@app.get('/api/connections')
+async def connections(u: dict = Depends(get_current_user)):
+    """Everything for the Connections manager: followers, following (+pending), Inner Circle,
+    incoming follow requests, and my block/mute/restrict lists."""
+    uid = u['id']
+    followers, following, inner, requests = [], [], [], []
+
+    async for f in db.follows.find({'target_id': uid, 'status': 'approved'}):
+        p = await db.profiles.find_one({'id': f['follower_id']}, {'_id': 0})
+        if p:
+            s = await relation_slim(p)
+            s['in_my_inner'] = await in_inner(uid, p['id'])
+            followers.append(s)
+
+    async for f in db.follows.find({'follower_id': uid}):
+        p = await db.profiles.find_one({'id': f['target_id']}, {'_id': 0})
+        if p:
+            s = await relation_slim(p)
+            s['status'] = f.get('status', 'approved')
+            s['in_my_inner'] = await in_inner(uid, p['id'])
+            following.append(s)
+
+    async for r in db.inner.find({'owner_id': uid, 'status': 'accepted'}):
+        p = await db.profiles.find_one({'id': r['member_id']}, {'_id': 0})
+        if p:
+            inner.append(await relation_slim(p))
+
+    async for f in db.follows.find({'target_id': uid, 'status': 'pending'}):
+        p = await db.profiles.find_one({'id': f['follower_id']}, {'_id': 0})
+        if p:
+            requests.append(await relation_slim(p))
+
+    rel = await list_relations(u)
+    return {'followers': followers, 'following': following, 'inner': inner,
+            'requests': requests, 'relations': rel,
+            'counts': {'followers': len(followers), 'following': len(following),
+                       'inner': len(inner), 'requests': len(requests)}}
+
+
+@app.post('/api/followers/{handle}/remove')
+async def remove_follower(handle: str, u: dict = Depends(get_current_user)):
+    """Remove someone who follows you (they stop following you)."""
+    fol = await db.profiles.find_one({'handle': handle})
+    if fol:
+        await db.follows.delete_one({'follower_id': fol['id'], 'target_id': u['id']})
+    return {'ok': True}
+
+
+@app.delete('/api/inner/{handle}')
+async def remove_inner(handle: str, u: dict = Depends(get_current_user)):
+    """Remove a member from your Inner Circle (owner action)."""
+    member = await db.profiles.find_one({'handle': handle})
+    if member:
+        await db.inner.delete_one({'owner_id': u['id'], 'member_id': member['id']})
+    return {'ok': True}
+
+
+
 # ----------------------------- Feed / posts -----------------------------
 
 @app.get('/api/feed')
@@ -666,8 +859,11 @@ async def feed(scope: str = 'general', u: dict = Depends(get_current_user)):
         ids.append(u['id'])
         author_filter = {'author_id': {'$in': ids}}
     q = author_filter or {}
+    hidden = await hidden_author_ids(u['id'])
     out = []
     async for p in db.posts.find(q).sort('created_at', -1).limit(150):
+        if p['author_id'] in hidden and p['author_id'] != u['id']:
+            continue  # muted or blocked
         if await can_view(u['id'], p):
             out.append(await post_out(p, u['id']))
         if len(out) >= 60:
@@ -894,11 +1090,18 @@ async def search(q: str = '', u: dict = Depends(get_current_user)):
     if q:
         async for p in db.profiles.find({'$or': [
             {'handle': {'$regex': q, '$options': 'i'}},
-            {'display_name': {'$regex': q, '$options': 'i'}}]}).limit(15):
-            if p['id'] != 'system-clanchat' or True:
-                users.append(await public_profile(await db.profiles.find_one({'id': p['id']}, {'_id': 0}), u['id']))
-        async for p in db.posts.find({'tier': 'public', 'tags': q}).sort('created_at', -1).limit(30):
+            {'display_name': {'$regex': q, '$options': 'i'}}]}).limit(20):
+            if p['id'] != u['id'] and await is_blocked_between(u['id'], p['id']):
+                continue  # hide blocked users from search
+            users.append(await public_profile(await db.profiles.find_one({'id': p['id']}, {'_id': 0}), u['id']))
+            if len(users) >= 15:
+                break
+        async for p in db.posts.find({'tier': 'public', 'tags': q}).sort('created_at', -1).limit(40):
+            if p['author_id'] != u['id'] and await is_blocked_between(u['id'], p['author_id']):
+                continue
             posts.append(await post_out(p, u['id']))
+            if len(posts) >= 30:
+                break
     return {'users': users, 'posts': posts}
 
 
@@ -1008,9 +1211,23 @@ async def giphy_search(q: str = '', limit: int = 24, u: dict = Depends(get_curre
 
 @app.get('/api/activity')
 async def activity(u: dict = Depends(get_current_user)):
+    prefs = {**NOTIF_DEFAULTS, **(u.get('notif_prefs') or {})}
+    # Actors I've blocked (either direction) or restricted are silenced.
+    silenced = set()
+    async for r in db.relations.find({'user_id': u['id'], 'kind': {'$in': ['block', 'restrict']}}):
+        silenced.add(r['target_id'])
+    async for r in db.relations.find({'target_id': u['id'], 'kind': 'block'}):
+        silenced.add(r['user_id'])
     out = []
-    async for a in db.activity.find({'user_id': u['id']}, {'_id': 0}).sort('created_at', -1).limit(50):
+    async for a in db.activity.find({'user_id': u['id']}, {'_id': 0}).sort('created_at', -1).limit(120):
+        if a.get('actor_id') in silenced:
+            continue
+        key = ACTIVITY_TYPE_TO_NOTIF.get(a.get('type'))
+        if key and not prefs.get(key, True):
+            continue  # user turned this notification type off
         out.append(a)
+        if len(out) >= 50:
+            break
     return out
 
 @app.get('/api/follow-requests')

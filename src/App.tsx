@@ -1,5 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect } from 'react'
 import { useAuth } from './lib/auth'
+import { applyTheme } from './lib/theme'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import Feed from './pages/Feed'
@@ -9,12 +11,18 @@ import SearchPage from './pages/Search'
 import Activity from './pages/Activity'
 import Admin from './pages/Admin'
 import Settings from './pages/Settings'
+import Connections from './pages/Connections'
 import Reels from './pages/Reels'
 import AuthCallback from './pages/AuthCallback'
 import { Loader2 } from 'lucide-react'
 
 export default function App() {
   const { user, loading } = useAuth()
+
+  useEffect(() => {
+    const u = user as any
+    applyTheme({ theme: u?.theme, accent: u?.accent, font_size: u?.font_size })
+  }, [user])
 
   return (
     <Routes>
@@ -31,6 +39,7 @@ export default function App() {
           <Route path="/messages/:handle" element={<Messages />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/connections" element={<Connections />} />
           <Route path="/reels" element={<Reels />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/u/:handle" element={<Profile />} />

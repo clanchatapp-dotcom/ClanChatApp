@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, User as UserIcon, AlertTriangle, Lock, Flame, Sparkles, MessageSquare, Swords, Pill, Eye, KeyRound } from 'lucide-react'
+import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, User as UserIcon, AlertTriangle, Lock, Flame, Sparkles, MessageSquare, Swords, Pill, Eye, KeyRound, Sun, Moon, Type, Bell, Users2, ChevronRight, Palette } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Avatar } from '../lib/ui'
+import { applyTheme, ACCENTS } from '../lib/theme'
 
 function Toggle({ on, onChange, disabled, accent = 'brand' }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; accent?: 'brand' | 'amber' }) {
   const onColor = accent === 'amber' ? 'bg-amber-500' : 'bg-brand'
@@ -27,6 +28,18 @@ const CZ_ITEMS = [
   { key: 'violence', label: 'Violence & gore', desc: 'Graphic injury, fights, blood.', Icon: Swords },
   { key: 'drugs', label: 'Drugs & alcohol', desc: 'Recreational substance use.', Icon: Pill },
 ]
+
+const NP_DEFAULTS: Record<string, boolean> = { follows: true, wall: true, reactions: true, comments: true, dms: true, inner: true }
+const NP_ITEMS = [
+  { key: 'follows', label: 'Follows', desc: 'New followers and follow requests.' },
+  { key: 'inner', label: 'Inner Circle invites', desc: 'When someone invites or joins your circle.' },
+  { key: 'wall', label: 'Wall posts', desc: 'When someone posts on your wall.' },
+  { key: 'reactions', label: 'Reactions & likes', desc: 'Reactions on your posts.' },
+  { key: 'comments', label: 'Comments', desc: 'Replies and comments on your posts.' },
+  { key: 'dms', label: 'Direct messages', desc: 'Activity from your conversations.' },
+]
+
+const FONT_OPTS = [{ key: 'small', label: 'Small' }, { key: 'normal', label: 'Default' }, { key: 'large', label: 'Large' }]
 
 export default function Settings() {
   const { user, logout, refresh } = useAuth()
@@ -68,6 +81,24 @@ export default function Settings() {
     setSaving(null)
   }
 
+  const setDisplay = async (key: string, value: string) => {
+    const next = { ...p, [key]: value }
+    setP(next)
+    applyTheme({ theme: next.theme, accent: next.accent, font_size: next.font_size })
+    setSaving(key)
+    try { await api.updateProfile({ [key]: value }); await refresh() } catch {}
+    setSaving(null)
+  }
+
+  const np = { ...NP_DEFAULTS, ...(p?.notif_prefs || {}) }
+  const setNotif = async (key: string, value: boolean) => {
+    const next = { ...np, [key]: value }
+    setP((prev: any) => ({ ...prev, notif_prefs: next }))
+    setSaving('np:' + key)
+    try { await api.updateProfile({ notif_prefs: next }) } catch {}
+    setSaving(null)
+  }
+
   const saveName = async () => {
     const v = name.trim()
     if (!v || v === p?.display_name) return
@@ -106,7 +137,7 @@ export default function Settings() {
   return (
     <div className="max-w-2xl mx-auto w-full">
       {/* Header */}
-      <div className="sticky top-0 z-10 bg-black/70 backdrop-blur border-b border-edge px-4 py-3 flex items-center gap-2">
+      <div className="sticky top-0 z-10 bg-ink/80 backdrop-blur border-b border-edge px-4 py-3 flex items-center gap-2">
         <SettingsIcon className="h-5 w-5 text-brand" />
         <h1 className="text-lg font-extrabold">Settings</h1>
       </div>
@@ -185,6 +216,65 @@ export default function Settings() {
           </div>
         </section>
 
+        {/* Appearance / Display */}
+        <section className="bg-panel border border-edge rounded-2xl p-5">
+          <h2 className="font-semibold mb-4 text-slate-300 flex items-center gap-2"><Palette className="h-4 w-4 text-brand" /> Appearance</h2>
+
+          {/* Theme */}
+          <label className="block text-sm text-slate-400 mb-2">Theme</label>
+          <div className="grid grid-cols-2 gap-2 mb-5">
+            {[{ k: 'dark', label: 'Dark', Icon: Moon }, { k: 'light', label: 'Light', Icon: Sun }].map(({ k, label, Icon }) => {
+              const active = (p?.theme || 'dark') === k
+              return (
+                <button key={k} onClick={() => setDisplay('theme', k)}
+                  className={`flex items-center justify-center gap-2 py-3 rounded-xl border font-medium transition ${active ? 'border-brand bg-brand/15 text-white' : 'border-edge hover:bg-white/5 text-slate-300'}`}>
+                  <Icon className="h-4 w-4" />{label}
+                  {saving === 'theme' && active && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Accent */}
+          <label className="block text-sm text-slate-400 mb-2">Accent colour</label>
+          <div className="flex flex-wrap gap-3 mb-5">
+            {Object.entries(ACCENTS).map(([key, a]) => {
+              const active = (p?.accent || 'violet') === key
+              return (
+                <button key={key} title={a.label} onClick={() => setDisplay('accent', key)}
+                  style={{ backgroundColor: a.hex }}
+                  className={`h-9 w-9 rounded-full grid place-items-center ring-2 ring-offset-2 ring-offset-panel transition ${active ? 'ring-white' : 'ring-transparent hover:ring-white/40'}`}>
+                  {active && <Check className="h-4 w-4 text-white" />}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Font size */}
+          <label className="block text-sm text-slate-400 mb-2 flex items-center gap-1.5"><Type className="h-4 w-4" /> Text size</label>
+          <div className="grid grid-cols-3 gap-2">
+            {FONT_OPTS.map(o => {
+              const active = (p?.font_size || 'normal') === o.key
+              return (
+                <button key={o.key} onClick={() => setDisplay('font_size', o.key)}
+                  className={`py-2.5 rounded-xl border font-medium transition ${active ? 'border-brand bg-brand/15 text-white' : 'border-edge hover:bg-white/5 text-slate-300'}`}>
+                  {o.label}
+                </button>
+              )
+            })}
+          </div>
+        </section>
+
+        {/* Connections manager link */}
+        <button onClick={() => nav('/connections')} className="w-full bg-panel border border-edge rounded-2xl p-5 flex items-center gap-3 hover:bg-white/5 transition text-left">
+          <Users2 className="h-5 w-5 text-brand shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="font-medium">Connections</div>
+            <div className="text-xs text-slate-500">Manage followers, Inner Circle, blocked & muted people.</div>
+          </div>
+          <ChevronRight className="h-5 w-5 text-slate-500" />
+        </button>
+
         {/* Preferences */}
         <section className="bg-panel border border-edge rounded-2xl p-5 space-y-1">
           <h2 className="font-semibold mb-2 text-slate-300">Privacy preferences</h2>
@@ -227,6 +317,24 @@ export default function Settings() {
                 </div>
                 {saving === 'cz:' + key && <Loader2 className="h-4 w-4 animate-spin text-slate-500" />}
                 <Toggle on={!!cz[key]} onChange={v => setCZ(key, v)} accent="amber" />
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* Notifications */}
+        <section className="bg-panel border border-edge rounded-2xl p-5">
+          <h2 className="font-semibold mb-1 text-slate-300 flex items-center gap-2"><Bell className="h-4 w-4 text-brand" /> Notifications</h2>
+          <p className="text-sm text-slate-500 mb-2">Choose what shows up on your Activity page.</p>
+          <div className="divide-y divide-edge/60">
+            {NP_ITEMS.map(({ key, label, desc }) => (
+              <div key={key} className="flex items-center gap-3 py-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium">{label}</div>
+                  <div className="text-xs text-slate-500">{desc}</div>
+                </div>
+                {saving === 'np:' + key && <Loader2 className="h-4 w-4 animate-spin text-slate-500" />}
+                <Toggle on={!!np[key]} onChange={v => setNotif(key, v)} />
               </div>
             ))}
           </div>

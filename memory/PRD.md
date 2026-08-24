@@ -94,3 +94,9 @@ NOTE: old zip has committed secrets to rotate (SUPABASE_SERVICE_ROLE_KEY etc).
 ## Phase 2 DONE (backend 38/38): voice messages (MediaRecorder->Supabase upload->audio DM), media-only messages, pin/unpin messages (WS broadcast, pinned banner), audio playback in bubble. GIFs/stickers still TODO (needs Giphy/Tenor API key from user).
 
 ## Phase 2 GIFs + Phase 3 DONE (backend all pass): Giphy integrated (GET /api/giphy/search, key in .env) with GIF picker in DM composer (sends as image DM). Reels: GET /api/reels (video posts), TikTok-style full-screen vertical snap-scroll Reels page (/reels) with IntersectionObserver autoplay, mute toggle, like(love)/comment overlay, author info. Nav link added.
+
+## Phase 5 — Prefs & Social Graph (COMPLETE, backend 32/32 tests passed)
+- Display prefs: theme (dark / light = standard black & white), accent colour (6 options), text size (small/normal/large). Stored on profile, applied app-wide via CSS variables (lib/theme.ts + index.css + tailwind CSS-var tokens).
+- Granular notifications: notif_prefs {follows, wall, reactions, comments, dms, inner} gate what appears on the Activity page (server-side filtering in GET /api/activity).
+- Block / Mute / Restrict (db.relations): block = mutual invisibility + no DMs + severs all follow/inner ties both ways (404 on profile, hidden from feed/search); mute = hide their posts from my feed only; restrict = they can't DM me. Managed from Profile menu + Connections page.
+- Connections manager (/connections, GET /api/connections): tabs for Requests, Followers, Following, Inner Circle, Blocked & Muted with quick actions (accept, remove follower, invite/promote to inner, unfollow, remove inner member, unblock/unmute/un-restrict). New endpoints: POST /api/relations/{handle}, DELETE /api/relations/{handle}, GET /api/relations, GET /api/connections, POST /api/followers/{handle}/remove, DELETE /api/inner/{handle}.

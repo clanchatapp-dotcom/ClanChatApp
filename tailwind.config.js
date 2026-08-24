@@ -5,11 +5,15 @@ export default {
     extend: {
       fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
       colors: {
-        ink: '#050507',
-        panel: '#0d0d13',
-        panel2: '#14141c',
-        edge: '#20212e',
-        brand: { DEFAULT: '#6d5efc', 600: '#5b4df0', 700: '#4a3dd6' },
+        ink: 'rgb(var(--ink) / <alpha-value>)',
+        panel: 'rgb(var(--panel) / <alpha-value>)',
+        panel2: 'rgb(var(--panel2) / <alpha-value>)',
+        edge: 'rgb(var(--edge) / <alpha-value>)',
+        brand: {
+          DEFAULT: 'rgb(var(--brand) / <alpha-value>)',
+          600: 'rgb(var(--brand-600) / <alpha-value>)',
+          700: 'rgb(var(--brand-700) / <alpha-value>)',
+        },
       },
       keyframes: {
         pop: { '0%': { transform: 'translateY(4px) scale(.98)', opacity: '0' }, '100%': { transform: 'translateY(0) scale(1)', opacity: '1' } },

@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { Home, Search, MessageCircle, Bell, User, LogOut, Sparkles, PenSquare, Shield, Settings, Film } from 'lucide-react'
+import { Home, Search, MessageCircle, Bell, User, LogOut, Sparkles, PenSquare, Shield, Settings, Film, Users2 } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 import { api } from '../lib/api'
 import { Avatar } from '../lib/ui'
@@ -35,6 +35,7 @@ export default function Layout() {
           </NavLink>
         ))}
         <NavLink to={`/u/${user?.handle}`} className={({ isActive }) => linkCls(isActive)}><User className="h-5 w-5" />My Profile</NavLink>
+        <NavLink to="/connections" className={({ isActive }) => linkCls(isActive)}><Users2 className="h-5 w-5" />Connections</NavLink>
         <NavLink to="/settings" className={({ isActive }) => linkCls(isActive)}><Settings className="h-5 w-5" />Settings</NavLink>
         <NavLink to="/reels" className={({ isActive }) => linkCls(isActive)}><Film className="h-5 w-5" />Reels</NavLink>
         {user?.is_admin && (

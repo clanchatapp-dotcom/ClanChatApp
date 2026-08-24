@@ -4,7 +4,7 @@ import { api } from '../lib/api'
 import { Avatar, timeAgo } from '../lib/ui'
 import PostCard from '../components/PostCard'
 import { useAuth } from '../lib/auth'
-import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera, Trash2 } from 'lucide-react'
+import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera, Trash2, Ban, VolumeX, ShieldOff } from 'lucide-react'
 
 const TABS = ['media', 'wall', 'audio'] as const
 type Tab = typeof TABS[number]
@@ -20,6 +20,7 @@ export default function Profile() {
   const [bio, setBio] = useState('')
   const [loading, setLoading] = useState(true)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -35,6 +36,16 @@ export default function Profile() {
   const invite = async () => { await api.inviteInner(p.handle); load() }
   const saveBio = async () => { await api.updateProfile({ bio }); setEditing(false); await refresh(); load() }
   const del = async (id: string) => { await api.deletePost(id); setPosts(x => x.filter(y => y.id !== id)) }
+
+  const setRel = async (kind: string) => {
+    setMenuOpen(false)
+    try {
+      if (p.my_relation === kind) { await api.clearRelation(p.handle); await load(); return }
+      await api.setRelation(p.handle, kind)
+      if (kind === 'block') { nav('/', { replace: true }); return }  // blocked -> profile becomes invisible
+      await load()
+    } catch (e: any) { alert(e.message || 'Could not update') }
+  }
 
   const onAvatarPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -64,9 +75,21 @@ export default function Profile() {
         <button onClick={() => nav(-1)} className="flex items-center gap-2 text-slate-300 hover:text-white">
           <ArrowLeft className="h-5 w-5" /> <span className="text-lg">Feed</span>
         </button>
-        <button onClick={() => p.is_self && setEditing(e => !e)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10 text-slate-300">
-          <MoreHorizontal className="h-5 w-5" />
-        </button>
+        <div className="relative">
+          <button onClick={() => p.is_self ? setEditing(e => !e) : setMenuOpen(o => !o)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10 text-slate-300">
+            <MoreHorizontal className="h-5 w-5" />
+          </button>
+          {!p.is_self && menuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+              <div className="absolute right-0 mt-2 w-52 z-50 bg-panel border border-edge rounded-xl shadow-xl shadow-black/40 py-1 animate-pop">
+                <MenuItem Icon={Ban} tint="text-rose-400" active={p.my_relation === 'block'} onClick={() => setRel('block')} label={p.my_relation === 'block' ? 'Unblock' : 'Block'} />
+                <MenuItem Icon={VolumeX} tint="text-amber-400" active={p.my_relation === 'mute'} onClick={() => setRel('mute')} label={p.my_relation === 'mute' ? 'Unmute' : 'Mute'} />
+                <MenuItem Icon={ShieldOff} tint="text-sky-400" active={p.my_relation === 'restrict'} onClick={() => setRel('restrict')} label={p.my_relation === 'restrict' ? 'Un-restrict' : 'Restrict'} />
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Centered header */}
@@ -200,5 +223,16 @@ function WallTab({ handle }: { handle: string }) {
         </div>
       ))}
     </div>
+  )
+}
+
+
+function MenuItem({ Icon, label, tint, active, onClick }: { Icon: any; label: string; tint: string; active?: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-white/5 text-left">
+      <Icon className={`h-4 w-4 ${tint}`} />
+      <span className={active ? 'font-medium' : ''}>{label}</span>
+      {active && <Check className="h-4 w-4 ml-auto text-slate-400" />}
+    </button>
   )
 }
