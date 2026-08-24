@@ -4,10 +4,16 @@ import { Capacitor } from '@capacitor/core'
 import { supabase } from './supabase'
 
 const env = (import.meta as any).env
-// Public OAuth web client id — safe to ship; fall back to the baked default so a
-// missing CI secret doesn't break native Google sign-in.
+// IMPORTANT (Google [16] "Account reauth failed" fix):
+// Native Google Sign-In MUST be given the **Web application** OAuth client ID as
+// `webClientId` (this is the "server client ID" Google mints the ID token for).
+// NEVER put the Android client ID here — doing so causes error [16].
+// Client IDs are public and safe to ship; the baked default keeps native sign-in
+// working even if no CI env var is set. Web + Android clients must be in the SAME
+// Google Cloud project (24500940599), and the Android client must carry the app's
+// package name (app.clanchat.mobile) + release SHA-1.
 const PUBLIC_GOOGLE_WEB_CLIENT_ID = '24500940599-ps9kauvvquoh2ldh2iacsb04piui40cs.apps.googleusercontent.com'
-const WEB_CLIENT_ID = (env.REACT_APP_GOOGLE_WEB_CLIENT_ID as string) || PUBLIC_GOOGLE_WEB_CLIENT_ID
+const WEB_CLIENT_ID = ((env.REACT_APP_GOOGLE_WEB_CLIENT_ID as string) || '').trim() || PUBLIC_GOOGLE_WEB_CLIENT_ID
 
 export function isNative(): boolean {
   try { return Capacitor.isNativePlatform() } catch { return false }
@@ -17,6 +23,13 @@ let initialized = false
 
 export async function initGoogle(): Promise<void> {
   if (initialized || !isNative()) return
+  // Guard: a valid web client id ends in .apps.googleusercontent.com. If someone ever
+  // wires an obviously-wrong value we log loudly (visible in `adb logcat`) instead of
+  // failing silently with [16].
+  if (!WEB_CLIENT_ID.endsWith('.apps.googleusercontent.com')) {
+    console.error('[Google] Invalid webClientId — must be the WEB OAuth client:', WEB_CLIENT_ID)
+  }
+  console.info('[Google] initializing native sign-in with webClientId =', WEB_CLIENT_ID)
   const { SocialLogin } = await import('@capgo/capacitor-social-login')
   await SocialLogin.initialize({
     google: { webClientId: WEB_CLIENT_ID, mode: 'online' },
