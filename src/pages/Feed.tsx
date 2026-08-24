@@ -12,6 +12,7 @@ function Composer({ onPosted }: { onPosted: () => void }) {
   const [media, setMedia] = useState<{ url: string; type: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [aiLabel, setAiLabel] = useState('none')
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   const addTag = (v: string) => {
@@ -29,8 +30,8 @@ function Composer({ onPosted }: { onPosted: () => void }) {
     if (!text.trim() && !media) return
     setBusy(true)
     try {
-      await api.createPost({ tier, text, media_url: media?.url, media_type: media?.type, tags })
-      setText(''); setTags([]); setMedia(null); onPosted()
+      await api.createPost({ tier, text, media_url: media?.url, media_type: media?.type, tags, ai_label: media ? aiLabel : 'none' })
+      setText(''); setTags([]); setMedia(null); setAiLabel('none'); onPosted()
     } catch (e: any) { alert(e.message) } finally { setBusy(false) }
   }
 
@@ -55,6 +56,19 @@ function Composer({ onPosted }: { onPosted: () => void }) {
           {media.type === 'video' ? <video src={media.url} className="rounded-xl max-h-48" />
             : <img src={media.url} className="rounded-xl max-h-48" />}
           <button onClick={() => setMedia(null)} className="absolute top-1 right-1 h-7 w-7 grid place-items-center rounded-full bg-black/70"><X className="h-4 w-4" /></button>
+        </div>
+      )}
+      {media && (
+        <div className="mt-2">
+          <div className="text-xs text-slate-400 mb-1">Is this image AI? <span className="text-slate-600">(required — shown as a permanent label)</span></div>
+          <div className="flex flex-wrap gap-1.5">
+            {[['none', 'Not AI'], ['generated', 'AI Generated'], ['assisted', 'AI Assisted'], ['altered', 'AI Altered']].map(([v, lbl]) => (
+              <button key={v} onClick={() => setAiLabel(v)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition ${aiLabel === v ? 'bg-brand/20 text-brand border-brand/40' : 'border-edge text-slate-400 hover:text-white'}`}>
+                {lbl}
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {tier !== 'inner' && (

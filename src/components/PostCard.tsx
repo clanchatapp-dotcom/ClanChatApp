@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Trash2, Flag, MessageCircle, Send, CornerDownRight, SmilePlus } from 'lucide-react'
+import { Trash2, Flag, MessageCircle, Send, CornerDownRight, SmilePlus, Sparkles } from 'lucide-react'
 import { api } from '../lib/api'
 import { Avatar, TIER, TierKey, timeAgo } from '../lib/ui'
 
-const REPORT_CATS = ['harassment', 'hate', 'inappropriate', 'unlabelled_ai', 'impersonation', 'spam', 'csam', 'other']
+const REPORT_CATS = ['harassment', 'hate', 'self_harm', 'inappropriate', 'unlabelled_ai', 'impersonation', 'underage', 'spam', 'csam', 'other']
 const RX: Record<string, string> = { like: '👍', love: '❤️', haha: '😂', wow: '😮', sad: '😢', angry: '😡' }
 
 export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id: string) => void }) {
@@ -65,9 +65,19 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
             </span>
           </div>
           {post.text && <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed">{post.text}</p>}
-          {post.media_url && (post.media_type === 'video'
-            ? <video src={post.media_url} controls className="mt-3 rounded-xl max-h-96 w-full" />
-            : <img src={post.media_url} className="mt-3 rounded-xl max-h-96 object-cover" />)}
+          {post.media_url && (
+            <div className="relative mt-3">
+              {post.media_type === 'video'
+                ? <video src={post.media_url} controls className="rounded-xl max-h-96 w-full" />
+                : <img src={post.media_url} className="rounded-xl max-h-96 object-cover w-full" />}
+              {post.ai_label && post.ai_label !== 'none' && (
+                <span className="absolute top-2 left-2 text-[11px] font-semibold px-2 py-1 rounded-md bg-black/70 text-white backdrop-blur flex items-center gap-1">
+                  <Sparkles className="h-3 w-3 text-brand" />
+                  {post.ai_label === 'generated' ? 'AI Generated' : post.ai_label === 'assisted' ? 'AI Assisted' : 'AI Altered'}
+                </span>
+              )}
+            </div>
+          )}
           {post.tags?.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {post.tags.map((t: string) => <span key={t} className="text-xs text-brand bg-brand/10 px-2 py-0.5 rounded-full">#{t}</span>)}

@@ -133,6 +133,25 @@ RELATION_KINDS = ('block', 'mute', 'restrict')
 REPORT_CATEGORIES = {'csam', 'underage', 'harassment', 'hate', 'self_harm',
                      'inappropriate', 'unlabelled_ai', 'impersonation', 'spam', 'other'}
 
+# AI content labels — mandatory pick for AI media; permanent badge on the post.
+AI_LABELS = {'none', 'generated', 'assisted', 'altered'}
+
+# Hardcoded slur/handle blocklist (silent-fail on names, tags, wall & board titles).
+# Kept deliberately small + leet-normalised; extend as needed.
+BANNED_WORDS = {
+    'nigger', 'nigga', 'faggot', 'fag', 'retard', 'retarded', 'kike', 'spic',
+    'chink', 'coon', 'wetback', 'tranny', 'paki', 'gook', 'cunt', 'rapist',
+    'pedophile', 'pedo', 'paedophile', 'childporn', 'cp',
+}
+_LEET = str.maketrans({'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's'})
+
+
+def contains_banned(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    norm = re.sub(r'[^a-z0-9]', '', str(text).lower().translate(_LEET))
+    return any(w in norm for w in BANNED_WORDS)
+
 
 def is_admin_user(prof: dict) -> bool:
     return bool(prof.get('is_admin')) or (prof.get('email') or '').lower() in ADMIN_EMAILS
@@ -454,7 +473,7 @@ async def post_out(p: dict, viewer_id: str) -> dict:
     return {
         'id': p['id'], 'tier': p['tier'], 'text': p.get('text', ''),
         'media_url': p.get('media_url'), 'media_type': p.get('media_type'),
-        'tags': p.get('tags', []), 'created_at': p['created_at'],
+        'tags': p.get('tags', []), 'ai_label': p.get('ai_label', 'none'), 'created_at': p['created_at'],
         'like_count': len(p.get('likes', [])), 'liked': liked,
         'likeable': p['tier'] == 'public',
         'reactions': counts, 'reaction_total': sum(counts.values()), 'my_reaction': my_reaction,
@@ -506,6 +525,7 @@ class PostCreate(BaseModel):
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     tags: Optional[list] = None
+    ai_label: Optional[str] = 'none'  # none | generated | assisted | altered
 
 class ReactBody(BaseModel):
     emoji: str  # like | love | haha | wow | sad | angry
@@ -707,6 +727,8 @@ async def auth_register(body: EmailAuth):
     uid = str(uuid.uuid4())
     await db.auth.insert_one({'email': email, 'salt': salt, 'hash': _pw_hash(body.password, salt), 'user_id': uid})
     name = (body.name or email.split('@')[0]).strip()
+    if contains_banned(name):
+        raise HTTPException(400, 'That display name isn’t allowed. Please choose another.')
     prof = await ensure_profile(uid, email, name, None, dob=body.dob)
     return {'access_token': mint_token(uid, email, name), 'token_type': 'bearer',
             'user': {'id': uid, 'handle': prof['handle'], 'display_name': prof['display_name'], 'email': email}}
@@ -761,6 +783,8 @@ async def change_password(body: ChangePassword, u: dict = Depends(get_current_us
 @app.put('/api/profile')
 async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user)):
     upd = {k: v for k, v in body.dict().items() if v is not None}
+    if 'display_name' in upd and contains_banned(upd['display_name']):
+        raise HTTPException(400, 'That display name isn’t allowed. Please choose another.')
     if 'follow_mode' in upd and upd['follow_mode'] not in ('open', 'approval'):
         upd.pop('follow_mode')
     if 'real_name_visibility' in upd and upd['real_name_visibility'] not in ('private', 'inner', 'followers', 'public'):
@@ -813,6 +837,8 @@ async def _purge_user(uid: str):
     await db.groups.update_many({'members': uid}, {'$pull': {'members': uid}})
     await db.nsfw_queue.delete_many({'user_id': uid})
     await db.admin_notes.delete_many({'user_id': uid})
+    await db.boards.delete_many({'owner_id': uid})
+    await db.board_posts.delete_many({'author_id': uid})
 
 
 async def incr_deleted(n: int = 1):
@@ -1091,6 +1117,8 @@ async def post_wall(handle: str, body: WallPost, u: dict = Depends(get_current_u
     text = (body.text or '').strip()
     if not text:
         raise HTTPException(400, 'Empty post')
+    if contains_banned(text):
+        raise HTTPException(400, 'Your message contains a word that isn’t allowed here.')
     doc = {'id': str(uuid.uuid4()), 'owner_id': owner['id'], 'author_id': u['id'],
            'text': text[:2000], 'created_at': datetime.now(timezone.utc).isoformat()}
     await db.wall.insert_one(dict(doc))
@@ -1111,6 +1139,162 @@ async def delete_wall(wall_id: str, u: dict = Depends(get_current_user)):
     await db.wall.delete_one({'id': wall_id})
     return {'ok': True}
 
+
+# ----------------------------- Discussion Boards (tiered, creator-moderated) -----------------------------
+
+class BoardCreate(BaseModel):
+    title: str
+    description: Optional[str] = ''
+    tier: str = 'public'  # public (T1 read) | followers (T2) | inner (T3)
+
+class BoardPost(BaseModel):
+    text: str
+
+
+async def can_read_board(viewer: str, board: dict) -> bool:
+    owner = board['owner_id']
+    if viewer == owner or await is_admin_user_id(viewer):
+        return True
+    if await adult_minor_barrier(viewer, owner) or await is_blocked_between(viewer, owner):
+        return False
+    t = board.get('tier', 'public')
+    if t == 'public':
+        return True
+    if t == 'followers':
+        return await is_follower(viewer, owner)
+    if t == 'inner':
+        return await in_inner(owner, viewer)
+    return False
+
+
+async def can_post_board(viewer: str, board: dict) -> bool:
+    """T1 public boards: only the owner's approved followers (or owner) may post — read is open.
+    T2/T3: same audience as read (followers / inner)."""
+    owner = board['owner_id']
+    if viewer == owner:
+        return True
+    if not await can_read_board(viewer, board):
+        return False
+    t = board.get('tier', 'public')
+    if t == 'public':
+        return await is_follower(viewer, owner)  # read-only for strangers on T1
+    return True
+
+
+def is_admin_user_id_sync():
+    pass
+
+
+async def is_admin_user_id(uid: str) -> bool:
+    p = await db.profiles.find_one({'id': uid}, {'is_admin': 1, 'email': 1})
+    return bool(p and is_admin_user(p))
+
+async def board_out(b: dict, viewer: str) -> dict:
+    owner = await db.profiles.find_one({'id': b['owner_id']}, {'_id': 0})
+    return {'id': b['id'], 'title': b['title'], 'description': b.get('description', ''),
+            'tier': b.get('tier', 'public'), 'owner_id': b['owner_id'],
+            'owner': {'id': owner['id'], 'handle': owner['handle'], 'display_name': owner['display_name'],
+                      'avatar_url': owner.get('avatar_url')} if owner else None,
+            'is_owner': b['owner_id'] == viewer,
+            'post_count': await db.board_posts.count_documents({'board_id': b['id']}),
+            'can_post': await can_post_board(viewer, b),
+            'created_at': b['created_at']}
+
+
+@app.post('/api/boards')
+async def create_board(body: BoardCreate, u: dict = Depends(get_current_user)):
+    title = (body.title or '').strip()
+    if not title:
+        raise HTTPException(400, 'Board needs a title')
+    if contains_banned(title) or contains_banned(body.description):
+        raise HTTPException(400, 'That title or description contains a word that isn’t allowed.')
+    tier = body.tier if body.tier in TIERS else 'public'
+    doc = {'id': str(uuid.uuid4()), 'owner_id': u['id'], 'title': title[:100],
+           'description': (body.description or '')[:500], 'tier': tier,
+           'created_at': datetime.now(timezone.utc).isoformat()}
+    await db.boards.insert_one(dict(doc))
+    return await board_out(doc, u['id'])
+
+
+@app.get('/api/boards/{handle}')
+async def list_boards(handle: str, u: dict = Depends(get_current_user)):
+    owner = await db.profiles.find_one({'handle': handle}, {'_id': 0})
+    if not owner:
+        raise HTTPException(404, 'User not found')
+    out = []
+    async for b in db.boards.find({'owner_id': owner['id']}).sort('created_at', -1).limit(100):
+        if await can_read_board(u['id'], b):
+            out.append(await board_out(b, u['id']))
+    return out
+
+
+@app.get('/api/board/{board_id}')
+async def get_board(board_id: str, u: dict = Depends(get_current_user)):
+    b = await db.boards.find_one({'id': board_id})
+    if not b:
+        raise HTTPException(404, 'Board not found')
+    if not await can_read_board(u['id'], b):
+        raise HTTPException(403, 'You don’t have access to this board')
+    posts = []
+    async for p in db.board_posts.find({'board_id': board_id}).sort('created_at', 1).limit(500):
+        a = await db.profiles.find_one({'id': p['author_id']}, {'_id': 0})
+        posts.append({'id': p['id'], 'text': p['text'], 'created_at': p['created_at'],
+                      'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'],
+                                 'avatar_url': a.get('avatar_url')} if a else None,
+                      'can_delete': p['author_id'] == u['id'] or b['owner_id'] == u['id'] or is_admin_user(u)})
+    base = await board_out(b, u['id'])
+    base['posts'] = posts
+    return base
+
+
+@app.post('/api/board/{board_id}/posts')
+async def create_board_post(board_id: str, body: BoardPost, u: dict = Depends(get_current_user)):
+    b = await db.boards.find_one({'id': board_id})
+    if not b:
+        raise HTTPException(404, 'Board not found')
+    if not await can_post_board(u['id'], b):
+        raise HTTPException(403, 'You can’t post on this board')
+    text = (body.text or '').strip()
+    if not text:
+        raise HTTPException(400, 'Empty message')
+    if contains_banned(text):
+        raise HTTPException(400, 'Your message contains a word that isn’t allowed here.')
+    doc = {'id': str(uuid.uuid4()), 'board_id': board_id, 'author_id': u['id'],
+           'text': text[:4000], 'created_at': datetime.now(timezone.utc).isoformat()}
+    await db.board_posts.insert_one(dict(doc))
+    if b['owner_id'] != u['id']:
+        await add_activity(b['owner_id'], 'board', u, f'posted in “{b["title"]}”', board_id)
+    a = await db.profiles.find_one({'id': u['id']}, {'_id': 0})
+    return {'id': doc['id'], 'text': doc['text'], 'created_at': doc['created_at'],
+            'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'],
+                       'avatar_url': a.get('avatar_url')}, 'can_delete': True}
+
+
+@app.delete('/api/board-posts/{post_id}')
+async def delete_board_post(post_id: str, u: dict = Depends(get_current_user)):
+    p = await db.board_posts.find_one({'id': post_id})
+    if not p:
+        raise HTTPException(404, 'Not found')
+    b = await db.boards.find_one({'id': p['board_id']})
+    if not (p['author_id'] == u['id'] or (b and b['owner_id'] == u['id']) or is_admin_user(u)):
+        raise HTTPException(403, 'Not allowed')
+    await db.board_posts.delete_one({'id': post_id})
+    return {'ok': True}
+
+
+@app.delete('/api/boards/{board_id}')
+async def delete_board(board_id: str, u: dict = Depends(get_current_user)):
+    b = await db.boards.find_one({'id': board_id})
+    if not b:
+        raise HTTPException(404, 'Board not found')
+    if not (b['owner_id'] == u['id'] or is_admin_user(u)):
+        raise HTTPException(403, 'Only the board owner can delete it')
+    await db.boards.delete_one({'id': board_id})
+    await db.board_posts.delete_many({'board_id': board_id})
+    return {'ok': True}
+
+
+
 @app.post('/api/posts')
 async def create_post(body: PostCreate, u: dict = Depends(get_current_user)):
     tier = body.tier if body.tier in TIERS else 'public'
@@ -1121,8 +1305,10 @@ async def create_post(body: PostCreate, u: dict = Depends(get_current_user)):
     tags = [t for t in tags if t][:10]
     if tier == 'inner':
         tags = []  # spec: no tag field on Tier 3
+    ai_label = body.ai_label if body.ai_label in AI_LABELS else 'none'
     doc = {'id': str(uuid.uuid4()), 'author_id': u['id'], 'tier': tier, 'text': text,
            'media_url': body.media_url, 'media_type': body.media_type, 'tags': tags,
+           'ai_label': ai_label,
            'likes': [], 'created_at': datetime.now(timezone.utc).isoformat()}
     await db.posts.insert_one(dict(doc))
     return await post_out(doc, u['id'])
