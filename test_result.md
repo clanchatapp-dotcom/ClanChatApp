@@ -16,6 +16,20 @@
 # 
 ## user_problem_statement: {problem_statement}
 ## backend:
+  - task: "Phase 3: Giphy GIF search + Reels (video) feed"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "NEW: GET /api/giphy/search?q= (auth) proxies GIPHY (key in .env GIPHY_API_KEY=qfT9...); q empty -> trending; returns [{id,url,preview}] fixed_height gifs, rating pg-13. GET /api/reels (auth) returns public/viewable posts with media_type=video newest-first (post_out shape). GIF messages sent via existing POST /api/dms media_type=image."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ ALL 8 PHASE 3 TESTS PASSED (100% success). Comprehensive testing of NEW Giphy GIF search + Reels (video) feed completed with throwaway user (phase3test+14ee5564@example.com). TEST RESULTS: (1) GIPHY TRENDING (1/1 passed): GET /api/giphy/search (no q, auth) → 200 ✓. Returned 24 trending gifs ✓. Each item has id, url, preview fields ✓. Real Giphy API call working with configured GIPHY_API_KEY ✓. (2) GIPHY SEARCH (1/1 passed): GET /api/giphy/search?q=cat (auth) → 200 ✓. Returned 24 cat gifs ✓. Each item has id, url, preview fields ✓. Query parameter working correctly ✓. (3) GIPHY AUTH (1/1 passed): GET /api/giphy/search with NO auth token → 401 ✓. Authentication correctly enforced ✓. (4) VIDEO POST CREATION (1/1 passed): POST /api/posts {tier:'public', text:'reel test', media_url:'https://example.com/v.mp4', media_type:'video'} → 200 ✓. Video post created with id=16a82062-c12c-41b8-a9f8-4bdab74e06e3 ✓. (5) TEXT POST CREATION (1/1 passed): POST /api/posts {tier:'public', text:'not a reel'} (no media) → 200 ✓. Text-only post created with id=0f12204b-e7f5-4195-9899-37b7f9121ab5 ✓. (6) REELS ENDPOINT (1/1 passed): GET /api/reels (auth) → 200 ✓. Returned 1 reel (the video post) ✓. Video post INCLUDED with correct shape: id, media_url, media_type='video', author, reaction_total, comment_count ✓. Text-only post correctly EXCLUDED from reels ✓. Filtering by media_type='video' working correctly ✓. (7) REELS AUTH (1/1 passed): GET /api/reels with no token → 401 ✓. Authentication correctly enforced ✓. (8) REGRESSION (1/1 passed): GET /api/feed?scope=general → 200 ✓. Feed returned 14 posts ✓. BOTH video post and text-only post INCLUDED in feed ✓. Feed endpoint still working correctly (no regression) ✓. NO ISSUES FOUND. Phase 3 Giphy + Reels features are production-ready. All flows working correctly: Giphy trending/search with real API calls, authentication enforcement (401 without token), video post creation, reels endpoint filtering by media_type='video', feed regression confirmed."
   - task: "Phase 2 DMs: voice/media messages + pin message"
     implemented: true
     working: true
@@ -493,7 +507,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Phase 2 DMs: voice/media messages + pin message"
+    - "Phase 3: Giphy GIF search + Reels (video) feed"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -503,6 +517,8 @@ agent_communication:
     -message: "DEPLOY-FIX #2 regression check. Production deploy was crash-looping because the deploy image installs requirements WITHOUT transitive deps (first 'click' missing, then 'idna'). FIX: backend/requirements.txt is now a FULLY-FLATTENED closure (41 pinned packages incl. idna, certifi, httpcore, dnspython for Atlas srv, and the full aiohttp/livekit tree), verified by installing with pip --no-deps in a clean venv and importing server.py with an EMPTY env (42 routes registered). The sandbox app runs from /root/.venv (unaffected by this file), and server.py runtime code is unchanged since the last 38/38 pass. Please run a QUICK smoke regression to confirm the sandbox API is still fully healthy: dev-token+/api/me (200+401), /api/feed, one encrypted DM send/receive between two inner-circle users, and admin gating (regular 403 / admin 200). Confirm no regression."
     -agent: "testing"
     -message: "🎉 BACKEND TESTING COMPLETE - ALL 39 TESTS PASSED (100% success rate). Comprehensive testing performed with Alpha & Beta users across all 8 backend tasks. KEY VALIDATIONS: (1) Auth: JWT validation working perfectly, 401 for invalid tokens. (2) Three-tier visibility: Server-side enforcement PERFECT - Beta sees only public posts initially, then public+followers after follow, then all tiers after inner circle acceptance. (3) Follows: Both open and approval modes working. (4) Inner Circle: Invite/accept flow working. (5) DMs: Tier-gating enforced, AES-256-GCM encryption VERIFIED at rest via MongoDB (content_enc is base64 ciphertext, NOT plaintext), WebSocket real-time delivery working. (6) Likes: Public-only enforcement working (400 for non-public). (7) Search/Trending/Activity: No privacy leaks, only public posts in search. (8) Storage: Supabase upload working, signed URLs accessible. (9) LiveKit: Token generation working with correct wss:// URL and 3-segment JWT. NO MAJOR ISSUES FOUND. Backend is production-ready."
+    -agent: "testing"
+    -message: "✅ PHASE 3 BACKEND TESTING COMPLETE - ALL 8 TESTS PASSED (100% success). Tested Giphy GIF search + Reels (video) feed with throwaway user (phase3test+14ee5564@example.com). GIPHY: (1) GET /api/giphy/search (no q, auth) → 200, 24 trending gifs with id/url/preview ✓. (2) GET /api/giphy/search?q=cat (auth) → 200, 24 cat gifs ✓. (3) GET /api/giphy/search (no auth) → 401 ✓. REELS: (4) Created video post (media_type='video') → 200 ✓. (5) Created text-only post → 200 ✓. (6) GET /api/reels (auth) → 200, returned 1 reel (video post with correct shape: id, media_url, media_type='video', author, reaction_total, comment_count), text-only post correctly excluded ✓. (7) GET /api/reels (no auth) → 401 ✓. REGRESSION: (8) GET /api/feed → 200, includes both video and text posts ✓. NO ISSUES FOUND. Phase 3 is production-ready."
     -agent: "testing"
     -message: "✅ SESSION PERSISTENCE BUG FIX VERIFIED - ALL TESTS PASSED. Comprehensive testing of the session persistence fix in src/lib/auth.tsx completed successfully. All 5 test scenarios passed: (1) Login with dev account works correctly, (2) CORE BUG FIX: Full page reload maintains session - user stays logged in, (3) Navigation through app (Messages → Activity → Feed) + reload maintains session, (4) New tab/window opens with session persisted via localStorage, (5) Logout works correctly and removes token. No console errors, no network errors. The user-reported bug 'leaving the app and coming back logs you straight out' has been RESOLVED. Frontend session persistence is now production-ready."
     -agent: "testing"

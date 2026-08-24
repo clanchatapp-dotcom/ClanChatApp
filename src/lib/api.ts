@@ -76,11 +76,13 @@ export const api = {
   deletePost: (id: string) => req(`/posts/${id}`, { method: 'DELETE' }),
   likePost: (id: string) => req(`/posts/${id}/like`, { method: 'POST' }),
   reactPost: (id: string, emoji: string) => req(`/posts/${id}/react`, { method: 'POST', body: j({ emoji }) }),
+  reels: () => req('/reels'),
   listComments: (id: string) => req(`/posts/${id}/comments`),
   addComment: (id: string, text: string, parent_id?: string) => req(`/posts/${id}/comments`, { method: 'POST', body: j({ text, parent_id }) }),
   deleteComment: (id: string) => req(`/comments/${id}`, { method: 'DELETE' }),
   deleteDm: (handle: string, id: string) => req(`/dms/${handle}/${id}`, { method: 'DELETE' }),
   pinDm: (handle: string, id: string) => req(`/dms/${handle}/${id}/pin`, { method: 'POST' }),
+  giphySearch: (q: string) => req(`/giphy/search?q=${encodeURIComponent(q)}`),
   sendDmMedia: (handle: string, media_url: string, media_type: string, duration?: number, text?: string) =>
     req(`/dms/${handle}`, { method: 'POST', body: j({ media_url, media_type, duration, text }) }),
   trending: () => req('/trending'),

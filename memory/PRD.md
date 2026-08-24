@@ -92,3 +92,5 @@ Phase 6 TODO: admin watchlist, CSAM/CEOP queue, NSFW scan, moderation extras, fo
 NOTE: old zip has committed secrets to rotate (SUPABASE_SERVICE_ROLE_KEY etc).
 
 ## Phase 2 DONE (backend 38/38): voice messages (MediaRecorder->Supabase upload->audio DM), media-only messages, pin/unpin messages (WS broadcast, pinned banner), audio playback in bubble. GIFs/stickers still TODO (needs Giphy/Tenor API key from user).
+
+## Phase 2 GIFs + Phase 3 DONE (backend all pass): Giphy integrated (GET /api/giphy/search, key in .env) with GIF picker in DM composer (sends as image DM). Reels: GET /api/reels (video posts), TikTok-style full-screen vertical snap-scroll Reels page (/reels) with IntersectionObserver autoplay, mute toggle, like(love)/comment overlay, author info. Nav link added.

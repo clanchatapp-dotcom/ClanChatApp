@@ -673,6 +673,18 @@ async def feed(scope: str = 'general', u: dict = Depends(get_current_user)):
             break
     return out
 
+
+@app.get('/api/reels')
+async def reels(u: dict = Depends(get_current_user)):
+    """TikTok-style feed: video posts the viewer can see, newest first."""
+    out = []
+    async for p in db.posts.find({'media_type': 'video', 'media_url': {'$ne': None}}).sort('created_at', -1).limit(150):
+        if await can_view(u['id'], p):
+            out.append(await post_out(p, u['id']))
+        if len(out) >= 40:
+            break
+    return out
+
 @app.post('/api/posts')
 async def create_post(body: PostCreate, u: dict = Depends(get_current_user)):
     tier = body.tier if body.tier in TIERS else 'public'
@@ -904,6 +916,35 @@ async def pin_dm(handle: str, message_id: str, u: dict = Depends(get_current_use
     await db.dms.update_one({'id': message_id}, {'$set': {'pinned': newp}})
     await manager.broadcast(m['room'], {'type': 'dm_pin', 'id': message_id, 'pinned': newp})
     return {'ok': True, 'pinned': newp}
+
+
+GIPHY_API_KEY = os.environ.get('GIPHY_API_KEY', '')
+
+
+@app.get('/api/giphy/search')
+async def giphy_search(q: str = '', limit: int = 24, u: dict = Depends(get_current_user)):
+    if not GIPHY_API_KEY:
+        raise HTTPException(503, 'GIF search is not configured')
+    base = 'https://api.giphy.com/v1/gifs/'
+    url = base + ('search' if q.strip() else 'trending')
+    params = {'api_key': GIPHY_API_KEY, 'limit': min(int(limit), 50), 'rating': 'pg-13'}
+    if q.strip():
+        params['q'] = q.strip()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(url, params=params)
+            r.raise_for_status()
+            data = r.json().get('data', [])
+    except Exception:
+        raise HTTPException(502, 'GIF search failed')
+    out = []
+    for g in data:
+        imgs = g.get('images', {})
+        fh = imgs.get('fixed_height', {})
+        if fh.get('url'):
+            out.append({'id': g.get('id'), 'url': fh['url'],
+                        'preview': imgs.get('fixed_height_small', {}).get('url', fh['url'])})
+    return out
 
 
 # ----------------------------- Activity -----------------------------

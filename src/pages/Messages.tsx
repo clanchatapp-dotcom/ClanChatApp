@@ -90,6 +90,16 @@ export default function Messages() {
     try { const r = await api.pinDm(handle!, id); setMsgs(x => x.map(m => m.id === id ? { ...m, pinned: r.pinned } : m)) } catch {}
   }
 
+  const [gifOpen, setGifOpen] = useState(false)
+  const [gifs, setGifs] = useState<any[]>([])
+  const [gifQ, setGifQ] = useState('')
+  const openGif = async () => { setGifOpen(o => !o); if (!gifOpen && gifs.length === 0) { try { setGifs(await api.giphySearch('')) } catch {} } }
+  const searchGifs = async (query: string) => { setGifQ(query); try { setGifs(await api.giphySearch(query)) } catch {} }
+  const sendGif = async (url: string) => {
+    if (!handle) return; setGifOpen(false)
+    try { const m = await api.sendDmMedia(handle, url, 'image'); if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) } } catch {}
+  }
+
   const callRoom = handle && user ? `dm-${[user.handle, handle].sort().join('-')}` : ''
   const isSelf = !!handle && handle === user?.handle
   const selfThread = threads.find(t => t.user.handle === user?.handle)
@@ -182,15 +192,27 @@ export default function Messages() {
                 <div ref={endRef} />
               </div>
               {thread.can_dm ? (
-                <form onSubmit={send} className="p-3 border-t border-edge flex gap-2 items-center">
-                  <input value={text} onChange={e => setText(e.target.value)} placeholder={recording ? 'Recording…' : 'Message (encrypted)…'} disabled={recording}
-                    className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand disabled:opacity-60" />
-                  <button type="button" onClick={recording ? stopRec : startRec} disabled={busy}
-                    className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${recording ? 'bg-rose-600 animate-pulse' : 'bg-white/10 hover:bg-white/20'}`}>
-                    {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : recording ? <Square className="h-4 w-4" /> : <Mic className="h-5 w-5" />}
-                  </button>
-                  <button className="h-11 w-11 grid place-items-center rounded-xl bg-gradient-to-r from-brand to-violet-600 shrink-0"><Send className="h-5 w-5" /></button>
-                </form>
+                <div className="border-t border-edge relative">
+                  {gifOpen && (
+                    <div className="absolute bottom-full left-0 right-0 bg-panel2 border-t border-edge p-3 max-h-72 overflow-y-auto">
+                      <input autoFocus value={gifQ} onChange={e => searchGifs(e.target.value)} placeholder="Search GIFs (powered by GIPHY)…"
+                        className="w-full bg-ink border border-edge rounded-xl px-3 py-2 text-sm outline-none focus:border-brand mb-2" />
+                      <div className="grid grid-cols-3 gap-2">
+                        {gifs.map(g => <img key={g.id} src={g.preview} onClick={() => sendGif(g.url)} className="rounded-lg cursor-pointer h-24 w-full object-cover hover:ring-2 ring-brand" />)}
+                      </div>
+                    </div>
+                  )}
+                  <form onSubmit={send} className="p-3 flex gap-2 items-center">
+                    <button type="button" onClick={openGif} className={`h-11 px-2 grid place-items-center rounded-xl text-xs font-bold shrink-0 ${gifOpen ? 'bg-brand text-white' : 'bg-white/10 hover:bg-white/20'}`}>GIF</button>
+                    <input value={text} onChange={e => setText(e.target.value)} placeholder={recording ? 'Recording…' : 'Message (encrypted)…'} disabled={recording}
+                      className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand disabled:opacity-60" />
+                    <button type="button" onClick={recording ? stopRec : startRec} disabled={busy}
+                      className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${recording ? 'bg-rose-600 animate-pulse' : 'bg-white/10 hover:bg-white/20'}`}>
+                      {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : recording ? <Square className="h-4 w-4" /> : <Mic className="h-5 w-5" />}
+                    </button>
+                    <button className="h-11 w-11 grid place-items-center rounded-xl bg-gradient-to-r from-brand to-violet-600 shrink-0"><Send className="h-5 w-5" /></button>
+                  </form>
+                </div>
               ) : <div className="p-4 border-t border-edge text-center text-sm text-slate-500">You can't DM this person. DMs open only for your Inner Circle or Followers who allow it.</div>}
             </>
           )}

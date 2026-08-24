@@ -1,317 +1,350 @@
 #!/usr/bin/env python3
 """
-Backend test for Login Verification (email/password + seeded admin)
-Tests login endpoints after request-timeout client fix to ensure NO regression.
+Phase 3 Backend Testing: Giphy GIF search + Reels (video) feed
+Tests GIPHY endpoints and REELS endpoints with authentication
 """
-import requests
-import json
-import sys
-import secrets
-import time
 
-# Base URL from .env
+import requests
+import uuid
+import json
+from datetime import datetime
+
+# Backend URL from .env
 BASE_URL = "https://auth-consolidation-3.preview.emergentagent.com/api"
 
-def print_test(name, passed, details=""):
-    status = "✅ PASS" if passed else "❌ FAIL"
-    print(f"{status}: {name}")
-    if details:
-        print(f"  → {details}")
-    if not passed:
-        sys.exit(1)
+def log(msg):
+    """Print timestamped log message"""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-print("\n" + "="*80)
-print("LOGIN VERIFICATION TESTS (email/password + seeded admin)")
-print("="*80 + "\n")
-
-# ============================================================================
-# TEST 1: Seeded super-admin login
-# ============================================================================
-print("TEST 1: Seeded super-admin login")
-print("-" * 80)
-
-# Step 1a: POST /api/auth/login with seeded admin credentials
-admin_email = "admin@clanchat.app"
-admin_password = "ClanChatAdmin!2025"
-
-start_time = time.time()
-admin_login_resp = requests.post(
-    f"{BASE_URL}/auth/login",
-    json={"email": admin_email, "password": admin_password}
-)
-admin_login_time = time.time() - start_time
-
-print(f"  → POST /api/auth/login (admin) took {admin_login_time:.3f}s")
-
-print_test(
-    "POST /api/auth/login (seeded admin) → 200",
-    admin_login_resp.status_code == 200,
-    f"Status: {admin_login_resp.status_code}, Response: {admin_login_resp.text[:200]}"
-)
-
-admin_login_data = admin_login_resp.json()
-admin_token = admin_login_data.get('access_token')
-
-print_test(
-    "Response contains access_token",
-    admin_token is not None and len(admin_token) > 0,
-    f"Token length: {len(admin_token) if admin_token else 0}"
-)
-
-# Step 1b: GET /api/me with admin token
-start_time = time.time()
-admin_me_resp = requests.get(
-    f"{BASE_URL}/me",
-    headers={"Authorization": f"Bearer {admin_token}"}
-)
-admin_me_time = time.time() - start_time
-
-print(f"  → GET /api/me (admin) took {admin_me_time:.3f}s")
-
-print_test(
-    "GET /api/me (with admin token) → 200",
-    admin_me_resp.status_code == 200,
-    f"Status: {admin_me_resp.status_code}"
-)
-
-admin_me_data = admin_me_resp.json()
-print(f"  → Admin profile: handle={admin_me_data.get('handle')}, is_admin={admin_me_data.get('is_admin')}")
-
-print_test(
-    "is_admin == true",
-    admin_me_data.get('is_admin') == True,
-    f"is_admin: {admin_me_data.get('is_admin')}"
-)
-
-print_test(
-    "Admin login response time < 1 second",
-    admin_login_time < 1.0,
-    f"Login took {admin_login_time:.3f}s"
-)
-
-# ============================================================================
-# TEST 2: Wrong password
-# ============================================================================
-print("\nTEST 2: Wrong password")
-print("-" * 80)
-
-wrong_pw_resp = requests.post(
-    f"{BASE_URL}/auth/login",
-    json={"email": admin_email, "password": "wrongwrong"}
-)
-
-print_test(
-    "POST /api/auth/login (wrong password) → 401",
-    wrong_pw_resp.status_code == 401,
-    f"Status: {wrong_pw_resp.status_code}"
-)
-
-if wrong_pw_resp.status_code == 401:
-    wrong_pw_data = wrong_pw_resp.json()
-    error_detail = wrong_pw_data.get('detail', '')
-    print(f"  → Error detail: {error_detail}")
+def register_user():
+    """Register a throwaway user for testing"""
+    unique_suffix = str(uuid.uuid4())[:8]
+    email = f"phase3test+{unique_suffix}@example.com"
+    password = "secret123"
+    name = f"Phase3 Tester"
     
-    print_test(
-        "Error message contains 'Invalid email or password'",
-        'Invalid email or password' in error_detail,
-        f"Detail: {error_detail}"
-    )
-
-# ============================================================================
-# TEST 3: Fresh register + login
-# ============================================================================
-print("\nTEST 3: Fresh register + login")
-print("-" * 80)
-
-# Generate unique random email
-rand_suffix = secrets.token_hex(4)
-fresh_email = f"loginqa+{rand_suffix}@example.com"
-fresh_password = "secret123"
-fresh_name = "Login QA"
-
-print(f"  → Testing with email: {fresh_email}")
-
-# Step 3a: POST /api/auth/register
-start_time = time.time()
-register_resp = requests.post(
-    f"{BASE_URL}/auth/register",
-    json={"email": fresh_email, "password": fresh_password, "name": fresh_name}
-)
-register_time = time.time() - start_time
-
-print(f"  → POST /api/auth/register took {register_time:.3f}s")
-
-print_test(
-    "POST /api/auth/register → 200",
-    register_resp.status_code == 200,
-    f"Status: {register_resp.status_code}, Response: {register_resp.text[:200]}"
-)
-
-register_data = register_resp.json()
-register_token = register_data.get('access_token')
-
-print_test(
-    "Register response contains access_token",
-    register_token is not None and len(register_token) > 0,
-    f"Token length: {len(register_token) if register_token else 0}"
-)
-
-# Step 3b: GET /api/me with registration token
-me_resp = requests.get(
-    f"{BASE_URL}/me",
-    headers={"Authorization": f"Bearer {register_token}"}
-)
-
-print_test(
-    "GET /api/me (with registration token) → 200",
-    me_resp.status_code == 200,
-    f"Status: {me_resp.status_code}"
-)
-
-me_data = me_resp.json()
-print(f"  → User profile: handle={me_data.get('handle')}, display_name={me_data.get('display_name')}")
-
-# Step 3c: POST /api/auth/login with same credentials
-start_time = time.time()
-login_resp = requests.post(
-    f"{BASE_URL}/auth/login",
-    json={"email": fresh_email, "password": fresh_password}
-)
-login_time = time.time() - start_time
-
-print(f"  → POST /api/auth/login took {login_time:.3f}s")
-
-print_test(
-    "POST /api/auth/login (fresh user) → 200",
-    login_resp.status_code == 200,
-    f"Status: {login_resp.status_code}"
-)
-
-login_data = login_resp.json()
-login_token = login_data.get('access_token')
-
-print_test(
-    "Login response contains access_token",
-    login_token is not None and len(login_token) > 0,
-    f"Token length: {len(login_token) if login_token else 0}"
-)
-
-print_test(
-    "Register response time < 1 second",
-    register_time < 1.0,
-    f"Register took {register_time:.3f}s"
-)
-
-print_test(
-    "Login response time < 1 second",
-    login_time < 1.0,
-    f"Login took {login_time:.3f}s"
-)
-
-# ============================================================================
-# TEST 4: Unknown email
-# ============================================================================
-print("\nTEST 4: Unknown email")
-print("-" * 80)
-
-unknown_suffix = secrets.token_hex(4)
-unknown_email = f"nobody-{unknown_suffix}@example.com"
-unknown_password = "whatever1"
-
-print(f"  → Testing with unknown email: {unknown_email}")
-
-unknown_resp = requests.post(
-    f"{BASE_URL}/auth/login",
-    json={"email": unknown_email, "password": unknown_password}
-)
-
-print_test(
-    "POST /api/auth/login (unknown email) → 401",
-    unknown_resp.status_code == 401,
-    f"Status: {unknown_resp.status_code}"
-)
-
-if unknown_resp.status_code == 401:
-    unknown_data = unknown_resp.json()
-    error_detail = unknown_data.get('detail', '')
-    print(f"  → Error detail: {error_detail}")
+    log(f"Registering user: {email}")
+    resp = requests.post(f"{BASE_URL}/auth/register", json={
+        "email": email,
+        "password": password,
+        "name": name
+    }, timeout=30)
     
-    print_test(
-        "Error message contains 'Invalid email or password'",
-        'Invalid email or password' in error_detail,
-        f"Detail: {error_detail}"
-    )
+    if resp.status_code != 200:
+        log(f"❌ Registration failed: {resp.status_code} - {resp.text}")
+        return None, None
+    
+    data = resp.json()
+    token = data.get("access_token")
+    handle = data.get("user", {}).get("handle")
+    log(f"✅ Registered user: {handle} (token: {len(token)} chars)")
+    return token, handle
 
-# ============================================================================
-# TEST 5: /api/me with no token and malformed token
-# ============================================================================
-print("\nTEST 5: /api/me with no token and malformed token")
-print("-" * 80)
+def test_giphy_trending(token):
+    """Test 1: GET /api/giphy/search (no q, auth) -> 200, returns trending gifs array"""
+    log("\n=== TEST 1: GIPHY Trending (no q parameter) ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(f"{BASE_URL}/giphy/search", headers=headers, timeout=30)
+    
+    log(f"Status: {resp.status_code}")
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code}")
+        log(f"Response: {resp.text}")
+        return False
+    
+    data = resp.json()
+    
+    if not isinstance(data, list):
+        log(f"❌ FAIL: Expected array, got {type(data)}")
+        return False
+    
+    if len(data) == 0:
+        log(f"❌ FAIL: Expected non-empty array (trending gifs), got empty array")
+        return False
+    
+    # Check first item has required fields
+    first_item = data[0]
+    if not all(k in first_item for k in ['id', 'url', 'preview']):
+        log(f"❌ FAIL: Missing required fields. Got: {first_item.keys()}")
+        return False
+    
+    log(f"✅ PASS: Returned {len(data)} trending gifs")
+    log(f"   Sample: id={first_item['id'][:20]}..., url={first_item['url'][:50]}...")
+    return True
 
-# Step 5a: GET /api/me with no token
-no_token_resp = requests.get(f"{BASE_URL}/me")
+def test_giphy_search(token):
+    """Test 2: GET /api/giphy/search?q=cat (auth) -> 200, array of gifs"""
+    log("\n=== TEST 2: GIPHY Search with query (q=cat) ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(f"{BASE_URL}/giphy/search?q=cat", headers=headers, timeout=30)
+    
+    log(f"Status: {resp.status_code}")
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code}")
+        log(f"Response: {resp.text}")
+        return False
+    
+    data = resp.json()
+    
+    if not isinstance(data, list):
+        log(f"❌ FAIL: Expected array, got {type(data)}")
+        return False
+    
+    if len(data) == 0:
+        log(f"❌ FAIL: Expected non-empty array (cat gifs), got empty array")
+        return False
+    
+    # Check first item has required fields
+    first_item = data[0]
+    if not all(k in first_item for k in ['id', 'url', 'preview']):
+        log(f"❌ FAIL: Missing required fields. Got: {first_item.keys()}")
+        return False
+    
+    log(f"✅ PASS: Returned {len(data)} cat gifs")
+    log(f"   Sample: id={first_item['id'][:20]}..., url={first_item['url'][:50]}...")
+    return True
 
-print_test(
-    "GET /api/me (no token) → 401",
-    no_token_resp.status_code == 401,
-    f"Status: {no_token_resp.status_code}"
-)
+def test_giphy_no_auth():
+    """Test 3: GET /api/giphy/search with NO auth token -> 401"""
+    log("\n=== TEST 3: GIPHY Search without auth (expect 401) ===")
+    
+    resp = requests.get(f"{BASE_URL}/giphy/search", timeout=30)
+    
+    log(f"Status: {resp.status_code}")
+    
+    if resp.status_code != 401:
+        log(f"❌ FAIL: Expected 401, got {resp.status_code}")
+        log(f"Response: {resp.text}")
+        return False
+    
+    log(f"✅ PASS: Correctly returned 401 without auth token")
+    return True
 
-# Step 5b: GET /api/me with malformed token
-malformed_token = "this-is-not-a-valid-jwt-token"
-malformed_resp = requests.get(
-    f"{BASE_URL}/me",
-    headers={"Authorization": f"Bearer {malformed_token}"}
-)
+def test_create_video_post(token):
+    """Test 4: Create a VIDEO post"""
+    log("\n=== TEST 4: Create VIDEO post (media_type=video) ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.post(f"{BASE_URL}/posts", headers=headers, json={
+        "tier": "public",
+        "text": "reel test",
+        "media_url": "https://example.com/v.mp4",
+        "media_type": "video"
+    }, timeout=30)
+    
+    log(f"Status: {resp.status_code}")
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code}")
+        log(f"Response: {resp.text}")
+        return False, None
+    
+    data = resp.json()
+    post_id = data.get("id")
+    
+    log(f"✅ PASS: Created video post with id={post_id}")
+    return True, post_id
 
-print_test(
-    "GET /api/me (malformed token) → 401",
-    malformed_resp.status_code == 401,
-    f"Status: {malformed_resp.status_code}"
-)
+def test_create_text_post(token):
+    """Test 5: Create a non-video post (text only)"""
+    log("\n=== TEST 5: Create TEXT-ONLY post (no media) ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.post(f"{BASE_URL}/posts", headers=headers, json={
+        "tier": "public",
+        "text": "not a reel"
+    }, timeout=30)
+    
+    log(f"Status: {resp.status_code}")
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code}")
+        log(f"Response: {resp.text}")
+        return False, None
+    
+    data = resp.json()
+    post_id = data.get("id")
+    
+    log(f"✅ PASS: Created text-only post with id={post_id}")
+    return True, post_id
 
-# Step 5c: GET /api/me with invalid JWT format
-invalid_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid.signature"
-invalid_resp = requests.get(
-    f"{BASE_URL}/me",
-    headers={"Authorization": f"Bearer {invalid_jwt}"}
-)
+def test_reels_endpoint(token, video_post_id, text_post_id):
+    """Test 6: GET /api/reels (auth) -> 200, includes video post, excludes text post"""
+    log("\n=== TEST 6: GET /api/reels (must include video, exclude text) ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(f"{BASE_URL}/reels", headers=headers, timeout=30)
+    
+    log(f"Status: {resp.status_code}")
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code}")
+        log(f"Response: {resp.text}")
+        return False
+    
+    data = resp.json()
+    
+    if not isinstance(data, list):
+        log(f"❌ FAIL: Expected array, got {type(data)}")
+        return False
+    
+    log(f"Returned {len(data)} reels")
+    
+    # Check if video post is in reels
+    video_found = False
+    text_found = False
+    
+    for reel in data:
+        if reel.get("id") == video_post_id:
+            video_found = True
+            # Verify it has correct shape
+            if reel.get("media_type") != "video":
+                log(f"❌ FAIL: Video post has wrong media_type: {reel.get('media_type')}")
+                return False
+            if not reel.get("media_url"):
+                log(f"❌ FAIL: Video post missing media_url")
+                return False
+            # Check post_out shape
+            required_fields = ['id', 'media_url', 'media_type', 'author', 'reaction_total', 'comment_count']
+            missing = [f for f in required_fields if f not in reel]
+            if missing:
+                log(f"❌ FAIL: Video post missing fields: {missing}")
+                return False
+            log(f"   ✓ Video post found with correct shape")
+        
+        if reel.get("id") == text_post_id:
+            text_found = True
+    
+    if not video_found:
+        log(f"❌ FAIL: Video post (id={video_post_id}) NOT found in reels")
+        return False
+    
+    if text_found:
+        log(f"❌ FAIL: Text-only post (id={text_post_id}) SHOULD NOT be in reels but was found")
+        return False
+    
+    log(f"✅ PASS: Reels correctly includes video post and excludes text-only post")
+    return True
 
-print_test(
-    "GET /api/me (invalid JWT) → 401",
-    invalid_resp.status_code == 401,
-    f"Status: {invalid_resp.status_code}"
-)
+def test_reels_no_auth():
+    """Test 7: GET /api/reels with no token -> 401"""
+    log("\n=== TEST 7: GET /api/reels without auth (expect 401) ===")
+    
+    resp = requests.get(f"{BASE_URL}/reels", timeout=30)
+    
+    log(f"Status: {resp.status_code}")
+    
+    if resp.status_code != 401:
+        log(f"❌ FAIL: Expected 401, got {resp.status_code}")
+        log(f"Response: {resp.text}")
+        return False
+    
+    log(f"✅ PASS: Correctly returned 401 without auth token")
+    return True
 
-# ============================================================================
-# TEST 6: Response time summary
-# ============================================================================
-print("\nTEST 6: Response time summary")
-print("-" * 80)
+def test_feed_regression(token, video_post_id, text_post_id):
+    """Test 8: Regression - GET /api/feed still works and includes both posts"""
+    log("\n=== TEST 8: REGRESSION - GET /api/feed includes both posts ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(f"{BASE_URL}/feed?scope=general", headers=headers, timeout=30)
+    
+    log(f"Status: {resp.status_code}")
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code}")
+        log(f"Response: {resp.text}")
+        return False
+    
+    data = resp.json()
+    
+    if not isinstance(data, list):
+        log(f"❌ FAIL: Expected array, got {type(data)}")
+        return False
+    
+    log(f"Feed returned {len(data)} posts")
+    
+    # Check if both posts are in feed
+    video_found = False
+    text_found = False
+    
+    for post in data:
+        if post.get("id") == video_post_id:
+            video_found = True
+            log(f"   ✓ Video post found in feed")
+        if post.get("id") == text_post_id:
+            text_found = True
+            log(f"   ✓ Text post found in feed")
+    
+    if not video_found:
+        log(f"❌ FAIL: Video post (id={video_post_id}) NOT found in feed")
+        return False
+    
+    if not text_found:
+        log(f"❌ FAIL: Text post (id={text_post_id}) NOT found in feed")
+        return False
+    
+    log(f"✅ PASS: Feed correctly includes both video and text posts")
+    return True
 
-print(f"  → Admin login: {admin_login_time:.3f}s")
-print(f"  → Admin /me: {admin_me_time:.3f}s")
-print(f"  → Fresh register: {register_time:.3f}s")
-print(f"  → Fresh login: {login_time:.3f}s")
+def main():
+    """Run all Phase 3 tests"""
+    log("=" * 70)
+    log("PHASE 3 BACKEND TESTING: Giphy GIF search + Reels (video) feed")
+    log("=" * 70)
+    
+    # Register user
+    token, handle = register_user()
+    if not token:
+        log("\n❌ CRITICAL: Failed to register user, cannot continue")
+        return
+    
+    results = {}
+    
+    # GIPHY TESTS
+    results['giphy_trending'] = test_giphy_trending(token)
+    results['giphy_search'] = test_giphy_search(token)
+    results['giphy_no_auth'] = test_giphy_no_auth()
+    
+    # REELS TESTS
+    video_success, video_post_id = test_create_video_post(token)
+    results['create_video_post'] = video_success
+    
+    text_success, text_post_id = test_create_text_post(token)
+    results['create_text_post'] = text_success
+    
+    if video_success and text_success:
+        results['reels_endpoint'] = test_reels_endpoint(token, video_post_id, text_post_id)
+        results['reels_no_auth'] = test_reels_no_auth()
+        results['feed_regression'] = test_feed_regression(token, video_post_id, text_post_id)
+    else:
+        log("\n❌ Skipping reels tests due to post creation failures")
+        results['reels_endpoint'] = False
+        results['reels_no_auth'] = False
+        results['feed_regression'] = False
+    
+    # Summary
+    log("\n" + "=" * 70)
+    log("TEST SUMMARY")
+    log("=" * 70)
+    
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
+    
+    for test_name, passed_flag in results.items():
+        status = "✅ PASS" if passed_flag else "❌ FAIL"
+        log(f"{status}: {test_name}")
+    
+    log(f"\nTotal: {passed}/{total} tests passed ({100*passed//total}% success rate)")
+    
+    if passed == total:
+        log("\n🎉 ALL TESTS PASSED - Phase 3 backend is working correctly!")
+    else:
+        log(f"\n⚠️  {total - passed} test(s) failed - see details above")
 
-avg_time = (admin_login_time + admin_me_time + register_time + login_time) / 4
-
-print_test(
-    "Average response time < 1 second",
-    avg_time < 1.0,
-    f"Average: {avg_time:.3f}s (well under 1 second, rules out server-side slowness)"
-)
-
-print("\n" + "="*80)
-print("ALL LOGIN VERIFICATION TESTS PASSED ✅")
-print("="*80 + "\n")
-
-print("SUMMARY:")
-print("  ✅ Seeded super-admin login working (admin@clanchat.app)")
-print("  ✅ Wrong password correctly returns 401")
-print("  ✅ Fresh register + login round-trip working")
-print("  ✅ Unknown email correctly returns 401")
-print("  ✅ /api/me with no token → 401")
-print("  ✅ /api/me with malformed token → 401")
-print("  ✅ Response times fast (< 1s), no server-side slowness")
-print("\nCONCLUSION: NO REGRESSION detected. Login endpoints working correctly.")
+if __name__ == "__main__":
+    main()
