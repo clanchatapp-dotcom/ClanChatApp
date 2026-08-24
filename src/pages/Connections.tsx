@@ -122,11 +122,27 @@ export default function Connections() {
           data.inner.length === 0
             ? <Empty text="Your Inner Circle is empty. Invite trusted people from their profile." />
             : data.inner.map((p: any) => (
-              <Row key={p.id} p={p}>
-                <span className="text-xs text-violet-300 flex items-center gap-1"><Lock className="h-3.5 w-3.5" />Member</span>
-                <button disabled={busy === 'ri' + p.id} onClick={() => act('ri' + p.id, () => api.removeInner(p.handle))}
-                  className="px-3 py-1.5 rounded-lg border border-edge text-sm hover:bg-white/5">Remove</button>
-              </Row>
+              <div key={p.id} className="py-3 border-b border-edge/60 last:border-0">
+                <div className="flex items-center gap-3">
+                  <Link to={`/u/${p.handle}`}><Avatar id={p.id} name={p.display_name} url={p.avatar_url} size={42} /></Link>
+                  <Link to={`/u/${p.handle}`} className="flex-1 min-w-0"><div className="font-medium truncate">{p.display_name}</div><div className="text-xs text-slate-500 truncate">#{p.handle}</div></Link>
+                  <button disabled={busy === 'ri' + p.id} onClick={() => act('ri' + p.id, () => api.removeInner(p.handle))}
+                    className="px-3 py-1.5 rounded-lg border border-edge text-sm hover:bg-white/5">Remove</button>
+                </div>
+                <div className="flex items-center gap-2 mt-2 pl-[54px]">
+                  <span className="text-xs text-slate-500">Can:</span>
+                  {[['dm', 'DM'], ['voice', 'Voice note'], ['call', 'Call']].map(([k, lbl]) => {
+                    const on = (p.perms || {})[k] !== false
+                    return (
+                      <button key={k} disabled={busy === 'pm' + p.id + k}
+                        onClick={() => act('pm' + p.id + k, () => api.setInnerPerms(p.handle, { [k]: !on }))}
+                        className={`text-xs px-2.5 py-1 rounded-full border transition ${on ? 'bg-brand/20 text-brand border-brand/40' : 'border-edge text-slate-500'}`}>
+                        {lbl}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
             ))
         )}
 

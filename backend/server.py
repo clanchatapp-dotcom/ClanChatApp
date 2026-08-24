@@ -393,8 +393,12 @@ async def can_dm(viewer: str, target: str) -> bool:
         return False  # child-safety: no adult ↔ minor DMs
     if await get_relation(target, viewer) == 'restrict':
         return False  # target restricted the viewer -> viewer can't DM them
-    if await in_inner(target, viewer) or await in_inner(viewer, target):
-        return True  # Tier 3 both directions
+    # viewer is a MEMBER of target's inner circle -> target controls DM permission per member
+    doc = await db.inner.find_one({'owner_id': target, 'member_id': viewer, 'status': 'accepted'})
+    if doc and (doc.get('perms') or {}).get('dm', True):
+        return True
+    if await in_inner(viewer, target):
+        return True  # viewer owns target as an inner member -> can always DM their member
     tp = await db.profiles.find_one({'id': target})
     if tp and tp.get('dm_open') and await is_follower(viewer, target):
         return True  # Tier 2 optional toggle
@@ -473,7 +477,7 @@ async def post_out(p: dict, viewer_id: str) -> dict:
     return {
         'id': p['id'], 'tier': p['tier'], 'text': p.get('text', ''),
         'media_url': p.get('media_url'), 'media_type': p.get('media_type'),
-        'tags': p.get('tags', []), 'ai_label': p.get('ai_label', 'none'), 'created_at': p['created_at'],
+        'tags': p.get('tags', []), 'ai_label': p.get('ai_label', 'none'), 'edited': bool(p.get('edited')), 'can_edit': p['author_id'] == viewer_id, 'created_at': p['created_at'],
         'like_count': len(p.get('likes', [])), 'liked': liked,
         'likeable': p['tier'] == 'public',
         'reactions': counts, 'reaction_total': sum(counts.values()), 'my_reaction': my_reaction,
@@ -1015,7 +1019,9 @@ async def connections(u: dict = Depends(get_current_user)):
     async for r in db.inner.find({'owner_id': uid, 'status': 'accepted'}):
         p = await db.profiles.find_one({'id': r['member_id']}, {'_id': 0})
         if p:
-            inner.append(await relation_slim(p))
+            s = await relation_slim(p)
+            s['perms'] = {'dm': True, 'voice': True, 'call': True, **(r.get('perms') or {})}
+            inner.append(s)
 
     async for f in db.follows.find({'target_id': uid, 'status': 'pending'}):
         p = await db.profiles.find_one({'id': f['follower_id']}, {'_id': 0})
@@ -1045,6 +1051,31 @@ async def remove_inner(handle: str, u: dict = Depends(get_current_user)):
     if member:
         await db.inner.delete_one({'owner_id': u['id'], 'member_id': member['id']})
     return {'ok': True}
+
+
+class InnerPerms(BaseModel):
+    dm: Optional[bool] = None
+    voice: Optional[bool] = None
+    call: Optional[bool] = None
+
+@app.put('/api/inner/{handle}/perms')
+async def set_inner_perms(handle: str, body: InnerPerms, u: dict = Depends(get_current_user)):
+    """Owner sets what a specific Inner-Circle member may do toward them (DM / voice note / call)."""
+    member = await db.profiles.find_one({'handle': handle})
+    if not member:
+        raise HTTPException(404, 'User not found')
+    doc = await db.inner.find_one({'owner_id': u['id'], 'member_id': member['id'], 'status': 'accepted'})
+    if not doc:
+        raise HTTPException(404, 'That user is not in your Inner Circle')
+    perms = {'dm': True, 'voice': True, 'call': True, **(doc.get('perms') or {})}
+    for k in ('dm', 'voice', 'call'):
+        v = getattr(body, k)
+        if v is not None:
+            perms[k] = bool(v)
+    await db.inner.update_one({'id': doc['id']} if doc.get('id') else {'owner_id': u['id'], 'member_id': member['id']},
+                              {'$set': {'perms': perms}})
+    return {'ok': True, 'perms': perms}
+
 
 
 
@@ -1101,9 +1132,11 @@ async def get_wall(handle: str, u: dict = Depends(get_current_user)):
         async for w in db.wall.find({'owner_id': owner['id']}).sort('created_at', -1).limit(100):
             a = await db.profiles.find_one({'id': w['author_id']}, {'_id': 0})
             items.append({'id': w['id'], 'text': w['text'], 'created_at': w['created_at'],
+                          'edited': bool(w.get('edited')),
                           'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'],
                                      'avatar_url': a.get('avatar_url')} if a else None,
-                          'can_delete': w['author_id'] == u['id'] or owner['id'] == u['id'] or is_admin_user(u)})
+                          'can_delete': w['author_id'] == u['id'] or owner['id'] == u['id'] or is_admin_user(u),
+                          'can_edit': w['author_id'] == u['id']})
     return {'can_post': can, 'posts': items}
 
 
@@ -1317,6 +1350,39 @@ async def create_post(body: PostCreate, u: dict = Depends(get_current_user)):
 async def delete_post(post_id: str, u: dict = Depends(get_current_user)):
     await db.posts.delete_one({'id': post_id, 'author_id': u['id']})
     return {'deleted': True}
+
+class EditText(BaseModel):
+    text: str
+
+@app.put('/api/posts/{post_id}')
+async def edit_post(post_id: str, body: EditText, u: dict = Depends(get_current_user)):
+    p = await db.posts.find_one({'id': post_id})
+    if not p:
+        raise HTTPException(404, 'Post not found')
+    if p['author_id'] != u['id']:
+        raise HTTPException(403, 'Not your post')
+    text = (body.text or '').strip()
+    if contains_banned(text):
+        raise HTTPException(400, 'Your text contains a word that isn’t allowed here.')
+    await db.posts.update_one({'id': post_id}, {'$set': {
+        'text': text, 'edited': True, 'edited_at': datetime.now(timezone.utc).isoformat()}})
+    return await post_out(await db.posts.find_one({'id': post_id}), u['id'])
+
+@app.put('/api/wall/{wall_id}')
+async def edit_wall(wall_id: str, body: EditText, u: dict = Depends(get_current_user)):
+    w = await db.wall.find_one({'id': wall_id})
+    if not w:
+        raise HTTPException(404, 'Not found')
+    if w['author_id'] != u['id']:
+        raise HTTPException(403, 'Not your post')
+    text = (body.text or '').strip()
+    if not text:
+        raise HTTPException(400, 'Empty')
+    if contains_banned(text):
+        raise HTTPException(400, 'Your message contains a word that isn’t allowed here.')
+    await db.wall.update_one({'id': wall_id}, {'$set': {
+        'text': text, 'edited': True, 'edited_at': datetime.now(timezone.utc).isoformat()}})
+    return {'ok': True, 'text': text, 'edited': True}
 
 @app.post('/api/posts/{post_id}/like')
 async def like_post(post_id: str, u: dict = Depends(get_current_user)):

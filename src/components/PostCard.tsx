@@ -19,6 +19,14 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
   const [cCount, setCCount] = useState<number>(post.comment_count || 0)
   const [cText, setCText] = useState('')
   const [replyTo, setReplyTo] = useState<any>(null)
+  const [editing, setEditing] = useState(false)
+  const [editText, setEditText] = useState(post.text || '')
+  const [text, setText] = useState(post.text)
+  const [edited, setEdited] = useState(!!post.edited)
+  const saveEdit = async () => {
+    try { const r = await api.editPost(post.id, editText); setText(r.text); setEdited(true); setEditing(false) }
+    catch (e: any) { alert(e.message) }
+  }
   const [loadingC, setLoadingC] = useState(false)
   const tier = TIER[(post.tier as TierKey)] || TIER.public
   const TierIcon = tier.icon
@@ -64,7 +72,21 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
               <TierIcon className="h-3 w-3" />{tier.label}
             </span>
           </div>
-          {post.text && <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed">{post.text}</p>}
+          {editing ? (
+            <div className="mt-2">
+              <textarea value={editText} onChange={e => setEditText(e.target.value)} rows={3}
+                className="w-full bg-ink border border-edge rounded-xl px-3 py-2 outline-none focus:border-brand text-sm" />
+              <div className="flex gap-2 justify-end mt-1">
+                <button onClick={() => { setEditing(false); setEditText(text || '') }} className="text-xs px-3 py-1 rounded-lg border border-edge">Cancel</button>
+                <button onClick={saveEdit} className="text-xs px-3 py-1 rounded-lg bg-brand font-medium">Save</button>
+              </div>
+            </div>
+          ) : (
+            text && <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed">{text}{edited && <span className="text-xs text-slate-500 ml-1">(edited)</span>}</p>
+          )}
+          {post.can_edit && !editing && (
+            <button onClick={() => { setEditText(text || ''); setEditing(true) }} className="mt-1 text-xs text-slate-500 hover:text-brand">Edit</button>
+          )}
           {post.media_url && (
             <div className="relative mt-3">
               {post.media_type === 'video'
