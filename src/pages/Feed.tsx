@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { TIER, TierKey } from '../lib/ui'
 import PostCard from '../components/PostCard'
-import { Image as ImageIcon, Loader2, X, LayoutGrid, AlignLeft } from 'lucide-react'
+import { Image as ImageIcon, Loader2, X } from 'lucide-react'
 
 function Composer({ onPosted }: { onPosted: () => void }) {
   const [tier, setTier] = useState<TierKey>('public')
@@ -103,7 +103,6 @@ function Composer({ onPosted }: { onPosted: () => void }) {
 
 export default function Feed() {
   const [scope, setScope] = useState('general')
-  const [view, setView] = useState<'words' | 'gallery'>('words')
   const [posts, setPosts] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -111,7 +110,6 @@ export default function Feed() {
   useEffect(() => { load() }, [scope])
 
   const del = async (id: string) => { await api.deletePost(id); setPosts(p => p.filter(x => x.id !== id)) }
-  const gallery = posts.filter(p => p.media_url)
 
   return (
     <div>
@@ -122,21 +120,12 @@ export default function Feed() {
             <button key={s} onClick={() => setScope(s)} className={`text-sm px-3 py-1 rounded-lg capitalize ${scope === s ? 'bg-brand text-white' : 'text-slate-400'}`}>{s}</button>
           ))}
         </div>
-        <div className="flex items-center gap-1 bg-panel border border-edge rounded-xl p-1">
-          <button onClick={() => setView('words')} className={`h-8 w-8 grid place-items-center rounded-lg ${view === 'words' ? 'bg-brand text-white' : 'text-slate-400'}`}><AlignLeft className="h-4 w-4" /></button>
-          <button onClick={() => setView('gallery')} className={`h-8 w-8 grid place-items-center rounded-lg ${view === 'gallery' ? 'bg-brand text-white' : 'text-slate-400'}`}><LayoutGrid className="h-4 w-4" /></button>
-        </div>
       </div>
 
       <div className="p-4 space-y-4">
         <Composer onPosted={load} />
         {loading ? <div className="py-16 grid place-items-center text-slate-500"><Loader2 className="h-6 w-6 animate-spin" /></div>
-          : view === 'gallery' ? (
-            <div className="grid grid-cols-3 gap-1.5">
-              {gallery.map(p => <img key={p.id} src={p.media_url} className="aspect-square object-cover rounded-lg" />)}
-              {gallery.length === 0 && <p className="col-span-3 text-center text-slate-500 py-10">No media posts yet.</p>}
-            </div>
-          ) : posts.length === 0 ? <p className="text-center text-slate-500 py-10">Nothing here yet. Make the first post!</p>
+          : posts.length === 0 ? <p className="text-center text-slate-500 py-10">Nothing here yet. Make the first post!</p>
             : posts.map(p => <PostCard key={p.id} post={p} onDelete={del} />)}
       </div>
     </div>
