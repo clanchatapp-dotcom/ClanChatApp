@@ -43,3 +43,6 @@ yarl==1.24.5
 # It is not on public PyPI, so listing it breaks the Render build. It stays installed
 # in the Emergent preview environment. The server.py import is guarded (_HAS_EI) so the
 # scanner simply no-ops when the package/key is absent, and uploads keep working.
+
+# Firebase Admin SDK — server-side FCM push (transitive deps resolved by pip)
+firebase-admin==7.5.0
