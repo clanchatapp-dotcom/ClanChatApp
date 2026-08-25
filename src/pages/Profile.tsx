@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api } from '../lib/api'
-import { Avatar, timeAgo } from '../lib/ui'
+import { Avatar, timeAgo, Linkify } from '../lib/ui'
 import PostCard from '../components/PostCard'
 import { useAuth } from '../lib/auth'
 import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera, Trash2, Ban, VolumeX, ShieldOff, Plus, MessagesSquare, Send, X, Pin } from 'lucide-react'
@@ -232,7 +232,7 @@ function WallTab({ handle }: { handle: string }) {
               <span className="text-xs text-slate-500">{timeAgo(w.created_at)}</span>
               {w.can_delete && <button onClick={() => remove(w.id)} className="ml-auto text-slate-500 hover:text-rose-400"><Trash2 className="h-4 w-4" /></button>}
             </div>
-            <p className="mt-1 whitespace-pre-wrap break-words">{w.text}</p>
+            <p className="mt-1 whitespace-pre-wrap break-words"><Linkify text={w.text} /></p>
           </div>
         </div>
       ))}
@@ -381,7 +381,7 @@ function BoardPostBubble({ p, isReply = false, canPost, replyTo, setReplyTo, rep
             <span className="text-xs text-slate-500">{timeAgo(p.created_at)}</span>
             {p.can_delete && <button onClick={() => onDelete(p.id)} className="ml-auto text-slate-600 hover:text-rose-400"><Trash2 className="h-3.5 w-3.5" /></button>}
           </div>
-          <p className="text-sm whitespace-pre-wrap break-words">{p.text}</p>
+          <p className="text-sm whitespace-pre-wrap break-words"><Linkify text={p.text} /></p>
         </div>
         <div className="flex items-center gap-2 mt-1 pl-1 relative">
           <button onClick={() => setPickerOpen((o: boolean) => !o)} className="text-xs text-slate-500 hover:text-brand">React</button>

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Trash2, Flag, MessageCircle, Send, CornerDownRight, SmilePlus, Sparkles, History, X, Pin } from 'lucide-react'
 import { api } from '../lib/api'
-import { Avatar, TIER, TierKey, timeAgo } from '../lib/ui'
+import { Avatar, TIER, TierKey, timeAgo, Linkify } from '../lib/ui'
 
 const REPORT_CATS = ['harassment', 'hate', 'self_harm', 'inappropriate', 'unlabelled_ai', 'impersonation', 'underage', 'spam', 'csam', 'other']
 const RX: Record<string, string> = { like: '👍', love: '❤️', haha: '😂', wow: '😮', sad: '😢', angry: '😡' }
@@ -93,7 +93,7 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
               </div>
             </div>
           ) : (
-            text && <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed">{text}{edited && <button onClick={openHistory} className="text-xs text-slate-500 ml-1 hover:text-brand underline decoration-dotted">(edited)</button>}</p>
+            text && <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed"><Linkify text={text} />{edited && <button onClick={openHistory} className="text-xs text-slate-500 ml-1 hover:text-brand underline decoration-dotted">(edited)</button>}</p>
           )}
           {post.can_edit && !editing && (
             <div className="mt-1 flex items-center gap-3">
@@ -252,7 +252,7 @@ function Comment({ c, onReply, onDelete }: { c: any; onReply?: () => void; onDel
         <div className="bg-ink border border-edge rounded-2xl px-3 py-2">
           <Link to={`/u/${a.handle}`} className="text-sm font-medium hover:underline">{a.display_name}</Link>
           {c.restricted && <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-400 border border-amber-500/40 rounded-full px-1.5 py-0.5">Restricted · only visible to them</span>}
-          <p className="text-sm whitespace-pre-wrap break-words">{c.text}</p>
+          <p className="text-sm whitespace-pre-wrap break-words"><Linkify text={c.text} /></p>
         </div>
         <div className="flex items-center gap-3 mt-1 text-xs text-slate-500 px-2">
           <span>{timeAgo(c.created_at)}</span>

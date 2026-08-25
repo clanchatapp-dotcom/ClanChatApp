@@ -30,3 +30,30 @@ export function Avatar({ id, name, url, size = 40 }: { id: string; name: string;
     </div>
   )
 }
+
+
+// Turns URLs (http/https and www.) inside plain text into clickable links.
+// Safe: opens in a new tab with noopener/noreferrer; no HTML injection (text only).
+const URL_RX = /((?:https?:\/\/|www\.)[^\s<]+[^\s<.,!?:;'")\]])/gi
+
+export function Linkify({ text }: { text?: string | null }) {
+  if (!text) return null
+  const parts = String(text).split(URL_RX)
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (i % 2 === 1) {
+          const href = part.startsWith('http') ? part : `https://${part}`
+          return (
+            <a key={i} href={href} target="_blank" rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              className="text-brand underline decoration-brand/40 hover:decoration-brand break-all">
+              {part}
+            </a>
+          )
+        }
+        return part
+      })}
+    </>
+  )
+}

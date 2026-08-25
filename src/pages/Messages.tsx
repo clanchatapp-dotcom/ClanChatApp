@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api, getToken, wsDmUrl } from '../lib/api'
-import { Avatar } from '../lib/ui'
+import { Avatar, Linkify } from '../lib/ui'
 import { useAuth } from '../lib/auth'
 import CallModal from '../components/CallModal'
 import { secureOn, secureOff, screenshotProtectionAvailable } from '../lib/privacyScreen'
@@ -260,7 +260,7 @@ export default function Messages() {
                             ? <audio src={m.media_url} controls className="max-w-[220px] h-9" />
                             : m.media_url
                               ? <img src={m.media_url} className="rounded-lg max-h-64" />
-                              : m.text}
+                              : <Linkify text={m.text} />}
                     </div>
                   </div>
                 ))}
