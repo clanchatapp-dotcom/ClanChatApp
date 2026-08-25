@@ -1,7 +1,8 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from './lib/auth'
 import { applyTheme } from './lib/theme'
+import { useAndroidBackButton } from './lib/useAndroidBackButton'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import Feed from './pages/Feed'
@@ -19,14 +20,28 @@ import { Loader2 } from 'lucide-react'
 
 export default function App() {
   const { user, loading } = useAuth()
+  const [backHint, setBackHint] = useState(false)
+  useAndroidBackButton()
 
   useEffect(() => {
     const u = user as any
     applyTheme({ theme: u?.theme, accent: u?.accent, font_size: u?.font_size })
   }, [user])
 
+  useEffect(() => {
+    const on = () => { setBackHint(true); setTimeout(() => setBackHint(false), 1800) }
+    window.addEventListener('cc-back-hint', on)
+    return () => window.removeEventListener('cc-back-hint', on)
+  }, [])
+
   return (
-    <Routes>
+    <>
+      {backHint && (
+        <div className="fixed bottom-24 inset-x-0 z-[70] flex justify-center pointer-events-none">
+          <div className="bg-panel border border-edge rounded-full px-4 py-2 text-sm text-slate-200 shadow-lg">Press back again to exit</div>
+        </div>
+      )}
+      <Routes>
       <Route path="/auth/callback" element={<AuthCallback />} />
       {loading ? (
         <Route path="*" element={<div className="h-full grid place-items-center"><Loader2 className="h-6 w-6 animate-spin text-slate-500" /></div>} />
@@ -48,6 +63,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       )}
-    </Routes>
+      </Routes>
+    </>
   )
 }

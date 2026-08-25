@@ -137,8 +137,9 @@ export const api = {
   deleteDm: (handle: string, id: string) => req(`/dms/${handle}/${id}`, { method: 'DELETE' }),
   pinDm: (handle: string, id: string) => req(`/dms/${handle}/${id}/pin`, { method: 'POST' }),
   giphySearch: (q: string) => req(`/giphy/search?q=${encodeURIComponent(q)}`),
-  sendDmMedia: (handle: string, media_url: string, media_type: string, duration?: number, text?: string) =>
-    req(`/dms/${handle}`, { method: 'POST', body: j({ media_url, media_type, duration, text }) }),
+  sendDmMedia: (handle: string, media_url: string, media_type: string, duration?: number, text?: string, view_once?: boolean) =>
+    req(`/dms/${handle}`, { method: 'POST', body: j({ media_url, media_type, duration, text, view_once }) }),
+  viewOnceDm: (handle: string, id: string) => req(`/dms/${handle}/${id}/view`, { method: 'POST' }),
   trending: () => req('/trending'),
   search: (q: string) => req(`/search?q=${encodeURIComponent(q)}`),
   dmThreads: () => req('/dms'),

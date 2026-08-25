@@ -4,7 +4,8 @@ import { api, getToken, wsDmUrl } from '../lib/api'
 import { Avatar } from '../lib/ui'
 import { useAuth } from '../lib/auth'
 import CallModal from '../components/CallModal'
-import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark, Trash2, Pin, Mic, Square, Users, ChevronRight } from 'lucide-react'
+import { secureOn, secureOff, screenshotProtectionAvailable } from '../lib/privacyScreen'
+import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark, Trash2, Pin, Mic, Square, Users, ChevronRight, Eye, Flame, Image as ImageIcon, X } from 'lucide-react'
 
 export default function Messages() {
   const { handle } = useParams()
@@ -21,6 +22,13 @@ export default function Messages() {
   const seen = useRef<Set<string>>(new Set())
 
   useEffect(() => { api.dmThreads().then(setThreads).catch(() => {}) }, [handle])
+
+  // Screenshot protection: block screenshots/recording while a DM thread is open (Android, OS-enforced).
+  useEffect(() => {
+    if (!handle) return
+    secureOn()
+    return () => { secureOff() }
+  }, [handle])
 
   useEffect(() => {
     if (!handle) { setThread(null); return }
@@ -40,7 +48,8 @@ export default function Messages() {
             setMsgs(p => [...p, { ...d.message, mine: d.message.sender_id === user?.id }])
           }
           if (d.type === 'dm_deleted') setMsgs(p => p.map(m => m.id === d.id ? { ...m, deleted: true, media_url: null, text: 'This message was deleted' } : m))
-          if (d.type === 'dm_pin') setMsgs(p => p.map(m => m.id === d.id ? { ...m, pinned: d.pinned } : m)) } catch {}
+          if (d.type === 'dm_pin') setMsgs(p => p.map(m => m.id === d.id ? { ...m, pinned: d.pinned } : m))
+          if (d.type === 'dm_viewed') setMsgs(p => p.map(m => m.id === d.id ? { ...m, view_once_viewed: true } : m)) } catch {}
       }
       ws.onclose = () => { if (!stop) setTimeout(connect, 1500) }
     }
@@ -93,12 +102,40 @@ export default function Messages() {
   const [gifOpen, setGifOpen] = useState(false)
   const [gifs, setGifs] = useState<any[]>([])
   const [gifQ, setGifQ] = useState('')
+  const [viewOnce, setViewOnce] = useState(false)
+  const [viewer, setViewer] = useState<{ url: string; type: string } | null>(null)
+  const [uploadingImg, setUploadingImg] = useState(false)
+  const imgRef = useRef<HTMLInputElement | null>(null)
   const openGif = async () => { setGifOpen(o => !o); if (!gifOpen && gifs.length === 0) { try { setGifs(await api.giphySearch('')) } catch {} } }
   const searchGifs = async (query: string) => { setGifQ(query); try { setGifs(await api.giphySearch(query)) } catch {} }
   const sendGif = async (url: string) => {
     if (!handle) return; setGifOpen(false)
-    try { const m = await api.sendDmMedia(handle, url, 'image'); if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) } } catch {}
+    try { const m = await api.sendDmMedia(handle, url, 'image', undefined, undefined, viewOnce); if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) }; setViewOnce(false) } catch {}
   }
+  const onImgPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f || !handle) return
+    setUploadingImg(true)
+    try {
+      const { signed_url } = await api.upload(f)
+      const m = await api.sendDmMedia(handle, signed_url, 'image', undefined, undefined, viewOnce)
+      if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) }
+      setViewOnce(false)
+    } catch (err: any) { alert(err.message || 'Could not send photo') }
+    setUploadingImg(false); if (imgRef.current) imgRef.current.value = ''
+  }
+  const openViewOnce = async (id: string) => {
+    if (!handle) return
+    try {
+      const r = await api.viewOnceDm(handle, id)
+      setViewer({ url: r.media_url, type: r.media_type || 'image' })
+      setMsgs(p => p.map(m => m.id === id ? { ...m, view_once_viewed: true } : m))
+    } catch (e: any) { alert(e.message || 'This media has already been viewed'); setMsgs(p => p.map(m => m.id === id ? { ...m, view_once_viewed: true } : m)) }
+  }
+
+  // Block screenshots while a one-time media viewer is open (Android, OS-enforced).
+  useEffect(() => {
+    if (viewer) { secureOn(); return () => { secureOff() } }
+  }, [viewer])
 
   const callRoom = handle && user ? `dm-${[user.handle, handle].sort().join('-')}` : ''
   const isSelf = !!handle && handle === user?.handle
@@ -108,6 +145,20 @@ export default function Messages() {
   return (
     <div className="flex h-screen">
       {call && <CallModal room={call} peer={handle && handle !== user?.handle ? handle : undefined} onClose={() => setCall(null)} />}
+      {viewer && (
+        <div className="fixed inset-0 z-[70] bg-black flex flex-col">
+          <div className="flex items-center justify-between px-4 h-14 border-b border-edge shrink-0">
+            <span className="font-semibold flex items-center gap-2 text-orange-300"><Flame className="h-4 w-4" />One-time view{screenshotProtectionAvailable() ? ' · screenshots blocked' : ''}</span>
+            <button onClick={() => setViewer(null)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><X className="h-5 w-5" /></button>
+          </div>
+          <div className="flex-1 min-h-0 grid place-items-center p-4">
+            {viewer.type === 'video'
+              ? <video src={viewer.url} controls autoPlay className="max-h-full max-w-full rounded-lg" />
+              : <img src={viewer.url} className="max-h-full max-w-full rounded-lg object-contain" />}
+          </div>
+          <div className="text-center text-xs text-slate-500 pb-4 shrink-0">This can only be viewed once. Closing removes it for good.</div>
+        </div>
+      )}
       {/* Threads list */}
       <div className={`${handle ? 'hidden lg:flex' : 'flex'} flex-col w-full lg:w-80 shrink-0 border-r border-edge`}>
         <div className="px-4 py-3 border-b border-edge font-extrabold text-xl">Messages</div>
@@ -156,7 +207,10 @@ export default function Messages() {
                   <div className="font-semibold truncate">{isSelf ? 'Me, Myself & I' : thread.peer.display_name}</div>
                   <div className="text-xs text-slate-500 truncate">{isSelf ? 'Your private space · only you can see this' : `#${thread.peer.handle}`}</div>
                 </div>
-                <div className="flex items-center gap-1 text-xs text-emerald-400 mr-2"><Lock className="h-3 w-3" />Encrypted</div>
+                <div className="flex items-center gap-1 text-xs text-emerald-400 mr-2">
+                  <Lock className="h-3 w-3" />
+                  {screenshotProtectionAvailable() ? 'Encrypted · screenshots blocked' : 'Encrypted'}
+                </div>
                 {!isSelf && (thread.can_call ? <>
                   <button onClick={() => setCall(callRoom)} title="Voice call" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Phone className="h-4 w-4" /></button>
                   <button onClick={() => setCall(callRoom)} title="Video call" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Video className="h-4 w-4" /></button>
@@ -192,11 +246,21 @@ export default function Messages() {
                     )}
                     <div className={`max-w-[75%] rounded-2xl px-4 py-2 ${m.deleted ? 'bg-white/5 border border-edge text-slate-500 italic' : m.mine ? 'bg-gradient-to-br from-brand to-violet-600 text-white rounded-br-sm' : 'bg-white/5 border border-edge rounded-bl-sm'}`}>
                       {m.pinned && !m.deleted && <Pin className="h-3 w-3 inline mr-1 opacity-70" />}
-                      {m.media_type === 'audio' && m.media_url
-                        ? <audio src={m.media_url} controls className="max-w-[220px] h-9" />
-                        : m.media_url
-                          ? <img src={m.media_url} className="rounded-lg max-h-64" />
-                          : m.text}
+                      {m.deleted
+                        ? m.text
+                        : m.view_once
+                          ? (m.mine
+                              ? <span className="flex items-center gap-1.5 text-sm opacity-90"><Flame className="h-4 w-4" />{m.view_once_viewed ? 'Opened' : 'One-time photo · sent'}</span>
+                              : m.view_once_viewed
+                                ? <span className="flex items-center gap-1.5 text-sm text-slate-400"><Flame className="h-4 w-4" />Opened · expired</span>
+                                : <button onClick={() => openViewOnce(m.id)} className="flex items-center gap-1.5 text-sm font-medium">
+                                    <Eye className="h-4 w-4" />Tap to view once
+                                  </button>)
+                          : m.media_type === 'audio' && m.media_url
+                            ? <audio src={m.media_url} controls className="max-w-[220px] h-9" />
+                            : m.media_url
+                              ? <img src={m.media_url} className="rounded-lg max-h-64" />
+                              : m.text}
                     </div>
                   </div>
                 ))}
@@ -213,8 +277,22 @@ export default function Messages() {
                       </div>
                     </div>
                   )}
+                  {viewOnce && (
+                    <div className="px-3 pt-2 -mb-1 flex items-center gap-1.5 text-xs text-orange-300">
+                      <Flame className="h-3.5 w-3.5" /> One-time mode: the next photo/GIF disappears after it's opened once
+                    </div>
+                  )}
                   <form onSubmit={send} className="p-3 flex gap-2 items-center">
+                    <input ref={imgRef} type="file" accept="image/*" hidden onChange={onImgPick} />
+                    <button type="button" onClick={() => imgRef.current?.click()} disabled={uploadingImg} title="Send a photo"
+                      className="h-11 w-11 grid place-items-center rounded-xl bg-white/10 hover:bg-white/20 shrink-0 disabled:opacity-50">
+                      {uploadingImg ? <Loader2 className="h-5 w-5 animate-spin" /> : <ImageIcon className="h-5 w-5" />}
+                    </button>
                     <button type="button" onClick={openGif} className={`h-11 px-2 grid place-items-center rounded-xl text-xs font-bold shrink-0 ${gifOpen ? 'bg-brand text-white' : 'bg-white/10 hover:bg-white/20'}`}>GIF</button>
+                    <button type="button" onClick={() => setViewOnce(v => !v)} title="Send as one-time (disappearing) media"
+                      className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${viewOnce ? 'bg-orange-500 text-white' : 'bg-white/10 hover:bg-white/20 text-slate-300'}`}>
+                      <Flame className="h-5 w-5" />
+                    </button>
                     <input value={text} onChange={e => setText(e.target.value)} placeholder={recording ? 'Recording…' : 'Message (encrypted)…'} disabled={recording}
                       className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand disabled:opacity-60" />
                     <button type="button" onClick={recording ? stopRec : startRec} disabled={busy || !(isSelf || thread.can_voice)}

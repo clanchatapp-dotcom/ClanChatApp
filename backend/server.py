@@ -554,6 +554,7 @@ class DMSend(BaseModel):
     media_url: Optional[str] = None
     media_type: Optional[str] = None  # audio | image
     duration: Optional[float] = None
+    view_once: Optional[bool] = False  # disappearing media: recipient may open it a single time
 
 class TokenReq(BaseModel):
     room: str
@@ -1586,12 +1587,18 @@ async def dm_history(handle: str, u: dict = Depends(get_current_user)):
     out = []
     async for m in db.dms.find({'room': room}).sort('created_at', 1).limit(300):
         deleted = bool(m.get('deleted'))
+        mine = m['sender_id'] == u['id']
+        vo = bool(m.get('view_once'))
+        vo_viewed = bool(m.get('view_once_viewed'))
+        # Disappearing media: never expose the URL in history — it's fetched once via the /view endpoint.
+        media_url = None if (deleted or vo) else m.get('media_url')
         out.append({'id': m['id'], 'sender_id': m['sender_id'],
                     'text': 'This message was deleted' if deleted else dec(m['content_enc']),
-                    'media_url': None if deleted else m.get('media_url'),
+                    'media_url': media_url,
                     'media_type': m.get('media_type'), 'duration': m.get('duration'),
+                    'view_once': vo, 'view_once_viewed': vo_viewed,
                     'pinned': bool(m.get('pinned')), 'deleted': deleted,
-                    'created_at': m['created_at'], 'mine': m['sender_id'] == u['id']})
+                    'created_at': m['created_at'], 'mine': mine})
     await mark_read('dm', room, u['id'])  # opening a thread marks it read
     is_self = other['id'] == u['id']
     return {'peer': {'id': other['id'], 'handle': other['handle'],
@@ -1613,16 +1620,46 @@ async def dm_send(handle: str, body: DMSend, u: dict = Depends(get_current_user)
     text = (body.text or '').strip()
     if not text and not body.media_url:
         raise HTTPException(400, 'Empty message')
+    view_once = bool(body.view_once) and bool(body.media_url)  # only meaningful with media
     room = dm_room(u['id'], other['id'])
     doc = {'id': str(uuid.uuid4()), 'room': room, 'participants': [u['id'], other['id']],
            'sender_id': u['id'], 'content_enc': enc(text),
            'media_url': body.media_url, 'media_type': body.media_type, 'duration': body.duration,
+           'view_once': view_once, 'view_once_viewed': False,
            'pinned': False, 'created_at': datetime.now(timezone.utc).isoformat()}
     await db.dms.insert_one(dict(doc))
-    msg = {'id': doc['id'], 'sender_id': u['id'], 'text': text, 'media_url': body.media_url,
-           'media_type': body.media_type, 'duration': body.duration, 'created_at': doc['created_at']}
+    # In WS + response, disappearing media never carries the URL — the recipient fetches it once via /view.
+    wire_media = None if view_once else body.media_url
+    msg = {'id': doc['id'], 'sender_id': u['id'], 'text': text, 'media_url': wire_media,
+           'media_type': body.media_type, 'duration': body.duration,
+           'view_once': view_once, 'view_once_viewed': False, 'created_at': doc['created_at']}
     await manager.broadcast(room, {'type': 'dm', 'message': msg})
     return {**msg, 'mine': True, 'pinned': False}
+
+
+@app.post('/api/dms/{handle}/{message_id}/view')
+async def view_once_dm(handle: str, message_id: str, u: dict = Depends(get_current_user)):
+    """Consume a disappearing (view-once) media message. Returns the media URL a single
+    time to the RECIPIENT, then marks it viewed and wipes the stored URL so it can never
+    be fetched again. The sender cannot re-open their own view-once media."""
+    m = await db.dms.find_one({'id': message_id})
+    if not m:
+        raise HTTPException(404, 'Message not found')
+    if u['id'] not in m.get('participants', []):
+        raise HTTPException(403, 'Not allowed')
+    if not m.get('view_once'):
+        raise HTTPException(400, 'Not a view-once message')
+    if m['sender_id'] == u['id']:
+        raise HTTPException(403, "You can't reopen media you sent")
+    if m.get('view_once_viewed') or not m.get('media_url'):
+        raise HTTPException(410, 'This media has already been viewed')
+    url = m['media_url']
+    now = datetime.now(timezone.utc).isoformat()
+    # Mark viewed and wipe the URL from storage (true disappearing).
+    await db.dms.update_one({'id': message_id},
+                            {'$set': {'view_once_viewed': True, 'view_once_viewed_at': now, 'media_url': None}})
+    await manager.broadcast(m['room'], {'type': 'dm_viewed', 'id': message_id})
+    return {'media_url': url, 'media_type': m.get('media_type')}
 
 
 @app.post('/api/dms/{handle}/{message_id}/pin')
