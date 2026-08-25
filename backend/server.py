@@ -857,6 +857,7 @@ async def _purge_user(uid: str):
     await db.boards.delete_many({'owner_id': uid})
     await db.board_posts.delete_many({'author_id': uid})
     await db.board_reactions.delete_many({'user_id': uid})
+    await db.device_tokens.delete_many({'user_id': uid})
 
 
 async def incr_deleted(n: int = 1):
@@ -1705,6 +1706,9 @@ async def dm_send(handle: str, body: DMSend, u: dict = Depends(get_current_user)
            'media_type': body.media_type, 'duration': body.duration,
            'view_once': view_once, 'view_once_viewed': False, 'created_at': doc['created_at']}
     await manager.broadcast(room, {'type': 'dm', 'message': msg})
+    if other['id'] != u['id']:
+        preview = '🎤 Voice message' if body.media_type == 'audio' else ('📷 Photo' if body.media_url else (text or '')[:100])
+        await push_to_user(other['id'], f"#{u['handle']}", preview, {'url': f"/messages/{u['handle']}"})
     return {**msg, 'mine': True, 'pinned': False}
 
 
@@ -2083,6 +2087,86 @@ async def livekit_token(body: TokenReq, u: dict = Depends(get_current_user)):
              .with_grants(lk_api.VideoGrants(room_join=True, room=room,
                                              can_publish=True, can_subscribe=True)))
     return {'server_url': LIVEKIT_URL, 'participant_token': token.to_jwt(), 'room': room}
+
+
+# ----------------------------- Push notifications (FCM) -----------------------------
+
+class PushRegister(BaseModel):
+    token: str
+    platform: Optional[str] = 'android'
+
+_fcm_app = None
+_fcm_ready = None  # None=unknown, True/False after first init attempt
+
+
+def _init_fcm():
+    """Lazily initialise firebase-admin from env. Returns True if send is available.
+    Reads FIREBASE_CREDENTIALS_JSON (inline JSON) or GOOGLE_APPLICATION_CREDENTIALS (path).
+    Fails open (returns False) if the package or credentials are missing."""
+    global _fcm_app, _fcm_ready
+    if _fcm_ready is not None:
+        return _fcm_ready
+    try:
+        import json as _json
+        import firebase_admin
+        from firebase_admin import credentials as _creds
+        inline = os.environ.get('FIREBASE_CREDENTIALS_JSON')
+        path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+        if inline:
+            cred = _creds.Certificate(_json.loads(inline))
+        elif path and os.path.exists(path):
+            cred = _creds.Certificate(path)
+        else:
+            _fcm_ready = False
+            return False
+        _fcm_app = firebase_admin.initialize_app(cred) if not firebase_admin._apps else firebase_admin.get_app()
+        _fcm_ready = True
+    except Exception as e:
+        log.info(f'FCM not configured/available: {e}')
+        _fcm_ready = False
+    return _fcm_ready
+
+
+async def push_to_user(user_id: str, title: str, body: str, data: Optional[dict] = None):
+    """Best-effort push to all of a user's registered devices. No-op if FCM not configured."""
+    if not _init_fcm():
+        return
+    try:
+        from firebase_admin import messaging
+        tokens = [d['token'] async for d in db.device_tokens.find({'user_id': user_id})]
+        for tk in tokens:
+            try:
+                messaging.send(messaging.Message(
+                    token=tk,
+                    notification=messaging.Notification(title=title, body=body),
+                    data={k: str(v) for k, v in (data or {}).items()},
+                    android=messaging.AndroidConfig(priority='high')))
+            except Exception as se:
+                # Drop tokens FCM reports as unregistered so the table stays clean.
+                if 'Unregistered' in type(se).__name__ or 'NotRegistered' in str(se):
+                    await db.device_tokens.delete_one({'user_id': user_id, 'token': tk})
+    except Exception as e:
+        log.info(f'push_to_user failed: {e}')
+
+
+@app.post('/api/push/register')
+async def push_register(body: PushRegister, u: dict = Depends(get_current_user)):
+    tok = (body.token or '').strip()
+    if not tok:
+        raise HTTPException(400, 'Missing token')
+    now = datetime.now(timezone.utc).isoformat()
+    await db.device_tokens.update_one(
+        {'user_id': u['id'], 'token': tok},
+        {'$set': {'user_id': u['id'], 'token': tok, 'platform': body.platform or 'android', 'updated_at': now}},
+        upsert=True)
+    return {'ok': True}
+
+
+@app.delete('/api/push/register/{token}')
+async def push_unregister(token: str, u: dict = Depends(get_current_user)):
+    await db.device_tokens.delete_one({'user_id': u['id'], 'token': token})
+    return {'ok': True}
+
 
 
 # ----------------------------- WebSocket (DM realtime) -----------------------------

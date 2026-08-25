@@ -157,6 +157,8 @@ export const api = {
   removeGroupMember: (id: string, handle: string) => req(`/groups/${id}/members/${handle}`, { method: 'DELETE' }),
   deleteGroup: (id: string) => req(`/groups/${id}`, { method: 'DELETE' }),
   livekitToken: (room: string, peer?: string) => req('/livekit/token', { method: 'POST', body: j(peer ? { room, peer } : { room }) }),
+  registerPush: (token: string, platform = 'android') => req('/push/register', { method: 'POST', body: j({ token, platform }) }),
+  unregisterPush: (token: string) => req(`/push/register/${encodeURIComponent(token)}`, { method: 'DELETE' }),
   upload: (file: File) => { const fd = new FormData(); fd.append('file', file); return req('/upload', { method: 'POST', body: fd }) },
   report: (target_type: string, target_id: string, category: string, note = '') =>
     req('/report', { method: 'POST', body: j({ target_type, target_id, category, note }) }),

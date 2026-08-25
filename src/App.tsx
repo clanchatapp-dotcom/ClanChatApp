@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from './lib/auth'
 import { applyTheme } from './lib/theme'
 import { useAndroidBackButton } from './lib/useAndroidBackButton'
+import { configurePush } from './lib/pushNotifications'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import Feed from './pages/Feed'
@@ -26,6 +27,7 @@ export default function App() {
   useEffect(() => {
     const u = user as any
     applyTheme({ theme: u?.theme, accent: u?.accent, font_size: u?.font_size })
+    if (u?.id) configurePush()  // register for FCM push once signed in (native Android only)
   }, [user])
 
   useEffect(() => {
