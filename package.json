@@ -8,7 +8,7 @@
     "dev:api": "cd backend && /root/.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8001 --reload",
     "dev:web": "vite",
     "build": "vite build",
-    "start": "concurrently -k -n api,web -c blue,green \"yarn start:api\" \"yarn start:web\"",
+    "start": "vite --host 0.0.0.0 --port 3000",
     "start:api": "cd backend && python -m uvicorn server:app --host 0.0.0.0 --port 8001",
     "start:web": "vite preview --host 0.0.0.0 --port 3000",
     "preview": "vite preview --host 0.0.0.0 --port 3000",

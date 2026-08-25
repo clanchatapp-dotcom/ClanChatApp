@@ -72,7 +72,7 @@ export default function Layout() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 min-w-0 border-x border-edge min-h-screen pb-[calc(4.25rem+env(safe-area-inset-bottom))] md:pb-0">
+      <main className="flex-1 min-w-0 border-x border-edge min-h-screen pb-[calc(5.25rem+env(safe-area-inset-bottom))] md:pb-0">
         <Outlet />
       </main>
 
@@ -93,7 +93,7 @@ export default function Layout() {
       </aside>
 
       {/* Mobile bottom nav */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-panel border-t border-edge flex items-center justify-around h-16 pb-[env(safe-area-inset-bottom)]">
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-panel border-t border-edge flex items-center justify-around h-16 pb-[calc(env(safe-area-inset-bottom)+0.85rem)]">
         {NAV.map(n => (
           <NavLink key={n.to} to={n.to} end={n.end as any} className={({ isActive }) => `relative flex flex-col items-center gap-1 text-xs ${isActive ? 'text-brand' : 'text-slate-400'}`}>
             <n.icon className="h-5 w-5" />{n.label.split(' ')[0]}

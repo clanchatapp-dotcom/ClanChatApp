@@ -131,6 +131,21 @@
 user_problem_statement: "ClanChat v4.0 core — React(Vite+TS) SPA + FastAPI. Three-tier privacy (Public/Followers/Inner Circle), chronological My Feed, #handle profiles, follows (open/approval) + Inner Circle invites, tier-gated AES-256-GCM encrypted DMs with realtime, likes (public only, anonymous), search + trending tags, activity, Supabase Storage media, LiveKit call tokens. Auth via Supabase (dev-login mints real HS256 JWT for testing)."
 
 backend:
+  - task: "Supervisor restructure smoke test (backend health verification)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Quick smoke test to confirm backend is fully healthy AFTER supervisor restructure (backend now runs as its own [program:backend] on 0.0.0.0:8001; frontend is separate Vite process proxying /api). Backend reachable at external URL with /api prefix. Verify: (1) HEALTH: GET /api/ → 200 with JSON like {ok:true} (deploy health-check endpoint; must respond fast with no DB dependency). (2) AUTH: POST /api/auth/login {email:'admin@clanchat.app', password:'ClanChatAdmin!2025'} → 200 with token; then GET /api/me with that token → 200 and is_admin==true. (3) DATA ENDPOINT: GET /api/feed?scope=general with admin token → 200 (array). (4) ADMIN ENDPOINT: GET /api/admin/stats with admin token → 200. This confirms the split supervisor didn't break routing/DB/auth."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ ALL 4 SUPERVISOR RESTRUCTURE SMOKE TESTS PASSED (100% success). Quick smoke test to verify backend health after supervisor restructure completed. Backend running on 0.0.0.0:8001, frontend on 0.0.0.0:3000 proxying /api requests. External URL: https://auth-consolidation-3.preview.emergentagent.com/api. Created test script /app/backend_smoke_test.py. TEST RESULTS: (1) HEALTH ENDPOINT (1/1 passed): GET /api/ → 200 with {ok:true, service:'clanchat', time:'2026-08-25T10:09:33.280705+00:00'} ✓. Health check endpoint responding correctly with no DB dependency ✓. (2) AUTH (2/2 passed): POST /api/auth/login {email:'admin@clanchat.app', password:'ClanChatAdmin!2025'} → 200 with access_token (365 chars) ✓. GET /api/me with admin token → 200 with is_admin=True, email='admin@clanchat.app' ✓. Authentication working correctly ✓. (3) DATA ENDPOINT (1/1 passed): GET /api/feed?scope=general with admin token → 200 with array (40 items) ✓. Data endpoint working correctly ✓. (4) ADMIN ENDPOINT (1/1 passed): GET /api/admin/stats with admin token → 200 with stats data (keys: users, posts, open_reports, csam_reports, suspended, banned, flagged, watchlisted, nsfw_open, deleted) ✓. Admin endpoint working correctly ✓. NO ISSUES FOUND. Backend is fully healthy after supervisor restructure. All flows working correctly: (A) Health check endpoint responding fast with {ok:true}, (B) Login returns access_token (not 'token'), (C) /api/me returns admin status correctly, (D) Feed endpoint returns array of posts, (E) Admin stats endpoint returns complete stats object. Supervisor split did NOT break routing/DB/auth. Backend service on port 8001 is properly accessible via /api prefix through frontend proxy on port 3000."
+
   - task: "Silent investigation endpoint (admin, lawful/warrant-based, audit-logged)"
     implemented: true
     working: true
@@ -814,9 +829,25 @@ metadata:
   test_sequence: 10
   run_ui: true
 
+frontend:
+  - task: "Admin panel button navigates from Settings + bottom nav lift"
+    implemented: true
+    working: true
+    file: "src/pages/Settings.tsx, src/components/Layout.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "BUG: Admin panel button in Settings did nothing on tap — root cause: onClick called navigate() but the useNavigate hook in Settings is named 'nav'; fixed to nav('/admin'). Also raised the mobile bottom nav (extra bottom padding on top of safe-area) so labels clear the phone's system buttons. TEST: log in as seeded admin admin@clanchat.app / ClanChatAdmin!2025 (email/password form), go to /settings, the 'Admin panel' button (above Sign out) should be visible; tapping it must navigate to /admin and render the Admin panel (tabs: Reports, CSAM, NSFW, Watchlist, Investigate, Users, Admins, Audit). Also confirm the 'Investigate' tab shows the handle input + red legal banner."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ ALL ADMIN PANEL NAVIGATION TESTS PASSED (8/8, 100% success). Comprehensive mobile viewport testing (412x915) completed with admin@clanchat.app / ClanChatAdmin!2025. TEST RESULTS: (1) LOGIN (PASS): Email/password login successful ✓. (2) MODAL HANDLING (PASS): Onboarding tour modal appeared after navigating to Settings, successfully dismissed by clicking 'Next' 3 times then 'Enter the clubhouse' ✓. (3) SETTINGS NAVIGATION (PASS): Successfully navigated to /settings ✓. (4) ADMIN PANEL BUTTON VISIBILITY (PASS): Admin panel button found and VISIBLE in Settings page Account section (above Sign out button) ✓. (5) BUTTON TAP & NAVIGATION (PASS): Tapping Admin panel button successfully navigated to /admin, URL changed from /settings to /admin ✓. (6) ADMIN PANEL RENDERING (PASS): Admin panel rendered correctly with ALL 8 tabs visible: Reports, CSAM, NSFW, Watchlist, Investigate, Users, Admins, Audit ✓. (7) INVESTIGATE TAB (PASS): Clicked Investigate tab ✓. Red legal-notice banner visible with lock icon and text 'Silent investigation. Lawful, warrant-based inspection (UK IPA / court order). The subject is not notified. Every access is written to the audit log. Only Watchlisted or Flagged accounts can be inspected.' ✓. @handle text input found with placeholder '@handle to inspect' ✓. 'Inspect' button found and VISIBLE ✓. (8) SCREENSHOTS: Captured 5 screenshots documenting the flow: onboarding modal, Settings page (top/bottom), Admin panel, Investigate tab ✓. NO ISSUES FOUND. Admin panel button navigation is production-ready. The main agent's fix (nav('/admin')) is working correctly. Mobile bottom nav lift is working (Settings icon visible and tappable in bottom nav)."
+
 test_plan:
   current_focus:
-    - "Silent investigation endpoint (admin, lawful/warrant-based, audit-logged)"
+    - "Admin panel button navigates from Settings + bottom nav lift"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
