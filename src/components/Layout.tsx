@@ -4,6 +4,7 @@ import { Home, Search, MessageCircle, Bell, User, LogOut, Sparkles, PenSquare, S
 import { useAuth } from '../lib/auth'
 import { api } from '../lib/api'
 import { Avatar } from '../lib/ui'
+import OnboardingTour from './OnboardingTour'
 
 const NAV = [
   { to: '/', icon: Home, label: 'My Feed', end: true },
@@ -21,6 +22,7 @@ export default function Layout() {
   const [dobBusy, setDobBusy] = useState(false)
   const [dobErr, setDobErr] = useState('')
   const needsDob = (user as any)?.dob_set === false
+  const needsOnboarding = !needsDob && (user as any)?.onboarded === false
   const saveDob = async () => {
     setDobErr(''); setDobBusy(true)
     try { await api.setDob(dob); await refresh() }
@@ -123,6 +125,9 @@ export default function Layout() {
           </div>
         </div>
       )}
+
+      {/* One-time welcome + Comfort-Zone setup for new sign-ups (after DOB is set) */}
+      {needsOnboarding && <OnboardingTour user={user} onDone={() => refresh()} />}
     </div>
   )
 }

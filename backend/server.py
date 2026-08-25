@@ -460,6 +460,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         out['accent'] = prof.get('accent') or DISPLAY_DEFAULTS['accent']
         out['font_size'] = prof.get('font_size') or DISPLAY_DEFAULTS['font_size']
         out['notif_prefs'] = {**NOTIF_DEFAULTS, **(prof.get('notif_prefs') or {})}
+        out['onboarded'] = bool(prof.get('onboarded'))
     else:
         # My relation (block/mute/restrict) toward this user, for the profile menu.
         out['my_relation'] = await get_relation(viewer_id, prof['id'])
@@ -531,6 +532,7 @@ class ProfileUpdate(BaseModel):
     accent: Optional[str] = None                # violet | blue | emerald | rose | amber | cyan
     font_size: Optional[str] = None             # small | normal | large
     notif_prefs: Optional[dict] = None
+    onboarded: Optional[bool] = None            # completed the "welcome to the clubhouse" tour
 
 class PostCreate(BaseModel):
     tier: str = 'public'
@@ -854,6 +856,7 @@ async def _purge_user(uid: str):
     await db.admin_notes.delete_many({'user_id': uid})
     await db.boards.delete_many({'owner_id': uid})
     await db.board_posts.delete_many({'author_id': uid})
+    await db.board_reactions.delete_many({'user_id': uid})
 
 
 async def incr_deleted(n: int = 1):
@@ -1101,10 +1104,19 @@ async def feed(scope: str = 'general', u: dict = Depends(get_current_user)):
         author_filter = {'author_id': {'$in': ids}}
     q = author_filter or {}
     hidden = await hidden_author_ids(u['id'])
+    vp = await db.profiles.find_one({'id': u['id']})
+    _cz = {**COMFORT_ZONE_DEFAULTS, **((vp or {}).get('comfort_zone') or {})}
+    hide_ai = _cz.get('ai') is False       # "AI generated content" toggle off -> hide AI-labelled posts
+    hide_nsfw = _cz.get('nsfw') is False    # NSFW toggle off (always off for minors) -> hide NSFW posts
     out = []
     async for p in db.posts.find(q).sort('created_at', -1).limit(150):
         if p['author_id'] in hidden and p['author_id'] != u['id']:
             continue  # muted or blocked
+        if p['author_id'] != u['id']:
+            if hide_ai and p.get('ai_label', 'none') != 'none':
+                continue  # comfort zone: AI content hidden
+            if hide_nsfw and p.get('nsfw'):
+                continue  # comfort zone / minor safety: NSFW hidden
         if await can_view(u['id'], p):
             out.append(await post_out(p, u['id']))
         if len(out) >= 60:
@@ -1193,6 +1205,10 @@ class BoardCreate(BaseModel):
 
 class BoardPost(BaseModel):
     text: str
+    parent_id: Optional[str] = None  # set to reply to another board post (threaded)
+
+class BoardReact(BaseModel):
+    emoji: str  # like | love | haha | wow | sad | angry
 
 
 async def can_read_board(viewer: str, board: dict) -> bool:
@@ -1272,6 +1288,27 @@ async def list_boards(handle: str, u: dict = Depends(get_current_user)):
     return out
 
 
+async def board_post_reactions(post_id: str, viewer: str) -> dict:
+    """Return {counts:{emoji:n}, mine: emoji|None} for a board post."""
+    counts: dict = {}
+    mine = None
+    async for r in db.board_reactions.find({'post_id': post_id}):
+        counts[r['emoji']] = counts.get(r['emoji'], 0) + 1
+        if r['user_id'] == viewer:
+            mine = r['emoji']
+    return {'counts': counts, 'mine': mine}
+
+
+async def board_post_out(p: dict, b: dict, viewer: str) -> dict:
+    a = await db.profiles.find_one({'id': p['author_id']}, {'_id': 0})
+    return {'id': p['id'], 'text': p['text'], 'created_at': p['created_at'],
+            'parent_id': p.get('parent_id'),
+            'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'],
+                       'avatar_url': a.get('avatar_url')} if a else None,
+            'reactions': await board_post_reactions(p['id'], viewer),
+            'can_delete': p['author_id'] == viewer or b['owner_id'] == viewer or await is_admin_user_id(viewer)}
+
+
 @app.get('/api/board/{board_id}')
 async def get_board(board_id: str, u: dict = Depends(get_current_user)):
     b = await db.boards.find_one({'id': board_id})
@@ -1279,15 +1316,18 @@ async def get_board(board_id: str, u: dict = Depends(get_current_user)):
         raise HTTPException(404, 'Board not found')
     if not await can_read_board(u['id'], b):
         raise HTTPException(403, 'You don’t have access to this board')
-    posts = []
-    async for p in db.board_posts.find({'board_id': board_id}).sort('created_at', 1).limit(500):
-        a = await db.profiles.find_one({'id': p['author_id']}, {'_id': 0})
-        posts.append({'id': p['id'], 'text': p['text'], 'created_at': p['created_at'],
-                      'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'],
-                                 'avatar_url': a.get('avatar_url')} if a else None,
-                      'can_delete': p['author_id'] == u['id'] or b['owner_id'] == u['id'] or is_admin_user(u)})
+    tops = []
+    replies_by_parent: dict = {}
+    async for p in db.board_posts.find({'board_id': board_id}).sort('created_at', 1).limit(1000):
+        out = await board_post_out(p, b, u['id'])
+        if p.get('parent_id'):
+            replies_by_parent.setdefault(p['parent_id'], []).append(out)
+        else:
+            tops.append(out)
+    for t in tops:
+        t['replies'] = replies_by_parent.get(t['id'], [])
     base = await board_out(b, u['id'])
-    base['posts'] = posts
+    base['posts'] = tops
     return base
 
 
@@ -1303,15 +1343,41 @@ async def create_board_post(board_id: str, body: BoardPost, u: dict = Depends(ge
         raise HTTPException(400, 'Empty message')
     if contains_banned(text):
         raise HTTPException(400, 'Your message contains a word that isn’t allowed here.')
-    doc = {'id': str(uuid.uuid4()), 'board_id': board_id, 'author_id': u['id'],
+    parent_id = None
+    if body.parent_id:
+        parent = await db.board_posts.find_one({'id': body.parent_id, 'board_id': board_id})
+        if not parent:
+            raise HTTPException(404, 'Reply target not found')
+        parent_id = parent['id']
+    doc = {'id': str(uuid.uuid4()), 'board_id': board_id, 'author_id': u['id'], 'parent_id': parent_id,
            'text': text[:4000], 'created_at': datetime.now(timezone.utc).isoformat()}
     await db.board_posts.insert_one(dict(doc))
     if b['owner_id'] != u['id']:
-        await add_activity(b['owner_id'], 'board', u, f'posted in “{b["title"]}”', board_id)
-    a = await db.profiles.find_one({'id': u['id']}, {'_id': 0})
-    return {'id': doc['id'], 'text': doc['text'], 'created_at': doc['created_at'],
-            'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'],
-                       'avatar_url': a.get('avatar_url')}, 'can_delete': True}
+        verb = 'replied in' if parent_id else 'posted in'
+        await add_activity(b['owner_id'], 'board', u, f'{verb} “{b["title"]}”', board_id)
+    out = await board_post_out(doc, b, u['id'])
+    out['replies'] = []
+    return out
+
+
+@app.post('/api/board-posts/{post_id}/react')
+async def react_board_post(post_id: str, body: BoardReact, u: dict = Depends(get_current_user)):
+    if body.emoji not in REACTIONS:
+        raise HTTPException(400, 'Invalid reaction')
+    p = await db.board_posts.find_one({'id': post_id})
+    if not p:
+        raise HTTPException(404, 'Not found')
+    b = await db.boards.find_one({'id': p['board_id']})
+    if not b or not await can_read_board(u['id'], b):
+        raise HTTPException(403, 'You don’t have access to this board')
+    existing = await db.board_reactions.find_one({'post_id': post_id, 'user_id': u['id']})
+    if existing and existing['emoji'] == body.emoji:
+        await db.board_reactions.delete_one({'post_id': post_id, 'user_id': u['id']})  # toggle off
+    else:
+        await db.board_reactions.update_one(
+            {'post_id': post_id, 'user_id': u['id']},
+            {'$set': {'post_id': post_id, 'user_id': u['id'], 'emoji': body.emoji}}, upsert=True)
+    return await board_post_reactions(post_id, u['id'])
 
 
 @app.delete('/api/board-posts/{post_id}')
@@ -1323,6 +1389,8 @@ async def delete_board_post(post_id: str, u: dict = Depends(get_current_user)):
     if not (p['author_id'] == u['id'] or (b and b['owner_id'] == u['id']) or is_admin_user(u)):
         raise HTTPException(403, 'Not allowed')
     await db.board_posts.delete_one({'id': post_id})
+    await db.board_posts.delete_many({'parent_id': post_id})  # cascade replies
+    await db.board_reactions.delete_many({'post_id': post_id})
     return {'ok': True}
 
 
@@ -1334,7 +1402,10 @@ async def delete_board(board_id: str, u: dict = Depends(get_current_user)):
     if not (b['owner_id'] == u['id'] or is_admin_user(u)):
         raise HTTPException(403, 'Only the board owner can delete it')
     await db.boards.delete_one({'id': board_id})
+    post_ids = [p['id'] async for p in db.board_posts.find({'board_id': board_id}, {'id': 1})]
     await db.board_posts.delete_many({'board_id': board_id})
+    if post_ids:
+        await db.board_reactions.delete_many({'post_id': {'$in': post_ids}})
     return {'ok': True}
 
 

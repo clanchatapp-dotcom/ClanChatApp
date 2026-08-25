@@ -309,6 +309,15 @@ function BoardView({ board, onClose }: { board: any; onClose: () => void }) {
     const t = text.trim(); if (!t) return; setText('')
     try { await api.boardPost(board.id, t); await load() } catch (e: any) { alert(e.message); setText(t) }
   }
+  const [replyTo, setReplyTo] = useState<string | null>(null)
+  const [replyText, setReplyText] = useState('')
+  const sendReply = async (parentId: string) => {
+    const t = replyText.trim(); if (!t) return; setReplyText(''); setReplyTo(null)
+    try { await api.boardPost(board.id, t, parentId); await load() } catch (e: any) { alert(e.message); setReplyText(t) }
+  }
+  const react = async (postId: string, emoji: string) => {
+    try { await api.reactBoardPost(postId, emoji); await load() } catch (e: any) { alert(e.message) }
+  }
   const del = async (id: string) => { try { await api.deleteBoardPost(id); await load() } catch (e: any) { alert(e.message) } }
 
   return (
@@ -323,15 +332,9 @@ function BoardView({ board, onClose }: { board: any; onClose: () => void }) {
           {!data ? <div className="grid place-items-center py-10"><Loader2 className="h-5 w-5 animate-spin text-slate-500" /></div>
             : data.posts.length === 0 ? <p className="text-center text-slate-500 py-10">No posts yet. Start the conversation.</p>
             : data.posts.map((p: any) => (
-              <div key={p.id} className="flex gap-2 group">
-                <Avatar id={p.author?.id} name={p.author?.display_name} url={p.author?.avatar_url} size={34} />
-                <div className="flex-1 min-w-0 bg-ink border border-edge rounded-2xl px-3 py-2">
-                  <div className="flex items-center gap-2"><span className="text-sm font-medium">{p.author?.display_name}</span><span className="text-xs text-slate-500">{timeAgo(p.created_at)}</span>
-                    {p.can_delete && <button onClick={() => del(p.id)} className="ml-auto text-slate-600 hover:text-rose-400"><Trash2 className="h-3.5 w-3.5" /></button>}
-                  </div>
-                  <p className="text-sm whitespace-pre-wrap break-words">{p.text}</p>
-                </div>
-              </div>
+              <BoardPostBubble key={p.id} p={p} canPost={!!data?.can_post}
+                replyTo={replyTo} setReplyTo={setReplyTo} replyText={replyText} setReplyText={setReplyText}
+                onReply={sendReply} onReact={react} onDelete={del} />
             ))}
         </div>
         {data?.can_post && (
@@ -347,3 +350,65 @@ function BoardView({ board, onClose }: { board: any; onClose: () => void }) {
   )
 }
 
+
+
+const BOARD_REACTIONS: Record<string, string> = { like: '👍', love: '❤️', haha: '😂', wow: '😮', sad: '😢', angry: '😡' }
+
+function BoardPostBubble({ p, isReply = false, canPost, replyTo, setReplyTo, replyText, setReplyText, onReply, onReact, onDelete }: any) {
+  const counts = p.reactions?.counts || {}
+  const mine = p.reactions?.mine
+  const total = (Object.values(counts) as number[]).reduce((a, b) => a + b, 0)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  return (
+    <div className={`flex gap-2 group ${isReply ? 'ml-8' : ''}`}>
+      <Avatar id={p.author?.id} name={p.author?.display_name} url={p.author?.avatar_url} size={isReply ? 28 : 34} />
+      <div className="flex-1 min-w-0">
+        <div className="bg-ink border border-edge rounded-2xl px-3 py-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">{p.author?.display_name}</span>
+            <span className="text-xs text-slate-500">{timeAgo(p.created_at)}</span>
+            {p.can_delete && <button onClick={() => onDelete(p.id)} className="ml-auto text-slate-600 hover:text-rose-400"><Trash2 className="h-3.5 w-3.5" /></button>}
+          </div>
+          <p className="text-sm whitespace-pre-wrap break-words">{p.text}</p>
+        </div>
+        <div className="flex items-center gap-2 mt-1 pl-1 relative">
+          <button onClick={() => setPickerOpen((o: boolean) => !o)} className="text-xs text-slate-500 hover:text-brand">React</button>
+          {!isReply && canPost && <button onClick={() => { setReplyTo(replyTo === p.id ? null : p.id); setReplyText('') }} className="text-xs text-slate-500 hover:text-brand">Reply</button>}
+          {total > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              {Object.entries(counts).map(([emo, n]: any) => (
+                <button key={emo} onClick={() => onReact(p.id, emo)}
+                  className={`text-xs px-1.5 py-0.5 rounded-full border ${mine === emo ? 'bg-brand/20 border-brand/40 text-brand' : 'border-edge text-slate-400'}`}>
+                  {BOARD_REACTIONS[emo]} {n as number}
+                </button>
+              ))}
+            </div>
+          )}
+          {pickerOpen && (
+            <div className="absolute bottom-full left-0 mb-1 z-10 flex gap-1 bg-panel2 border border-edge rounded-full px-2 py-1 shadow-lg">
+              {Object.entries(BOARD_REACTIONS).map(([k, e]) => (
+                <button key={k} onClick={() => { onReact(p.id, k); setPickerOpen(false) }} className="text-lg hover:scale-125 transition">{e}</button>
+              ))}
+            </div>
+          )}
+        </div>
+        {replyTo === p.id && (
+          <div className="flex gap-2 mt-2">
+            <input autoFocus value={replyText} onChange={e => setReplyText(e.target.value)} onKeyDown={e => e.key === 'Enter' && onReply(p.id)}
+              placeholder="Write a reply…" className="flex-1 bg-ink border border-edge rounded-xl px-3 py-2 text-sm outline-none focus:border-brand" />
+            <button onClick={() => onReply(p.id)} className="h-9 w-9 grid place-items-center rounded-xl bg-brand"><Send className="h-4 w-4" /></button>
+          </div>
+        )}
+        {(p.replies || []).length > 0 && (
+          <div className="mt-2 space-y-2">
+            {p.replies.map((r: any) => (
+              <BoardPostBubble key={r.id} p={r} isReply canPost={canPost}
+                replyTo={replyTo} setReplyTo={setReplyTo} replyText={replyText} setReplyText={setReplyText}
+                onReply={onReply} onReact={onReact} onDelete={onDelete} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
