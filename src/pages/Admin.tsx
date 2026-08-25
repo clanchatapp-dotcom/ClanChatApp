@@ -160,10 +160,10 @@ export default function Admin() {
           <Stat label="Deleted" value={stats.deleted} />
         </div>
 
-        <div className="flex gap-1 bg-panel border border-edge rounded-xl p-1 w-fit overflow-x-auto max-w-full">
+        <div className="flex gap-1 bg-panel border border-edge rounded-xl p-1 overflow-x-auto max-w-full">
           {TABS.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
-              className={`flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg ${tab === t.key ? 'bg-brand text-white' : 'text-slate-400 hover:text-white'}`}>
+              className={`shrink-0 whitespace-nowrap flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg ${tab === t.key ? 'bg-brand text-white' : 'text-slate-400 hover:text-white'}`}>
               <t.icon className="h-4 w-4" />{t.label}
             </button>
           ))}
