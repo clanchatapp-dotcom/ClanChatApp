@@ -180,7 +180,7 @@ export default function Settings() {
                 onChange={e => setRealName(e.target.value)}
                 maxLength={60}
                 className="flex-1 bg-black/40 border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand/60"
-                placeholder="e.g. Thomas Gallacher"
+                placeholder="e.g. Alex Morgan"
               />
               <button
                 onClick={saveRealName}

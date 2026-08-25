@@ -633,13 +633,22 @@ def admin_headers():
     return {'apikey': SERVICE_ROLE_KEY, 'Authorization': f'Bearer {SERVICE_ROLE_KEY}'}
 
 async def ensure_bucket():
+    body = {'id': BUCKET, 'name': BUCKET, 'public': False,
+            'file_size_limit': 50 * 1024 * 1024,
+            'allowed_mime_types': ['image/*', 'video/*', 'audio/*']}
     async with httpx.AsyncClient(timeout=20) as c:
         r = await c.post(f'{SUPABASE_URL}/storage/v1/bucket',
                          headers={**admin_headers(), 'Content-Type': 'application/json'},
-                         json={'id': BUCKET, 'name': BUCKET, 'public': False,
-                               'file_size_limit': 50 * 1024 * 1024,
-                               'allowed_mime_types': ['image/*', 'video/*', 'audio/*']})
-        log.info('ensure_bucket %s', r.status_code)
+                         json=body)
+        log.info('ensure_bucket create %s', r.status_code)
+        # If it already exists (400/409), UPDATE its config so mime-types/size limits are
+        # correct (older buckets were image-only @15MB, which broke video/audio/large uploads).
+        if r.status_code in (400, 409):
+            upd = await c.put(f'{SUPABASE_URL}/storage/v1/bucket/{BUCKET}',
+                              headers={**admin_headers(), 'Content-Type': 'application/json'},
+                              json={'public': False, 'file_size_limit': 50 * 1024 * 1024,
+                                    'allowed_mime_types': ['image/*', 'video/*', 'audio/*']})
+            log.info('ensure_bucket update %s', upd.status_code)
 
 async def upload_and_sign(path: str, content: bytes, content_type: str,
                           expires_in: int = 60 * 60 * 24 * 30) -> str:
