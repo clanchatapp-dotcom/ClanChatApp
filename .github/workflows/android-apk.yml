@@ -87,6 +87,22 @@ jobs:
         working-directory: android
         run: gradle assembleDebug --no-daemon --stacktrace
 
+      - name: Echo signing SHA-1
+        if: always()
+        run: |
+          KS=~/.android/debug.keystore
+          echo "==================== DEBUG SIGNING FINGERPRINT ===================="
+          if [ -f "$KS" ]; then
+            keytool -list -v -keystore "$KS" -alias androiddebugkey -storepass android 2>/dev/null \
+              | grep -E "SHA1:|SHA256:" || echo "Could not read fingerprints from $KS"
+            echo "-------------------------------------------------------------------"
+            echo "Register the SHA1 above in Google Cloud Console (Android OAuth client)."
+            echo "It MUST stay the same across builds for Google Sign-In to keep working."
+          else
+            echo "::warning::No keystore found at $KS after build. Gradle may have used a per-run key; Google Sign-In will fail until this SHA-1 is registered."
+          fi
+          echo "==================================================================="
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
