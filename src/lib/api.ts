@@ -176,6 +176,7 @@ export const api = {
   adminFlag: (handle: string, reason: string) => req(`/admin/users/${handle}/flag`, { method: 'POST', body: j({ reason }) }),
   adminUnflag: (handle: string) => req(`/admin/users/${handle}/unflag`, { method: 'POST' }),
   adminUserDms: (handle: string) => req(`/admin/dms/${handle}`),
+  adminInvestigate: (handle: string) => req(`/admin/investigate/${handle}`),
   adminAudit: () => req('/admin/audit'),
   adminPromote: (email: string) => req('/admin/promote', { method: 'POST', body: j({ email }) }),
   adminPurgeDemo: (include_admin: boolean) => req('/admin/purge-demo', { method: 'POST', body: j({ include_admin }) }),

@@ -10,6 +10,7 @@ const TABS = [
   { key: 'csam', label: 'CSAM', icon: AlertTriangle },
   { key: 'nsfw', label: 'NSFW', icon: ScanEye },
   { key: 'watchlist', label: 'Watchlist', icon: Bookmark },
+  { key: 'investigate', label: 'Investigate', icon: Eye },
   { key: 'users', label: 'Users', icon: Users },
   { key: 'admins', label: 'Admins', icon: UserCog },
   { key: 'audit', label: 'Audit log', icon: ScrollText },
@@ -35,6 +36,15 @@ export default function Admin() {
   const [dmLoading, setDmLoading] = useState(false)
   const [adminsData, setAdminsData] = useState<any>({ admins: [], pending: [] })
   const [newAdminEmail, setNewAdminEmail] = useState('')
+  const [invHandle, setInvHandle] = useState('')
+  const [inv, setInv] = useState<any>(null)
+  const [invLoading, setInvLoading] = useState(false)
+  const runInvestigation = async () => {
+    const h = invHandle.trim().replace(/^@/, '')
+    if (!h) return
+    setInvLoading(true); setInv(null)
+    try { setInv(await api.adminInvestigate(h)) } catch (e: any) { alert(e.message) } finally { setInvLoading(false) }
+  }
 
   const loadStats = () => api.adminStats().then(setStats).catch(() => {})
   const loadAdmins = async () => { try { setAdminsData(await api.adminListAdmins()) } catch {} }
@@ -166,7 +176,7 @@ export default function Admin() {
 
         {loading ? <div className="py-16 grid place-items-center text-slate-500"><Loader2 className="h-6 w-6 animate-spin" /></div> : (
           <div className="space-y-2">
-            {data.length === 0 && tab !== 'admins' && <p className="text-center text-slate-500 py-10">Nothing here.</p>}
+            {data.length === 0 && tab !== 'admins' && tab !== 'investigate' && <p className="text-center text-slate-500 py-10">Nothing here.</p>}
 
             {tab === 'admins' && (
               <div className="space-y-4">
@@ -278,6 +288,77 @@ export default function Admin() {
                   <button onClick={() => unwatch(u.handle)} className="px-2.5 py-1.5 rounded-lg border border-edge text-xs">Remove</button>
                 </div>
               )))}
+
+            {tab === 'investigate' && (
+              <div className="space-y-4">
+                <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-3 text-xs text-rose-200 flex items-start gap-2">
+                  <Lock className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span><b>Silent investigation.</b> Lawful, warrant-based inspection (UK IPA / court order). The subject is <b>not</b> notified. Every access is written to the audit log. Only Watchlisted or Flagged accounts can be inspected.</span>
+                </div>
+                <div className="flex gap-2">
+                  <input value={invHandle} onChange={e => setInvHandle(e.target.value)} onKeyDown={e => e.key === 'Enter' && runInvestigation()}
+                    placeholder="@handle to inspect" className="flex-1 bg-panel border border-edge rounded-xl px-4 py-2.5 outline-none focus:border-brand" />
+                  <button onClick={runInvestigation} disabled={invLoading} className="px-4 py-2.5 rounded-xl bg-brand font-semibold disabled:opacity-50 flex items-center gap-2">
+                    {invLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}Inspect
+                  </button>
+                </div>
+                {inv && (
+                  <div className="space-y-4">
+                    <div className="bg-panel border border-edge rounded-2xl p-3">
+                      <div className="font-semibold">{inv.subject.display_name} <span className="text-xs text-slate-500">#{inv.subject.handle}</span></div>
+                      <div className="text-xs text-slate-500">{inv.subject.email} {inv.subject.is_minor && '· MINOR'} {inv.subject.flagged && '· flagged'} {inv.subject.watchlisted && '· watchlisted'}</div>
+                    </div>
+                    <div>
+                      <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">Posts ({inv.posts.length})</h3>
+                      <div className="space-y-2">
+                        {inv.posts.map((p: any) => (
+                          <div key={p.id} className="bg-panel border border-edge rounded-xl p-3 text-sm">
+                            <div className="text-[10px] uppercase text-slate-500 mb-1">{p.tier} · {timeAgo(p.created_at)}{p.ai_label !== 'none' ? ` · AI:${p.ai_label}` : ''}</div>
+                            {p.text && <p className="whitespace-pre-wrap break-words">{p.text}</p>}
+                            {p.media_url && <img src={p.media_url} className="mt-1 rounded-lg max-h-48" />}
+                          </div>
+                        ))}
+                        {inv.posts.length === 0 && <p className="text-slate-500 text-sm">No posts.</p>}
+                      </div>
+                    </div>
+                    <div>
+                      <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">DM threads ({inv.dms.length})</h3>
+                      <div className="space-y-3">
+                        {inv.dms.map((t: any, i: number) => (
+                          <div key={i} className="bg-panel border border-edge rounded-xl p-3">
+                            <div className="text-xs font-medium mb-2">with {t.peer.display_name} <span className="text-slate-500">#{t.peer.handle}</span></div>
+                            <div className="space-y-1.5">
+                              {t.messages.map((m: any, j: number) => (
+                                <div key={j} className={`text-sm ${m.from_subject ? 'text-white' : 'text-slate-400'}`}>
+                                  <span className="text-[10px] text-slate-600 mr-1">{m.from_subject ? '→' : '←'}</span>
+                                  {m.deleted ? <em className="text-slate-600">(deleted)</em> : <>
+                                    {m.text}
+                                    {m.media_url && <img src={m.media_url} className="mt-1 rounded max-h-40" />}
+                                    {m.view_once && !m.media_url && <em className="text-slate-600"> (one-time media, already viewed)</em>}
+                                  </>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                        {inv.dms.length === 0 && <p className="text-slate-500 text-sm">No DMs.</p>}
+                      </div>
+                    </div>
+                    <div>
+                      <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">Groups ({inv.groups.length})</h3>
+                      <div className="space-y-2">
+                        {inv.groups.map((g: any) => (
+                          <div key={g.id} className="bg-panel border border-edge rounded-xl p-3 text-sm flex items-center gap-2">
+                            <Users className="h-4 w-4 text-slate-500" />{g.name} <span className="text-xs text-slate-500">· {g.member_count} members {g.is_owner && '· owner'}</span>
+                          </div>
+                        ))}
+                        {inv.groups.length === 0 && <p className="text-slate-500 text-sm">No groups.</p>}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {tab === 'users' && data.map(u => (
               <div key={u.id} className="bg-panel border border-edge rounded-2xl p-3 flex items-center gap-3 flex-wrap">

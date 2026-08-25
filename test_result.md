@@ -131,6 +131,20 @@
 user_problem_statement: "ClanChat v4.0 core — React(Vite+TS) SPA + FastAPI. Three-tier privacy (Public/Followers/Inner Circle), chronological My Feed, #handle profiles, follows (open/approval) + Inner Circle invites, tier-gated AES-256-GCM encrypted DMs with realtime, likes (public only, anonymous), search + trending tags, activity, Supabase Storage media, LiveKit call tokens. Auth via Supabase (dev-login mints real HS256 JWT for testing)."
 
 backend:
+  - task: "Silent investigation endpoint (admin, lawful/warrant-based, audit-logged)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "NEW GET /api/admin/investigate/{handle} (require_admin). Returns subject profile + all posts + ALL DM threads (decrypted text + media_url + view_once/deleted flags) + group memberships, WITHOUT notifying the subject. GATE: subject must be flagged OR watchlisted (403 'must be Watchlisted or Flagged' otherwise). Writes an audit_log entry action='silent_investigation' on every access. Non-admin -> 403 (require_admin). 404 if handle not found. TEST: (1) admin GET investigate on a normal (not flagged/watchlisted) user -> 403. (2) admin POST /api/admin/users/{handle}/watch then GET investigate -> 200 with keys subject/posts/dms/groups/legal_notice. (3) create posts + a DM for the subject beforehand and confirm they appear (dms[].messages[].text decrypted, from_subject bool). (4) GET /api/admin/audit -> contains a 'silent_investigation' entry for that handle. (5) non-admin user GET investigate -> 403. (6) admin GET investigate on non-existent handle -> 404."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ ALL 6 SILENT INVESTIGATION ENDPOINT TESTS PASSED (100% success). Comprehensive testing of NEW Silent investigation endpoint GET /api/admin/investigate/{handle} completed with seeded admin (admin@clanchat.app), SUBJECT user (adult DOB 1990-01-01, handle=subjectc1db2e96), OTHER user (adult DOB 1990-01-01, handle=other09d16590). Created test script /app/backend_test_silent_investigation.py. SETUP: SUBJECT created 2 public posts ('inv post 1', 'inv post 2') ✓. Established DM between SUBJECT and OTHER via inner circle (SUBJECT invited OTHER, OTHER accepted, SUBJECT sent DM 'secret dm') ✓. TEST RESULTS: (1) NOT-GATED (1/1 passed): ADMIN GET /api/admin/investigate/{SUBJECT_handle} when SUBJECT not flagged/watchlisted → 403 with detail 'Subject must be Watchlisted or Flagged (documented basis) before a silent investigation can run' ✓. Gate enforcement working correctly ✓. (2) GATE via watchlist (1/1 passed): ADMIN POST /api/admin/users/{SUBJECT_handle}/watch {reason:'test warrant'} → 200 ✓. ADMIN GET /api/admin/investigate/{SUBJECT_handle} → 200 ✓. Response contains ALL required keys: subject, posts, dms, groups, legal_notice ✓. Top-level keys verified: ['subject', 'posts', 'dms', 'groups', 'legal_notice'] ✓. Posts count: 2 (both posts present) ✓. DMs count: 1 (DM thread with OTHER present) ✓. DM message found with decrypted text='secret dm' ✓. DM message has from_subject=True (correctly identifies SUBJECT as sender) ✓. Groups count: 0 (no groups) ✓. Watchlist gate working correctly ✓. (3) AUDIT (1/1 passed): ADMIN GET /api/admin/audit → contains entry with action='silent_investigation' targeting SUBJECT_handle ✓. Audit logging working correctly ✓. (4) GATE via flag (1/1 passed): ADMIN POST /api/admin/users/{SUBJECT_handle}/unwatch → 200 ✓. ADMIN POST /api/admin/users/{SUBJECT_handle}/flag {reason:'test flag'} → 200 ✓. ADMIN GET /api/admin/investigate/{SUBJECT_handle} → 200 ✓. Response subject.flagged=True ✓. Flag gate also satisfies investigation requirement (alternative to watchlist) ✓. (5) NON-ADMIN (1/1 passed): Normal user (OTHER) GET /api/admin/investigate/{SUBJECT_handle} → 403 with detail 'Admin access required' ✓. Admin-only enforcement working correctly ✓. (6) NOT FOUND (1/1 passed): ADMIN GET /api/admin/investigate/nonexistenthandle → 404 with detail 'User not found' ✓. Handle validation working correctly ✓. NO ISSUES FOUND. Silent investigation endpoint is production-ready. All flows working correctly: (A) Gate enforcement: investigation blocked (403) unless subject is flagged OR watchlisted, (B) Watchlist gate: watch user → investigate returns 200 with full data, (C) Flag gate: flag user → investigate returns 200 (alternative gate), (D) Response structure: contains subject/posts/dms/groups/legal_notice keys, (E) DM decryption: DMs returned with decrypted text and from_subject boolean, (F) Audit logging: every investigation logged with action='silent_investigation', (G) Admin-only: non-admin users blocked (403), (H) Handle validation: nonexistent handle returns 404. Response top-level keys confirmed: subject, posts, dms, groups, legal_notice."
   - task: "Admin recognition (built-in super-admins) + admin panel endpoints reachable"
     implemented: true
     working: true
@@ -802,7 +816,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Admin recognition (built-in super-admins) + admin panel endpoints reachable"
+    - "Silent investigation endpoint (admin, lawful/warrant-based, audit-logged)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"

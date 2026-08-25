@@ -143,19 +143,6 @@ export default function Settings() {
       </div>
 
       <div className="p-4 space-y-6">
-        {/* Admin panel entry (admins only) — mobile has no sidebar, so surface it here */}
-        {user?.is_admin && (
-          <button onClick={() => navigate('/admin')}
-            className="w-full flex items-center gap-3 bg-gradient-to-r from-brand/20 to-violet-600/10 border border-brand/40 rounded-2xl p-4 text-left hover:border-brand transition">
-            <div className="h-10 w-10 grid place-items-center rounded-xl bg-brand/20 text-brand shrink-0"><ShieldCheck className="h-5 w-5" /></div>
-            <div className="flex-1 min-w-0">
-              <div className="font-semibold">Admin panel</div>
-              <div className="text-xs text-slate-400">Reports, CSAM, watchlist, users, strikes & audit log</div>
-            </div>
-            <ChevronRight className="h-5 w-5 text-slate-500" />
-          </button>
-        )}
-
         {/* Account identity */}
         <section className="bg-panel border border-edge rounded-2xl p-5">
           <div className="flex items-center gap-3 mb-4">
@@ -372,6 +359,14 @@ export default function Settings() {
         {/* Account actions */}
         <section className="bg-panel border border-edge rounded-2xl p-5 space-y-3">
           <h2 className="font-semibold text-slate-300">Account</h2>
+          {user?.is_admin && (
+            <button onClick={() => navigate('/admin')}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-gradient-to-r from-brand/20 to-violet-600/10 border border-brand/40 hover:border-brand transition">
+              <ShieldCheck className="h-5 w-5 text-brand" />
+              <span className="font-medium flex-1 text-left">Admin panel</span>
+              <ChevronRight className="h-5 w-5 text-slate-500" />
+            </button>
+          )}
           <button onClick={logout} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-edge hover:bg-white/5 transition">
             <LogOut className="h-5 w-5 text-slate-400" />
             <span className="font-medium">Sign out</span>

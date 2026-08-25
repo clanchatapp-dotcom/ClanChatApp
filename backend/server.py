@@ -2659,6 +2659,58 @@ async def admin_view_dms(handle: str, a: dict = Depends(require_admin)):
             'threads': out}
 
 
+@app.get('/api/admin/investigate/{handle}')
+async def admin_investigate(handle: str, a: dict = Depends(require_admin)):
+    """SILENT INVESTIGATION — lawful, warrant-based inspection of an account (UK IPA / court order).
+    Returns the subject's posts (all tiers), private DMs (decrypted, incl. media) and group
+    memberships WITHOUT notifying them. Permitted only when the account is on the Watchlist or
+    Flagged (i.e. a documented basis exists). EVERY access is written to the immutable admin audit log."""
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    if not (prof.get('flagged') or prof.get('watchlisted')):
+        raise HTTPException(403, 'Subject must be Watchlisted or Flagged (documented basis) before a silent investigation can run')
+    uid = prof['id']
+
+    posts = []
+    async for p in db.posts.find({'author_id': uid}).sort('created_at', -1).limit(500):
+        posts.append({'id': p['id'], 'tier': p.get('tier'), 'text': p.get('text', ''),
+                      'media_url': p.get('media_url'), 'media_type': p.get('media_type'),
+                      'ai_label': p.get('ai_label', 'none'), 'created_at': p.get('created_at')})
+
+    threads: dict[str, list] = {}
+    async for m in db.dms.find({'participants': uid}).sort('created_at', 1):
+        peer = next((pid for pid in m['participants'] if pid != uid), uid)
+        threads.setdefault(peer, []).append({
+            'sender_id': m['sender_id'], 'from_subject': m['sender_id'] == uid,
+            'text': dec(m['content_enc']),
+            'media_url': m.get('media_url'), 'media_type': m.get('media_type'),
+            'view_once': bool(m.get('view_once')), 'deleted': bool(m.get('deleted')),
+            'created_at': m['created_at']})
+    dms = []
+    for peer_id, msgs in threads.items():
+        peer = await db.profiles.find_one({'id': peer_id}, {'_id': 0})
+        dms.append({'peer': {'handle': peer['handle'], 'display_name': peer['display_name']} if peer else {'handle': 'unknown', 'display_name': 'Unknown'},
+                    'messages': msgs})
+    dms.sort(key=lambda t: t['messages'][-1]['created_at'] if t['messages'] else '', reverse=True)
+
+    groups = []
+    async for g in db.groups.find({'members': uid}):
+        groups.append({'id': g.get('id'), 'name': g.get('name'),
+                       'member_count': len(g.get('members', [])),
+                       'is_owner': g.get('owner_id') == uid, 'created_at': g.get('created_at')})
+
+    await audit(a, 'silent_investigation', handle,
+                f'inspected {len(posts)} posts, {len(dms)} DM thread(s), {len(groups)} group(s)')
+    return {'subject': {'handle': prof['handle'], 'display_name': prof['display_name'],
+                        'email': prof.get('email'), 'is_minor': bool(prof.get('is_minor')),
+                        'flagged': bool(prof.get('flagged')), 'flag_reason': prof.get('flag_reason'),
+                        'watchlisted': bool(prof.get('watchlisted')), 'watch_reason': prof.get('watch_reason')},
+            'posts': posts, 'dms': dms, 'groups': groups,
+            'legal_notice': 'Accessed under lawful basis. This access is recorded in the admin audit log.'}
+
+
+
 
 # ----------------------------- Phase 6: Admin+ & Safety -----------------------------
 
