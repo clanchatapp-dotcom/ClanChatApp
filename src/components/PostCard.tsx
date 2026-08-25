@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Trash2, Flag, MessageCircle, Send, CornerDownRight, SmilePlus, Sparkles } from 'lucide-react'
+import { Trash2, Flag, MessageCircle, Send, CornerDownRight, SmilePlus, Sparkles, History, X, Pin } from 'lucide-react'
 import { api } from '../lib/api'
 import { Avatar, TIER, TierKey, timeAgo } from '../lib/ui'
 
@@ -23,6 +23,16 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
   const [editText, setEditText] = useState(post.text || '')
   const [text, setText] = useState(post.text)
   const [edited, setEdited] = useState(!!post.edited)
+  const [pinned, setPinned] = useState(!!post.pinned)
+  const togglePin = async () => {
+    try { const r = await api.pinPost(post.id); setPinned(r.pinned) } catch (e: any) { alert(e.message) }
+  }
+  const [showHistory, setShowHistory] = useState(false)
+  const [history, setHistory] = useState<any | null>(null)
+  const openHistory = async () => {
+    setShowHistory(true)
+    try { setHistory(await api.postHistory(post.id)) } catch (e: any) { setHistory({ error: e.message }) }
+  }
   const saveEdit = async () => {
     try { const r = await api.editPost(post.id, editText); setText(r.text); setEdited(true); setEditing(false) }
     catch (e: any) { alert(e.message) }
@@ -68,6 +78,7 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
             <Link to={`/u/${a.handle}`} className="font-semibold hover:underline">{a.display_name}</Link>
             <span className="text-slate-500 text-sm">#{a.handle}</span>
             <span className="text-slate-600 text-sm">· {timeAgo(post.created_at)}</span>
+            {pinned && <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-brand/40 bg-brand/10 text-brand"><Pin className="h-3 w-3" />Pinned</span>}
             <span className={`ml-auto inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${tier.bg} ${tier.text} ${tier.ring}`}>
               <TierIcon className="h-3 w-3" />{tier.label}
             </span>
@@ -82,10 +93,23 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
               </div>
             </div>
           ) : (
-            text && <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed">{text}{edited && <span className="text-xs text-slate-500 ml-1">(edited)</span>}</p>
+            text && <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed">{text}{edited && <button onClick={openHistory} className="text-xs text-slate-500 ml-1 hover:text-brand underline decoration-dotted">(edited)</button>}</p>
           )}
           {post.can_edit && !editing && (
-            <button onClick={() => { setEditText(text || ''); setEditing(true) }} className="mt-1 text-xs text-slate-500 hover:text-brand">Edit</button>
+            <div className="mt-1 flex items-center gap-3">
+              <button onClick={() => { setEditText(text || ''); setEditing(true) }} className="text-xs text-slate-500 hover:text-brand">Edit</button>
+              <button onClick={togglePin} className="text-xs text-slate-500 hover:text-brand inline-flex items-center gap-1"><Pin className="h-3 w-3" />{pinned ? 'Unpin' : 'Pin to profile'}</button>
+            </div>
+          )}
+          {post.people_tags?.filter((pt: any) => pt.status === 'approved').length > 0 && (
+            <div className="mt-1.5 text-xs text-slate-400">
+              with {post.people_tags.filter((pt: any) => pt.status === 'approved').map((pt: any, i: number, arr: any[]) => (
+                <span key={pt.handle}><Link to={`/u/${pt.handle}`} className="text-violet-300 hover:underline">@{pt.handle}</Link>{i < arr.length - 1 ? ', ' : ''}</span>
+              ))}
+            </div>
+          )}
+          {post.my_tag_status === 'pending' && !post.can_edit && (
+            <div className="mt-1.5 text-xs text-amber-400">You're tagged here — approve or reject it from your Activity.</div>
           )}
           {post.media_url && (
             <div className="relative mt-3">
@@ -183,6 +207,38 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
           )}
         </div>
       </div>
+
+      {showHistory && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/70 backdrop-blur p-4" onClick={() => setShowHistory(false)}>
+          <div className="bg-panel border border-edge rounded-2xl w-full max-w-md max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-edge flex items-center gap-2">
+              <History className="h-5 w-5 text-brand" />
+              <h3 className="font-bold flex-1">Edit history</h3>
+              <button onClick={() => setShowHistory(false)} className="h-8 w-8 grid place-items-center rounded-lg hover:bg-white/10"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="p-4 overflow-y-auto space-y-3">
+              {!history ? <p className="text-slate-500 text-sm">Loading…</p>
+                : history.error ? <p className="text-rose-400 text-sm">{history.error}</p>
+                : (
+                  <>
+                    <div className="rounded-xl border border-brand/40 bg-brand/10 p-3">
+                      <div className="text-[10px] uppercase tracking-wide text-brand mb-1">Current{history.current?.at ? ` · ${timeAgo(history.current.at)}` : ''}</div>
+                      <p className="text-sm whitespace-pre-wrap break-words">{history.current?.text}</p>
+                    </div>
+                    {(history.history || []).length === 0
+                      ? <p className="text-xs text-slate-500">No previous versions recorded.</p>
+                      : history.history.map((v: any, i: number) => (
+                        <div key={i} className="rounded-xl border border-edge bg-ink p-3">
+                          <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Previous{v.at ? ` · ${timeAgo(v.at)}` : ''}</div>
+                          <p className="text-sm whitespace-pre-wrap break-words text-slate-300">{v.text || <em className="text-slate-600">empty</em>}</p>
+                        </div>
+                      ))}
+                  </>
+                )}
+            </div>
+          </div>
+        </div>
+      )}
     </article>
   )
 }

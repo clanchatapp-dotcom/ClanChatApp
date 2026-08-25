@@ -4,7 +4,7 @@ import { api } from '../lib/api'
 import { Avatar, timeAgo } from '../lib/ui'
 import PostCard from '../components/PostCard'
 import { useAuth } from '../lib/auth'
-import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera, Trash2, Ban, VolumeX, ShieldOff, Plus, MessagesSquare, Send, X } from 'lucide-react'
+import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera, Trash2, Ban, VolumeX, ShieldOff, Plus, MessagesSquare, Send, X, Pin } from 'lucide-react'
 
 const TABS = ['media', 'wall', 'boards', 'audio'] as const
 type Tab = typeof TABS[number]
@@ -163,6 +163,18 @@ export default function Profile() {
           </div>
         )}
       </div>
+
+      {/* Pinned ribbon (up to 3) */}
+      {p.pinned_posts?.length > 0 && (
+        <div className="max-w-xl mx-auto px-4 pt-6 space-y-3">
+          <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500 font-semibold">
+            <Pin className="h-3.5 w-3.5 text-brand" /> Pinned
+          </div>
+          {p.pinned_posts.map((post: any) => (
+            <PostCard key={`pin-${post.id}`} post={post} onDelete={p.is_self ? del : undefined} />
+          ))}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="mt-8 border-b border-edge">

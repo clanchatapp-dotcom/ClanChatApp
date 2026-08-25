@@ -9,6 +9,8 @@ function Composer({ onPosted }: { onPosted: () => void }) {
   const [text, setText] = useState('')
   const [tags, setTags] = useState<string[]>([])
   const [tagInput, setTagInput] = useState('')
+  const [people, setPeople] = useState<string[]>([])
+  const [peopleInput, setPeopleInput] = useState('')
   const [media, setMedia] = useState<{ url: string; type: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -20,6 +22,11 @@ function Composer({ onPosted }: { onPosted: () => void }) {
     if (t && tags.length < 10 && !tags.includes(t)) setTags([...tags, t])
     setTagInput('')
   }
+  const addPerson = (v: string) => {
+    const t = v.replace(/[^a-z0-9_]/gi, '').toLowerCase()
+    if (t && people.length < 10 && !people.includes(t)) setPeople([...people, t])
+    setPeopleInput('')
+  }
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f) return
     setUploading(true)
@@ -30,8 +37,8 @@ function Composer({ onPosted }: { onPosted: () => void }) {
     if (!text.trim() && !media) return
     setBusy(true)
     try {
-      await api.createPost({ tier, text, media_url: media?.url, media_type: media?.type, tags, ai_label: media ? aiLabel : 'none' })
-      setText(''); setTags([]); setMedia(null); setAiLabel('none'); onPosted()
+      await api.createPost({ tier, text, media_url: media?.url, media_type: media?.type, tags, people_tags: people, ai_label: media ? aiLabel : 'none' })
+      setText(''); setTags([]); setPeople([]); setMedia(null); setAiLabel('none'); onPosted()
     } catch (e: any) { alert(e.message) } finally { setBusy(false) }
   }
 
@@ -86,6 +93,19 @@ function Composer({ onPosted }: { onPosted: () => void }) {
           </div>
         </div>
       )}
+      <div className="mt-2">
+        <div className="flex flex-wrap gap-1.5 items-center">
+          {people.map(h => (
+            <span key={h} className="text-xs text-violet-300 bg-violet-500/10 px-2 py-1 rounded-full flex items-center gap-1">
+              @{h}<button onClick={() => setPeople(people.filter(x => x !== h))}><X className="h-3 w-3" /></button>
+            </span>
+          ))}
+          <input value={peopleInput}
+            onChange={e => { const v = e.target.value; if (v.endsWith(' ') || v.endsWith(',')) addPerson(v); else setPeopleInput(v) }}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addPerson(peopleInput) } }}
+            placeholder={people.length ? '' : 'tag people (@handle — they must approve)…'} className="bg-transparent text-sm outline-none flex-1 min-w-[120px] py-1" />
+        </div>
+      </div>
       <div className="flex items-center gap-2 mt-3">
         <input ref={fileRef} type="file" accept="image/*,video/*" hidden onChange={onFile} />
         <button onClick={() => fileRef.current?.click()} disabled={uploading}

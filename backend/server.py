@@ -476,6 +476,15 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         )
         if show_rn:
             out['real_name'] = rn
+    # Pinned posts ribbon (up to 3), respecting tier visibility for the viewer.
+    pinned = []
+    for pid in (prof.get('pinned_post_ids', []) or [])[:3]:
+        pp = await db.posts.find_one({'id': pid})
+        if pp and await can_view(viewer_id, pp):
+            po = await post_out(pp, viewer_id)
+            po['pinned'] = True
+            pinned.append(po)
+    out['pinned_posts'] = pinned
     return out
 
 async def post_out(p: dict, viewer_id: str) -> dict:
@@ -484,10 +493,19 @@ async def post_out(p: dict, viewer_id: str) -> dict:
     reactions = p.get('reactions', {}) or {}
     counts = {k: len(v) for k, v in reactions.items() if v}
     my_reaction = next((k for k, v in reactions.items() if viewer_id in v), None)
+    is_author = p['author_id'] == viewer_id
+    all_people = p.get('people_tags', []) or []
+    # Others see only approved tags; the author and the tagged person see full status.
+    if is_author or any(pt['user_id'] == viewer_id for pt in all_people):
+        people_tags = all_people
+    else:
+        people_tags = [pt for pt in all_people if pt.get('status') == 'approved']
+    my_tag_status = next((pt.get('status') for pt in all_people if pt['user_id'] == viewer_id), None)
     return {
         'id': p['id'], 'tier': p['tier'], 'text': p.get('text', ''),
         'media_url': p.get('media_url'), 'media_type': p.get('media_type'),
-        'tags': p.get('tags', []), 'ai_label': p.get('ai_label', 'none'), 'edited': bool(p.get('edited')), 'can_edit': p['author_id'] == viewer_id, 'created_at': p['created_at'],
+        'tags': p.get('tags', []), 'ai_label': p.get('ai_label', 'none'), 'edited': bool(p.get('edited')), 'edited_count': len(p.get('edit_history', [])), 'pinned': bool(p.get('pinned')), 'can_edit': p['author_id'] == viewer_id, 'created_at': p['created_at'],
+        'people_tags': people_tags, 'my_tag_status': my_tag_status,
         'like_count': len(p.get('likes', [])), 'liked': liked,
         'likeable': p['tier'] == 'public',
         'reactions': counts, 'reaction_total': sum(counts.values()), 'my_reaction': my_reaction,
@@ -540,6 +558,7 @@ class PostCreate(BaseModel):
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     tags: Optional[list] = None
+    people_tags: Optional[list] = None  # handles to tag; each requires that person's approval
     ai_label: Optional[str] = 'none'  # none | generated | assisted | altered
 
 class ReactBody(BaseModel):
@@ -1156,7 +1175,7 @@ async def get_wall(handle: str, u: dict = Depends(get_current_user)):
         async for w in db.wall.find({'owner_id': owner['id']}).sort('created_at', -1).limit(100):
             a = await db.profiles.find_one({'id': w['author_id']}, {'_id': 0})
             items.append({'id': w['id'], 'text': w['text'], 'created_at': w['created_at'],
-                          'edited': bool(w.get('edited')),
+                          'edited': bool(w.get('edited')), 'edited_count': len(w.get('edit_history', [])),
                           'author': {'id': a['id'], 'handle': a['handle'], 'display_name': a['display_name'],
                                      'avatar_url': a.get('avatar_url')} if a else None,
                           'can_delete': w['author_id'] == u['id'] or owner['id'] == u['id'] or is_admin_user(u),
@@ -1422,16 +1441,56 @@ async def create_post(body: PostCreate, u: dict = Depends(get_current_user)):
     if tier == 'inner':
         tags = []  # spec: no tag field on Tier 3
     ai_label = body.ai_label if body.ai_label in AI_LABELS else 'none'
+    # People-tags: each tagged person must approve before the tag shows publicly.
+    people = []
+    seen_ids = set()
+    for h in (body.people_tags or [])[:10]:
+        handle = re.sub(r'[^a-z0-9_]', '', str(h).lower())[:30]
+        if not handle:
+            continue
+        tp = await db.profiles.find_one({'handle': handle}, {'_id': 0})
+        if not tp or tp['id'] == u['id'] or tp['id'] in seen_ids:
+            continue
+        if await is_blocked_between(u['id'], tp['id']) or await adult_minor_barrier(u['id'], tp['id']):
+            continue  # safety: can't tag across block / adult-minor barrier
+        seen_ids.add(tp['id'])
+        people.append({'user_id': tp['id'], 'handle': tp['handle'],
+                       'display_name': tp['display_name'], 'status': 'pending'})
     doc = {'id': str(uuid.uuid4()), 'author_id': u['id'], 'tier': tier, 'text': text,
            'media_url': body.media_url, 'media_type': body.media_type, 'tags': tags,
-           'ai_label': ai_label,
+           'people_tags': people, 'ai_label': ai_label,
            'likes': [], 'created_at': datetime.now(timezone.utc).isoformat()}
     await db.posts.insert_one(dict(doc))
+    for pt in people:
+        await add_activity(pt['user_id'], 'tag_request', u, 'tagged you in a post', doc['id'])
     return await post_out(doc, u['id'])
+
+
+@app.post('/api/posts/{post_id}/tag/{decision}')
+async def decide_tag(post_id: str, decision: str, u: dict = Depends(get_current_user)):
+    """Tagged person approves or rejects being tagged. decision = approve | reject."""
+    if decision not in ('approve', 'reject'):
+        raise HTTPException(400, 'Invalid decision')
+    p = await db.posts.find_one({'id': post_id})
+    if not p:
+        raise HTTPException(404, 'Post not found')
+    people = p.get('people_tags', []) or []
+    mine = next((pt for pt in people if pt['user_id'] == u['id']), None)
+    if not mine:
+        raise HTTPException(403, 'You are not tagged in this post')
+    if decision == 'reject':
+        people = [pt for pt in people if pt['user_id'] != u['id']]  # remove the tag entirely
+    else:
+        for pt in people:
+            if pt['user_id'] == u['id']:
+                pt['status'] = 'approved'
+    await db.posts.update_one({'id': post_id}, {'$set': {'people_tags': people}})
+    return {'ok': True, 'decision': decision}
 
 @app.delete('/api/posts/{post_id}')
 async def delete_post(post_id: str, u: dict = Depends(get_current_user)):
     await db.posts.delete_one({'id': post_id, 'author_id': u['id']})
+    await db.profiles.update_one({'id': u['id']}, {'$pull': {'pinned_post_ids': post_id}})
     return {'deleted': True}
 
 class EditText(BaseModel):
@@ -1447,9 +1506,43 @@ async def edit_post(post_id: str, body: EditText, u: dict = Depends(get_current_
     text = (body.text or '').strip()
     if contains_banned(text):
         raise HTTPException(400, 'Your text contains a word that isn’t allowed here.')
-    await db.posts.update_one({'id': post_id}, {'$set': {
-        'text': text, 'edited': True, 'edited_at': datetime.now(timezone.utc).isoformat()}})
+    prev = {'text': p.get('text', ''), 'at': p.get('edited_at') or p.get('created_at')}
+    await db.posts.update_one({'id': post_id}, {
+        '$set': {'text': text, 'edited': True, 'edited_at': datetime.now(timezone.utc).isoformat()},
+        '$push': {'edit_history': prev}})
     return await post_out(await db.posts.find_one({'id': post_id}), u['id'])
+
+
+@app.get('/api/posts/{post_id}/history')
+async def post_history(post_id: str, u: dict = Depends(get_current_user)):
+    p = await db.posts.find_one({'id': post_id})
+    if not p:
+        raise HTTPException(404, 'Post not found')
+    if not await can_view(u['id'], p):
+        raise HTTPException(403, 'No access')
+    return {'current': {'text': p.get('text', ''), 'at': p.get('edited_at') or p.get('created_at')},
+            'history': list(reversed(p.get('edit_history', [])))}
+
+
+@app.post('/api/posts/{post_id}/pin')
+async def pin_post(post_id: str, u: dict = Depends(get_current_user)):
+    p = await db.posts.find_one({'id': post_id})
+    if not p:
+        raise HTTPException(404, 'Post not found')
+    if p['author_id'] != u['id']:
+        raise HTTPException(403, 'You can only pin your own posts')
+    prof = await db.profiles.find_one({'id': u['id']})
+    pins = list((prof or {}).get('pinned_post_ids', []) or [])
+    if post_id in pins:
+        pins.remove(post_id)
+        pinned = False
+    else:
+        if len(pins) >= 3:
+            raise HTTPException(400, 'You can pin up to 3 posts — unpin one first.')
+        pins.insert(0, post_id)
+        pinned = True
+    await db.profiles.update_one({'id': u['id']}, {'$set': {'pinned_post_ids': pins}})
+    return {'ok': True, 'pinned': pinned, 'pinned_post_ids': pins}
 
 @app.put('/api/wall/{wall_id}')
 async def edit_wall(wall_id: str, body: EditText, u: dict = Depends(get_current_user)):
@@ -1463,9 +1556,20 @@ async def edit_wall(wall_id: str, body: EditText, u: dict = Depends(get_current_
         raise HTTPException(400, 'Empty')
     if contains_banned(text):
         raise HTTPException(400, 'Your message contains a word that isn’t allowed here.')
-    await db.wall.update_one({'id': wall_id}, {'$set': {
-        'text': text, 'edited': True, 'edited_at': datetime.now(timezone.utc).isoformat()}})
+    prev = {'text': w.get('text', ''), 'at': w.get('edited_at') or w.get('created_at')}
+    await db.wall.update_one({'id': wall_id}, {
+        '$set': {'text': text, 'edited': True, 'edited_at': datetime.now(timezone.utc).isoformat()},
+        '$push': {'edit_history': prev}})
     return {'ok': True, 'text': text, 'edited': True}
+
+
+@app.get('/api/wall/{wall_id}/history')
+async def wall_history(wall_id: str, u: dict = Depends(get_current_user)):
+    w = await db.wall.find_one({'id': wall_id})
+    if not w:
+        raise HTTPException(404, 'Not found')
+    return {'current': {'text': w.get('text', ''), 'at': w.get('edited_at') or w.get('created_at')},
+            'history': list(reversed(w.get('edit_history', [])))}
 
 @app.post('/api/posts/{post_id}/like')
 async def like_post(post_id: str, u: dict = Depends(get_current_user)):
