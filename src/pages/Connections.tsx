@@ -62,10 +62,10 @@ export default function Connections() {
 
       {/* Tabs */}
       <div className="border-b border-edge overflow-x-auto">
-        <div className="flex items-center px-2">
+        <div className="flex items-center px-2 w-max">
           {TABS.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
-              className={`relative whitespace-nowrap px-3.5 py-3 text-sm font-semibold transition ${tab === t.key ? 'text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+              className={`relative shrink-0 whitespace-nowrap px-3.5 py-3 text-sm font-semibold transition ${tab === t.key ? 'text-white' : 'text-slate-500 hover:text-slate-300'}`}>
               {t.label}{badge(count(t.key))}
               {tab === t.key && <span className="absolute -bottom-px left-2 right-2 h-0.5 bg-brand rounded-full" />}
             </button>
