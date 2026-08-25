@@ -4,6 +4,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* --- Mobile safe areas (Capacitor / notches / status bar / system nav) --- */
+/* Sticky page headers sit BELOW the status bar (time, battery, signal). */
+.sticky.top-0 {
+  padding-top: calc(0.75rem + env(safe-area-inset-top)) !important;
+}
+/* The app body background fills the status-bar inset so it doesn't look cut off. */
+body { background: rgb(5 5 7); }
+
 :root {
   --ink: 5 5 7;
   --panel: 13 13 19;

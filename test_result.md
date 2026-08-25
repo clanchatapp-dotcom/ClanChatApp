@@ -131,6 +131,20 @@
 user_problem_statement: "ClanChat v4.0 core — React(Vite+TS) SPA + FastAPI. Three-tier privacy (Public/Followers/Inner Circle), chronological My Feed, #handle profiles, follows (open/approval) + Inner Circle invites, tier-gated AES-256-GCM encrypted DMs with realtime, likes (public only, anonymous), search + trending tags, activity, Supabase Storage media, LiveKit call tokens. Auth via Supabase (dev-login mints real HS256 JWT for testing)."
 
 backend:
+  - task: "Admin recognition (built-in super-admins) + admin panel endpoints reachable"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "FIX: owner reported 'no admin panel'. Root cause: on their deploy ADMIN_EMAILS env was unset so their account wasn't admin; also the Admin link only existed in the desktop sidebar (hidden on mobile). Backend fix: ADMIN_EMAILS now ALWAYS unions built-in super-admins {admin@clanchat.app, thomasgallacher92@gmail.com, admin@sandbox.clanchat} with any env-provided emails, so these accounts are admin on every deploy regardless of env. is_admin_user checks prof.is_admin OR email in ADMIN_EMAILS (live). Frontend fix (not for backend test): added an 'Admin panel' entry in Settings for admins (mobile has no sidebar). TEST: (1) register email/password user with email 'admin@clanchat.app' style built-in — actually register a NEW user whose email is a built-in admin, e.g. thomasgallacher92@gmail.com, then GET /api/me -> is_admin=true. (2) A normal user (random email) GET /api/me -> is_admin=false, and GET /api/admin/reports (or similar admin endpoint) -> 403. (3) The built-in admin user can GET admin endpoints (reports/users/audit/stats) -> 200. (4) Seeded admin admin@clanchat.app / ClanChatAdmin!2025 login -> is_admin=true."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ ALL 12 ADMIN RECOGNITION TESTS PASSED (100% success). Comprehensive testing of ADMIN RECOGNITION FIX completed. Created test script /app/backend_test_admin_recognition.py. Verified built-in super-admins are ALWAYS recognized as admins on every deploy. TEST RESULTS: (1) BUILT-IN ADMIN thomasgallacher92@gmail.com (4/4 passed): Registered NEW user with email='thomasgallacher92@gmail.com', password='Test1234!', dob='1990-01-01' → 200 ✓. GET /api/me → is_admin=true ✓. GET /api/admin/stats → 200 ✓. GET /api/admin/reports → 200 ✓. GET /api/admin/users → 200 ✓. Built-in admin recognized correctly and can access all admin endpoints ✓. (2) SEEDED ADMIN admin@clanchat.app (4/4 passed): POST /api/auth/login {email:'admin@clanchat.app', password:'ClanChatAdmin!2025'} → 200 ✓. GET /api/me → is_admin=true ✓. GET /api/admin/stats → 200 ✓. GET /api/admin/reports → 200 ✓. GET /api/admin/users → 200 ✓. Seeded admin recognized correctly and can access all admin endpoints ✓. (3) NON-ADMIN USER (4/4 passed): Registered random user notadmin+87647969@example.com with dob='1995-05-15' → 200 ✓. GET /api/me → is_admin=false ✓. GET /api/admin/stats → 403 (correctly blocked) ✓. GET /api/admin/reports → 403 (correctly blocked) ✓. GET /api/admin/users → 403 (correctly blocked) ✓. Non-admin users correctly blocked from admin endpoints ✓. NO ISSUES FOUND. Admin recognition fix is production-ready. All flows working correctly: (A) Built-in super-admins {admin@clanchat.app, thomasgallacher92@gmail.com, admin@sandbox.clanchat} are ALWAYS admins on every deploy (ADMIN_EMAILS = _BUILTIN_ADMIN_EMAILS | env emails). (B) is_admin_user checks prof.is_admin OR (email in ADMIN_EMAILS). (C) Admin endpoints properly gated: 200 for admins, 403 for non-admins. (D) Both NEW registration and existing login work correctly for built-in admins. Admin endpoints tested: /api/admin/stats, /api/admin/reports, /api/admin/users. Owner's issue 'no admin panel' is resolved - their account (thomasgallacher92@gmail.com) is now recognized as admin regardless of env configuration."
   - task: "Edit-history + Pinned posts (ribbon) + People tag-approval"
     implemented: true
     working: true
@@ -788,7 +802,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Edit-history + Pinned posts (ribbon) + People tag-approval"
+    - "Admin recognition (built-in super-admins) + admin panel endpoints reachable"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"

@@ -143,6 +143,19 @@ export default function Settings() {
       </div>
 
       <div className="p-4 space-y-6">
+        {/* Admin panel entry (admins only) — mobile has no sidebar, so surface it here */}
+        {user?.is_admin && (
+          <button onClick={() => navigate('/admin')}
+            className="w-full flex items-center gap-3 bg-gradient-to-r from-brand/20 to-violet-600/10 border border-brand/40 rounded-2xl p-4 text-left hover:border-brand transition">
+            <div className="h-10 w-10 grid place-items-center rounded-xl bg-brand/20 text-brand shrink-0"><ShieldCheck className="h-5 w-5" /></div>
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold">Admin panel</div>
+              <div className="text-xs text-slate-400">Reports, CSAM, watchlist, users, strikes & audit log</div>
+            </div>
+            <ChevronRight className="h-5 w-5 text-slate-500" />
+          </button>
+        )}
+
         {/* Account identity */}
         <section className="bg-panel border border-edge rounded-2xl p-5">
           <div className="flex items-center gap-3 mb-4">

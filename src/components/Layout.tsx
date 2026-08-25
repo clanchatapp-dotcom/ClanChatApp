@@ -93,7 +93,7 @@ export default function Layout() {
       </aside>
 
       {/* Mobile bottom nav */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-panel/95 backdrop-blur border-t border-edge flex items-center justify-around h-16 pb-[env(safe-area-inset-bottom)]">
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-panel border-t border-edge flex items-center justify-around h-16 pb-[env(safe-area-inset-bottom)]">
         {NAV.map(n => (
           <NavLink key={n.to} to={n.to} end={n.end as any} className={({ isActive }) => `relative flex flex-col items-center gap-1 text-xs ${isActive ? 'text-brand' : 'text-slate-400'}`}>
             <n.icon className="h-5 w-5" />{n.label.split(' ')[0]}

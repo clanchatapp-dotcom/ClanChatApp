@@ -64,7 +64,10 @@ DM_KEY = _load_dm_key()
 LIVEKIT_URL = os.environ.get('LIVEKIT_URL', '')
 LIVEKIT_API_KEY = os.environ.get('LIVEKIT_API_KEY', '')
 LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
-ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get('ADMIN_EMAILS', 'admin@sandbox.clanchat').split(',') if e.strip()}
+# Built-in super-admins are ALWAYS admins on every deploy (owner accounts), even if the
+# ADMIN_EMAILS env var isn't set. Env-provided emails are added on top.
+_BUILTIN_ADMIN_EMAILS = {'admin@clanchat.app', 'thomasgallacher92@gmail.com', 'admin@sandbox.clanchat'}
+ADMIN_EMAILS = _BUILTIN_ADMIN_EMAILS | {e.strip().lower() for e in os.environ.get('ADMIN_EMAILS', '').split(',') if e.strip()}
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 
 # NSFW threshold: any label >= this (or safe=false) queues media for admin review.
