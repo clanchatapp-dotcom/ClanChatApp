@@ -70,6 +70,36 @@ _BUILTIN_ADMIN_EMAILS = {'admin@clanchat.app', 'thomasgallacher92@gmail.com', 'a
 ADMIN_EMAILS = _BUILTIN_ADMIN_EMAILS | {e.strip().lower() for e in os.environ.get('ADMIN_EMAILS', '').split(',') if e.strip()}
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 
+# ----------------------------- Staff roles -----------------------------
+# Coloured shield roles. All role-holders are treated as "verified" accounts.
+#   super_admin (green)  — the owner(s); reserved for built-in admin emails, not assignable via API
+#   co_admin    (pink)   — full admin access (same as super admin)
+#   moderator   (red)    — content moderation only (reports/strikes/flags/watchlist/nsfw)
+#   first_tester(blue)   — cosmetic verified badge only, no powers
+ROLES_VALID = {'super_admin', 'co_admin', 'moderator', 'first_tester'}
+# Roles that can be assigned/removed through the admin API (super_admin is reserved).
+ROLES_ASSIGNABLE = {'co_admin', 'moderator', 'first_tester'}
+# Roles that grant full admin access (require_admin).
+FULL_ADMIN_ROLES = {'super_admin', 'co_admin'}
+# Roles that can moderate content (require_mod).
+MOD_ROLES = {'super_admin', 'co_admin', 'moderator'}
+
+
+def effective_role(prof: dict) -> Optional[str]:
+    """The canonical role for a profile. Built-in admin emails are always super_admin;
+    legacy is_admin accounts map to co_admin; otherwise use the stored role field."""
+    if not prof:
+        return None
+    if (prof.get('email') or '').lower() in ADMIN_EMAILS:
+        return 'super_admin'
+    r = prof.get('role')
+    if r in ROLES_VALID:
+        return r
+    if prof.get('is_admin'):
+        return 'co_admin'
+    return None
+
+
 # NSFW threshold: any label >= this (or safe=false) queues media for admin review.
 NSFW_THRESHOLD = 0.70
 _NSFW_SYS = (
@@ -378,7 +408,8 @@ async def hidden_author_ids(viewer: str) -> set:
 
 async def relation_slim(prof: dict) -> dict:
     return {'id': prof['id'], 'handle': prof['handle'], 'display_name': prof['display_name'],
-            'avatar_url': prof.get('avatar_url'), 'account_type': prof.get('account_type', 'standard')}
+            'avatar_url': prof.get('avatar_url'), 'account_type': prof.get('account_type', 'standard'),
+            'role': effective_role(prof)}
 
 async def can_view(viewer: str, post: dict) -> bool:
     if post.get('quarantined'):
@@ -420,7 +451,7 @@ async def add_activity(user_id: str, typ: str, actor: dict, text: str, post_id=N
     await db.activity.insert_one({
         'id': str(uuid.uuid4()), 'user_id': user_id, 'type': typ,
         'actor_handle': actor['handle'], 'actor_name': actor['display_name'],
-        'actor_id': actor['id'], 'text': text, 'post_id': post_id,
+        'actor_id': actor['id'], 'actor_role': effective_role(actor), 'text': text, 'post_id': post_id,
         'created_at': datetime.now(timezone.utc).isoformat(), 'read': False,
     })
 
@@ -436,6 +467,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         'id': prof['id'], 'handle': prof['handle'], 'display_name': prof['display_name'],
         'bio': prof.get('bio', ''), 'links': prof.get('links', []),
         'avatar_url': prof.get('avatar_url'), 'account_type': prof.get('account_type', 'standard'),
+        'role': effective_role(prof),
         'follow_mode': prof.get('follow_mode', 'open'), 'dm_open': prof.get('dm_open', True),
         'is_self': is_self,
         'follow_status': following['status'] if following else None,
@@ -450,6 +482,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         out['has_password'] = bool(await db.auth.find_one({'user_id': prof['id']}))
         out['followers_count'] = followers_count  # private: owner only
         out['is_admin'] = is_admin_user(prof)
+        out['can_moderate'] = effective_role(prof) in MOD_ROLES
         out['strikes'] = prof.get('strikes', 0)
         _minor = bool(prof.get('is_minor'))
         _cz = {**COMFORT_ZONE_DEFAULTS, **(prof.get('comfort_zone') or {})}
@@ -515,7 +548,8 @@ async def post_out(p: dict, viewer_id: str) -> dict:
         'comment_count': await db.comments.count_documents({'post_id': p['id']}),
         'author': {'id': author['id'], 'handle': author['handle'],
                    'display_name': author['display_name'], 'avatar_url': author.get('avatar_url'),
-                   'account_type': author.get('account_type', 'standard')} if author else None,
+                   'account_type': author.get('account_type', 'standard'),
+                   'role': effective_role(author)} if author else None,
         'is_mine': p['author_id'] == viewer_id,
     }
 
@@ -1761,7 +1795,7 @@ async def dm_threads(u: dict = Depends(get_current_user)):
         room = dm_room(u['id'], oid)
         since = await read_marker('dm', room, u['id'])
         seen[oid] = {'user': {'id': prof['id'], 'handle': prof['handle'],
-                              'display_name': prof['display_name'], 'avatar_url': prof.get('avatar_url')},
+                              'display_name': prof['display_name'], 'avatar_url': prof.get('avatar_url'), 'role': effective_role(prof)},
                      'last': ('🎤 Voice message' if m.get('media_type') == 'audio' else '📷 Photo' if m.get('media_url') else dec(m['content_enc'])[:80]), 'created_at': m['created_at'],
                      'mine': m['sender_id'] == u['id'],
                      'unread': await dm_unread_count(room, u['id'], since)}
@@ -1792,7 +1826,7 @@ async def dm_history(handle: str, u: dict = Depends(get_current_user)):
     await mark_read('dm', room, u['id'])  # opening a thread marks it read
     is_self = other['id'] == u['id']
     return {'peer': {'id': other['id'], 'handle': other['handle'],
-                     'display_name': other['display_name'], 'avatar_url': other.get('avatar_url')},
+                     'display_name': other['display_name'], 'avatar_url': other.get('avatar_url'), 'role': effective_role(other)},
             'can_dm': await can_dm(u['id'], other['id']),
             'can_voice': is_self or await inner_perm(other['id'], u['id'], 'voice'),
             'can_call': is_self or await inner_perm(other['id'], u['id'], 'call'),
@@ -2468,6 +2502,12 @@ async def require_admin(u: dict = Depends(get_current_user)) -> dict:
         raise HTTPException(403, 'Admin access required')
     return u
 
+async def require_mod(u: dict = Depends(get_current_user)) -> dict:
+    """Content-moderation access: super_admin, co_admin OR moderator."""
+    if is_admin_user(u) or effective_role(u) in MOD_ROLES:
+        return u
+    raise HTTPException(403, 'Moderator access required')
+
 async def audit(admin: dict, action: str, target: str, detail: str = ''):
     await db.audit.insert_one({
         'id': str(uuid.uuid4()), 'admin_handle': admin['handle'], 'admin_id': admin['id'],
@@ -2524,7 +2564,7 @@ async def create_report(body: ReportIn, u: dict = Depends(get_current_user)):
 
 
 @app.get('/api/admin/stats')
-async def admin_stats(a: dict = Depends(require_admin)):
+async def admin_stats(a: dict = Depends(require_mod)):
     deleted = (await db.counters.find_one({'_id': 'deleted'}) or {}).get('n', 0)
     return {
         'users': await db.profiles.count_documents({}),
@@ -2636,8 +2676,78 @@ async def admin_remove_admin(body: AdminEmailBody, a: dict = Depends(require_adm
     await audit(a, 'remove_admin', email, '')
     return {'ok': True, 'email': email}
 
+
+# ----------------------------- Staff role assignment -----------------------------
+
+class RoleAssignBody(BaseModel):
+    handle: str
+    role: str
+
+class RoleRemoveBody(BaseModel):
+    handle: str
+
+
+@app.get('/api/admin/roles')
+async def admin_list_roles(a: dict = Depends(require_admin)):
+    """List everyone who holds a staff role (super_admin / co_admin / moderator / first_tester)."""
+    out = []
+    async for p in db.profiles.find({}, {'_id': 0}):
+        r = effective_role(p)
+        if r:
+            out.append({'id': p['id'], 'handle': p['handle'], 'display_name': p['display_name'],
+                        'avatar_url': p.get('avatar_url'), 'email': p.get('email'), 'role': r,
+                        'account_type': p.get('account_type', 'standard'),
+                        'protected': (p.get('email') or '').lower() in ADMIN_EMAILS})
+    order = {'super_admin': 0, 'co_admin': 1, 'moderator': 2, 'first_tester': 3}
+    out.sort(key=lambda x: order.get(x['role'], 9))
+    return out
+
+
+@app.post('/api/admin/roles/assign')
+async def admin_assign_role(body: RoleAssignBody, a: dict = Depends(require_admin)):
+    """Assign a staff role by @handle. Only super_admin may assign the co_admin role.
+    super_admin itself is reserved for built-in owner emails and cannot be assigned here."""
+    role = (body.role or '').strip()
+    if role not in ROLES_ASSIGNABLE:
+        raise HTTPException(400, 'Invalid role. Choose co_admin, moderator or first_tester')
+    actor_role = effective_role(a)
+    if role == 'co_admin' and actor_role != 'super_admin':
+        raise HTTPException(403, 'Only a Super Admin can assign Co-Admins')
+    handle = body.handle.strip().lstrip('#@')
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    if (prof.get('email') or '').lower() in ADMIN_EMAILS:
+        raise HTTPException(400, 'That account is a protected Super Admin and cannot be changed')
+    upd = {'role': role, 'account_type': 'verified', 'is_admin': role in FULL_ADMIN_ROLES}
+    await db.profiles.update_one({'id': prof['id']}, {'$set': upd})
+    await audit(a, 'assign_role', handle, f'role={role}')
+    return {'ok': True, 'handle': handle, 'role': role}
+
+
+@app.post('/api/admin/roles/remove')
+async def admin_remove_role(body: RoleRemoveBody, a: dict = Depends(require_admin)):
+    """Remove a staff role by @handle. Only super_admin may remove a Co-Admin.
+    Protected built-in Super Admins cannot be demoted."""
+    handle = body.handle.strip().lstrip('#@')
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    if (prof.get('email') or '').lower() in ADMIN_EMAILS:
+        raise HTTPException(400, 'That account is a protected Super Admin and cannot be demoted')
+    current = effective_role(prof)
+    if current == 'co_admin' and effective_role(a) != 'super_admin':
+        raise HTTPException(403, 'Only a Super Admin can remove a Co-Admin')
+    if prof['id'] == a['id']:
+        raise HTTPException(400, 'You cannot remove your own role')
+    await db.profiles.update_one({'id': prof['id']},
+                                 {'$set': {'role': 'user', 'is_admin': False, 'account_type': 'standard'}})
+    await audit(a, 'remove_role', handle, f'was={current}')
+    return {'ok': True, 'handle': handle}
+
+
 @app.get('/api/admin/reports')
-async def admin_reports(status: str = 'open', a: dict = Depends(require_admin)):
+async def admin_reports(status: str = 'open', a: dict = Depends(require_mod)):
     q = {} if status == 'all' else {'status': status}
     out = []
     async for r in db.reports.find(q, {'_id': 0}).sort('created_at', -1).limit(100):
@@ -2652,7 +2762,7 @@ async def admin_reports(status: str = 'open', a: dict = Depends(require_admin)):
     return out
 
 @app.post('/api/admin/reports/{report_id}/action')
-async def admin_action(report_id: str, body: ActionIn, a: dict = Depends(require_admin)):
+async def admin_action(report_id: str, body: ActionIn, a: dict = Depends(require_mod)):
     r = await db.reports.find_one({'id': report_id})
     if not r:
         raise HTTPException(404, 'Report not found')
@@ -2683,7 +2793,7 @@ async def admin_csam(a: dict = Depends(require_admin)):
     return out
 
 @app.get('/api/admin/users')
-async def admin_users(q: str = '', a: dict = Depends(require_admin)):
+async def admin_users(q: str = '', a: dict = Depends(require_mod)):
     query = {}
     if q:
         query = {'$or': [{'handle': {'$regex': q, '$options': 'i'}}, {'display_name': {'$regex': q, '$options': 'i'}}]}
@@ -2699,14 +2809,14 @@ async def admin_users(q: str = '', a: dict = Depends(require_admin)):
     return out
 
 @app.post('/api/admin/users/{handle}/strike')
-async def admin_strike(handle: str, body: StrikeIn, a: dict = Depends(require_admin)):
+async def admin_strike(handle: str, body: StrikeIn, a: dict = Depends(require_mod)):
     prof = await db.profiles.find_one({'handle': handle}, {'_id': 0})
     if not prof:
         raise HTTPException(404, 'User not found')
     return {'ok': True, **await apply_strike(prof, body.reason, a, soft=(body.stage == 'soft'))}
 
 @app.post('/api/admin/users/{handle}/unsuspend')
-async def admin_unsuspend(handle: str, a: dict = Depends(require_admin)):
+async def admin_unsuspend(handle: str, a: dict = Depends(require_mod)):
     prof = await db.profiles.find_one({'handle': handle})
     if not prof:
         raise HTTPException(404, 'User not found')
@@ -2730,7 +2840,7 @@ class FlagIn(BaseModel):
 
 
 @app.post('/api/admin/users/{handle}/flag')
-async def admin_flag(handle: str, body: FlagIn, a: dict = Depends(require_admin)):
+async def admin_flag(handle: str, body: FlagIn, a: dict = Depends(require_mod)):
     prof = await db.profiles.find_one({'handle': handle})
     if not prof:
         raise HTTPException(404, 'User not found')
@@ -2742,7 +2852,7 @@ async def admin_flag(handle: str, body: FlagIn, a: dict = Depends(require_admin)
 
 
 @app.post('/api/admin/users/{handle}/unflag')
-async def admin_unflag(handle: str, a: dict = Depends(require_admin)):
+async def admin_unflag(handle: str, a: dict = Depends(require_mod)):
     prof = await db.profiles.find_one({'handle': handle})
     if not prof:
         raise HTTPException(404, 'User not found')
@@ -2849,7 +2959,7 @@ class NsfwResolve(BaseModel):
 
 
 @app.get('/api/admin/nsfw')
-async def admin_nsfw_queue(status: str = 'open', a: dict = Depends(require_admin)):
+async def admin_nsfw_queue(status: str = 'open', a: dict = Depends(require_mod)):
     """AI-flagged media awaiting review."""
     q = {} if status == 'all' else {'status': status}
     out = []
@@ -2859,7 +2969,7 @@ async def admin_nsfw_queue(status: str = 'open', a: dict = Depends(require_admin
 
 
 @app.post('/api/admin/nsfw/{item_id}/resolve')
-async def admin_nsfw_resolve(item_id: str, body: NsfwResolve, a: dict = Depends(require_admin)):
+async def admin_nsfw_resolve(item_id: str, body: NsfwResolve, a: dict = Depends(require_mod)):
     item = await db.nsfw_queue.find_one({'id': item_id})
     if not item:
         raise HTTPException(404, 'Item not found')
@@ -2877,7 +2987,7 @@ async def admin_nsfw_resolve(item_id: str, body: NsfwResolve, a: dict = Depends(
 
 
 @app.get('/api/admin/watchlist')
-async def admin_watchlist(a: dict = Depends(require_admin)):
+async def admin_watchlist(a: dict = Depends(require_mod)):
     out = []
     async for p in db.profiles.find({'watchlisted': True}, {'_id': 0}).sort('watched_at', -1).limit(200):
         out.append({'id': p['id'], 'handle': p['handle'], 'display_name': p['display_name'],
@@ -2889,7 +2999,7 @@ async def admin_watchlist(a: dict = Depends(require_admin)):
 
 
 @app.post('/api/admin/users/{handle}/watch')
-async def admin_watch(handle: str, body: WatchIn, a: dict = Depends(require_admin)):
+async def admin_watch(handle: str, body: WatchIn, a: dict = Depends(require_mod)):
     prof = await db.profiles.find_one({'handle': handle})
     if not prof:
         raise HTTPException(404, 'User not found')
@@ -2901,7 +3011,7 @@ async def admin_watch(handle: str, body: WatchIn, a: dict = Depends(require_admi
 
 
 @app.post('/api/admin/users/{handle}/unwatch')
-async def admin_unwatch(handle: str, a: dict = Depends(require_admin)):
+async def admin_unwatch(handle: str, a: dict = Depends(require_mod)):
     prof = await db.profiles.find_one({'handle': handle})
     if not prof:
         raise HTTPException(404, 'User not found')
@@ -2912,7 +3022,7 @@ async def admin_unwatch(handle: str, a: dict = Depends(require_admin)):
 
 
 @app.get('/api/admin/users/{handle}/notes')
-async def admin_get_notes(handle: str, a: dict = Depends(require_admin)):
+async def admin_get_notes(handle: str, a: dict = Depends(require_mod)):
     prof = await db.profiles.find_one({'handle': handle})
     if not prof:
         raise HTTPException(404, 'User not found')
@@ -2923,7 +3033,7 @@ async def admin_get_notes(handle: str, a: dict = Depends(require_admin)):
 
 
 @app.post('/api/admin/users/{handle}/note')
-async def admin_add_note(handle: str, body: NoteIn, a: dict = Depends(require_admin)):
+async def admin_add_note(handle: str, body: NoteIn, a: dict = Depends(require_mod)):
     prof = await db.profiles.find_one({'handle': handle})
     if not prof:
         raise HTTPException(404, 'User not found')

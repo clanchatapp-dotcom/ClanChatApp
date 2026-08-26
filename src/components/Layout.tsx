@@ -7,6 +7,7 @@ import { Avatar } from '../lib/ui'
 import OnboardingTour from './OnboardingTour'
 import CallModal from './CallModal'
 import IncomingCallScreen, { IncomingCall } from './IncomingCallScreen'
+import RoleBadge from './RoleBadge'
 
 const NAV = [
   { to: '/', icon: Home, label: 'My Feed', end: true },
@@ -104,7 +105,7 @@ export default function Layout() {
         <NavLink to="/connections" className={({ isActive }) => linkCls(isActive)}><Users2 className="h-5 w-5" />Connections</NavLink>
         <NavLink to="/settings" className={({ isActive }) => linkCls(isActive)}><Settings className="h-5 w-5" />Settings</NavLink>
         <NavLink to="/reels" className={({ isActive }) => linkCls(isActive)}><Film className="h-5 w-5" />Reels</NavLink>
-        {user?.is_admin && (
+        {(user?.is_admin || user?.can_moderate) && (
           <NavLink to="/admin" className={({ isActive }) => linkCls(isActive)}><Shield className="h-5 w-5" />Admin</NavLink>
         )}
         <button onClick={() => nav('/?compose=1')} className="mt-3 flex items-center justify-center gap-2 bg-gradient-to-r from-brand to-violet-600 rounded-xl py-3 font-semibold hover:opacity-95">
@@ -112,7 +113,7 @@ export default function Layout() {
         </button>
         <div className="mt-auto flex items-center gap-3 p-2 rounded-xl hover:bg-white/5">
           <Avatar id={user?.id || ''} name={user?.display_name || ''} url={user?.avatar_url} size={38} />
-          <div className="min-w-0 flex-1"><div className="font-medium truncate">{user?.display_name}</div><div className="text-xs text-slate-500 truncate">#{user?.handle}</div></div>
+          <div className="min-w-0 flex-1"><div className="font-medium truncate flex items-center gap-1.5">{user?.display_name}<RoleBadge role={(user as any)?.role} size={14} /></div><div className="text-xs text-slate-500 truncate">#{user?.handle}</div></div>
           <button onClick={logout} className="h-8 w-8 grid place-items-center rounded-lg hover:bg-white/10 text-slate-400"><LogOut className="h-4 w-4" /></button>
         </div>
       </aside>

@@ -4,6 +4,7 @@ import { api, getToken, wsDmUrl } from '../lib/api'
 import { Avatar, Linkify } from '../lib/ui'
 import { useAuth } from '../lib/auth'
 import CallModal from '../components/CallModal'
+import RoleBadge from '../components/RoleBadge'
 import { secureOn, secureOff, screenshotProtectionAvailable } from '../lib/privacyScreen'
 import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark, Trash2, Pin, Mic, Square, Users, ChevronRight, Eye, Flame, Image as ImageIcon, X } from 'lucide-react'
 
@@ -252,7 +253,7 @@ export default function Messages() {
               className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 text-left ${handle === t.user.handle ? 'bg-white/5' : ''}`}>
               <Avatar id={t.user.id} name={t.user.display_name} url={t.user.avatar_url} />
               <div className="min-w-0 flex-1">
-                <div className="font-medium truncate">{t.user.display_name}</div>
+                <div className="font-medium truncate flex items-center gap-1.5">{t.user.display_name}<RoleBadge role={t.user.role} size={14} /></div>
                 <div className="text-sm text-slate-500 truncate">{t.mine ? 'You: ' : ''}{t.last}</div>
               </div>
               {t.unread > 0 && <span className="shrink-0 min-w-[20px] h-5 px-1.5 rounded-full bg-rose-500 text-white text-xs grid place-items-center font-bold">{t.unread > 99 ? '99+' : t.unread}</span>}
@@ -273,7 +274,7 @@ export default function Messages() {
                   ? <div className="h-[38px] w-[38px] rounded-full bg-gradient-to-br from-brand to-violet-600 grid place-items-center shrink-0"><Bookmark className="h-5 w-5 text-white" /></div>
                   : <Avatar id={thread.peer.id} name={thread.peer.display_name} url={thread.peer.avatar_url} size={38} />}
                 <div className="flex-1 min-w-0">
-                  <div className="font-semibold truncate">{isSelf ? 'Me, Myself & I' : thread.peer.display_name}</div>
+                  <div className="font-semibold truncate flex items-center gap-1.5">{isSelf ? 'Me, Myself & I' : thread.peer.display_name}{!isSelf && <RoleBadge role={thread.peer.role} size={15} />}</div>
                   <div className="text-xs text-slate-500 truncate">{isSelf ? 'Your private space · only you can see this' : `#${thread.peer.handle}`}</div>
                 </div>
                 <div className="flex items-center gap-1 text-xs text-emerald-400 mr-2">

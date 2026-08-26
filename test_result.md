@@ -131,6 +131,21 @@
 user_problem_statement: "ClanChat v4.0 core — React(Vite+TS) SPA + FastAPI. Three-tier privacy (Public/Followers/Inner Circle), chronological My Feed, #handle profiles, follows (open/approval) + Inner Circle invites, tier-gated AES-256-GCM encrypted DMs with realtime, likes (public only, anonymous), search + trending tags, activity, Supabase Storage media, LiveKit call tokens. Auth via Supabase (dev-login mints real HS256 JWT for testing)."
 
 backend:
+  - task: "Staff roles: assign/remove (super_admin/co_admin/moderator/first_tester) + require_mod gating + role in serializers"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "NEW role system (see full detail in original comment)."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ ALL 26 STAFF ROLE TESTS PASSED (100%). Verified: super assigns moderator/co_admin/first_tester (200) with correct /api/me flags (co_admin is_admin=true; moderator can_moderate=true is_admin=false; first_tester verified is_admin=false can_moderate=false); invalid role 400; nonexistent handle 404; protected super admin 400; co_admin cannot assign co_admin (403) but can assign moderator (200); require_mod gating (moderator: reports/stats/nsfw/flag 200; roles/audit/investigate/roles-assign 403); first_tester & normal blocked from reports (403); GET /api/admin/roles lists all holders incl protected super_admin; remove role revokes access (403 after); remove protected super admin 400; only super removes co_admin (403 for co actor); serializers expose role on profile (co_admin) and post author (moderator)."
+
   - task: "Delete activity: DELETE /api/activity/{id} (single) + DELETE /api/activity (clear all)"
     implemented: true
     working: true
@@ -934,14 +949,14 @@ frontend:
 
 test_plan:
   current_focus:
-    - "Delete activity: DELETE /api/activity/{id} (single) + DELETE /api/activity (clear all)"
+    - "Staff roles: assign/remove (super_admin/co_admin/moderator/first_tester) + require_mod gating + role in serializers"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
     -agent: "main"
-    -message: "NEW FEATURE — DELETE ACTIVITY (backend only, do NOT test frontend). Test DELETE /api/activity/{id} and DELETE /api/activity. Setup: register user A + B (adult DOB 1990-01-01). Generate activity for A (e.g. B follows A -> A gets a 'follow' activity; or B likes A's PUBLIC post). Tests: (1) GET /api/activity as A -> has >=1 item, capture an id; A DELETE /api/activity/{id} -> 200 {ok:true}; GET again -> item gone. (2) A DELETE /api/activity/{same id again} -> 404. (3) A DELETE /api/activity/{random uuid} -> 404. (4) Ownership: B tries DELETE /api/activity/{A's item id} -> 404 (scoped to user_id). (5) Generate more activity for A, then A DELETE /api/activity (no id, clear all) -> 200 {ok:true, deleted:>=1}; GET /api/activity -> []. (6) No auth on both endpoints -> 401. Do NOT test frontend."
+    -message: "NEW FEATURE — STAFF ROLES (backend only, do NOT test frontend). Test the role assign/remove endpoints, require_mod gating, and role serialization per the task 'Staff roles: assign/remove ...'. Super admin: admin@clanchat.app / ClanChatAdmin!2025 (effective_role=super_admin). Register throwaway adults MOD, CO, FT, NORMAL (DOB 1990-01-01). Key checks: (1) super assign moderator/co_admin/first_tester -> 200; verify /api/me for each (co_admin -> is_admin true; moderator -> can_moderate true, is_admin false; first_tester -> account_type verified, is_admin false, can_moderate false). (2) invalid role -> 400; nonexistent handle -> 404; targeting built-in super admin -> 400. (3) co_admin can assign moderator/first_tester but NOT co_admin (403). (4) require_mod gating: MODERATOR can GET /api/admin/reports, /api/admin/stats, /api/admin/nsfw and POST flag/watch/strike (200) but NOT /api/admin/roles, /api/admin/audit, /api/admin/investigate (403). first_tester and NORMAL get 403 on /api/admin/reports. (5) GET /api/admin/roles lists holders incl. protected super_admin. (6) remove role -> 200 and access revoked; removing built-in super admin -> 400; only super can remove a co_admin (403 for co_admin actor). (7) Serializers: GET /api/users/{handle} returns 'role'; a post author in feed carries author.role. Do NOT test frontend."
     -agent: "testing"
     -message: "✅ CALL SIGNALING BACKEND TESTING COMPLETE - ALL 10 TESTS PASSED (100% success, 0 failures). Comprehensive testing of NEW Call signaling (ringing) feature completed with throwaway adult users (DOB 1990-01-01): OWNER (calltest5a3eac7a), MEMBER (calltest7dcc3288). Setup: OWNER invites MEMBER to inner circle, MEMBER accepts (status='accepted'). Created test script /app/backend_test_call_signaling.py. TEST RESULTS: (1) RING HAPPY PATH (1/1 passed): MEMBER POST /api/call/ring {peer:OWNER_handle, room:'r1', media:'video'} → 200 {ok:true} ✓. Ring successful ✓. (2) AUTH ENFORCEMENT (1/1 passed): POST /api/call/ring with NO Authorization header → 401 ✓. Authentication correctly enforced ✓. (3) NONEXISTENT PEER (1/1 passed): MEMBER POST /api/call/ring {peer:'nosuchhandle123', room:'r'} → 404 ✓. Nonexistent peer correctly rejected ✓. (4) SELF-CALL (1/1 passed): MEMBER POST /api/call/ring {peer:MEMBER_handle (self), room:'r'} → 400 ✓. Self-call correctly rejected ✓. (5) CALL PERMISSION (1/1 passed): OWNER PUT /api/inner/{MEMBER_handle}/perms {call:false} → 200 ✓. MEMBER POST /api/call/ring {peer:OWNER_handle, room:'r'} → 403 with detail containing 'turned off calls' ✓. OWNER PUT /api/inner/{MEMBER_handle}/perms {call:true} → 200 ✓. MEMBER POST /api/call/ring {peer:OWNER_handle, room:'r'} → 200 {ok:true} ✓. Call permission toggle working correctly ✓. (6) CANCEL (1/1 passed): MEMBER POST /api/call/cancel {peer:OWNER_handle, room:'r'} → 200 {ok:true} ✓. Cancel successful ✓. (7) DECLINE (1/1 passed): MEMBER POST /api/call/decline {peer:OWNER_handle, room:'r'} → 200 {ok:true} ✓. Decline successful ✓. (8) ACCEPT (1/1 passed): MEMBER POST /api/call/accept {peer:OWNER_handle, room:'r'} → 200 {ok:true} ✓. Accept successful ✓. (9) NONEXISTENT PEER FOR CANCEL/DECLINE/ACCEPT (1/1 passed): cancel with nonexistent peer → 404 ✓. decline with nonexistent peer → 404 ✓. accept with nonexistent peer → 404 ✓. All cancel/decline/accept correctly reject nonexistent peer ✓. (10) REGRESSION (1/1 passed): MEMBER POST /api/livekit/token {room:'r', peer:OWNER_handle} → 200 with participant_token ✓. LiveKit token endpoint still works correctly ✓. NO ISSUES FOUND. Call signaling (ringing) feature is production-ready. All flows working correctly: (A) Ring endpoint enforces all barriers (404 peer not found, 400 self-call, 401 no auth, 403 call permission turned off), (B) Cancel/decline/accept endpoints work correctly (200 on success, 404 for nonexistent peer), (C) Call permission toggle works (call:false blocks ring with 403, call:true allows ring), (D) LiveKit token endpoint regression confirmed (still works with peer parameter). WebSocket broadcast events not tested (REST status codes + permission gating verified as priority)."
     -agent: "main"

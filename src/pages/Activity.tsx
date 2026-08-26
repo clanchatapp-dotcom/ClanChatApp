@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { Avatar, timeAgo } from '../lib/ui'
+import RoleBadge from '../components/RoleBadge'
 import { Heart, UserPlus, Lock, Check, Tag, X, Trash2 } from 'lucide-react'
 
 const ICON: any = { like: Heart, follow: UserPlus, follow_request: UserPlus, follow_accepted: Check, inner_invite: Lock, inner_accepted: Lock, tag_request: Tag }
@@ -53,7 +54,7 @@ export default function Activity() {
             <div key={a.id} className="group flex items-center gap-3 bg-panel border border-edge rounded-2xl p-3">
               <div className="h-9 w-9 grid place-items-center rounded-full bg-brand/15 text-brand shrink-0"><I className="h-4 w-4" /></div>
               <Link to={`/u/${a.actor_handle}`}><Avatar id={a.actor_id} name={a.actor_name} size={34} /></Link>
-              <div className="flex-1 min-w-0 text-sm"><Link to={`/u/${a.actor_handle}`} className="font-medium hover:underline">{a.actor_name}</Link> {a.text}
+              <div className="flex-1 min-w-0 text-sm"><Link to={`/u/${a.actor_handle}`} className="font-medium hover:underline">{a.actor_name}</Link><RoleBadge role={a.actor_role} size={13} className="ml-1" /> {a.text}
                 <div className="text-slate-600 text-xs">{timeAgo(a.created_at)}</div></div>
               {a.type === 'inner_invite' && <button onClick={() => acceptInner(a.actor_handle)} className="px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-300 text-sm shrink-0">Join</button>}
               {a.type === 'tag_request' && a.post_id && (

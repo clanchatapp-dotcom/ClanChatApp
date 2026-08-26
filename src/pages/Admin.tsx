@@ -3,17 +3,21 @@ import { Navigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { timeAgo } from '../lib/ui'
+import RoleBadge, { ROLE_META } from '../components/RoleBadge'
 import { Shield, Flag, AlertTriangle, Users, ScrollText, Ban, Loader2, Check, Trash2, Eye, X, Lock, UserCog, Crown, ScanEye, Bookmark, StickyNote } from 'lucide-react'
 
+// `full: true` tabs are visible ONLY to full admins (super_admin / co_admin).
+// The rest are also visible to moderators.
 const TABS = [
   { key: 'reports', label: 'Reports', icon: Flag },
-  { key: 'csam', label: 'CSAM', icon: AlertTriangle },
+  { key: 'csam', label: 'CSAM', icon: AlertTriangle, full: true },
   { key: 'nsfw', label: 'NSFW', icon: ScanEye },
   { key: 'watchlist', label: 'Watchlist', icon: Bookmark },
-  { key: 'investigate', label: 'Investigate', icon: Eye },
+  { key: 'investigate', label: 'Investigate', icon: Eye, full: true },
   { key: 'users', label: 'Users', icon: Users },
-  { key: 'admins', label: 'Admins', icon: UserCog },
-  { key: 'audit', label: 'Audit log', icon: ScrollText },
+  { key: 'roles', label: 'Roles', icon: Crown, full: true },
+  { key: 'admins', label: 'Admins', icon: UserCog, full: true },
+  { key: 'audit', label: 'Audit log', icon: ScrollText, full: true },
 ]
 
 function Stat({ label, value, danger }: { label: string; value: any; danger?: boolean }) {
@@ -39,6 +43,23 @@ export default function Admin() {
   const [invHandle, setInvHandle] = useState('')
   const [inv, setInv] = useState<any>(null)
   const [invLoading, setInvLoading] = useState(false)
+  const [roles, setRoles] = useState<any[]>([])
+  const [assignHandle, setAssignHandle] = useState('')
+  const [assignRole, setAssignRole] = useState('moderator')
+  const isFull = !!user?.is_admin                      // super_admin OR co_admin
+  const isSuper = (user as any)?.role === 'super_admin'
+  const visibleTabs = TABS.filter(t => isFull || !t.full)
+  const loadRoles = async () => { try { setRoles(await api.adminRoles()) } catch {} }
+  const doAssign = async () => {
+    const h = assignHandle.trim().replace(/^[#@]/, '')
+    if (!h) return
+    try { await api.adminAssignRole(h, assignRole); setAssignHandle(''); await loadRoles() }
+    catch (e: any) { alert(e.message) }
+  }
+  const doRemoveRole = async (h: string) => {
+    if (!confirm(`Remove @${h}'s role?`)) return
+    try { await api.adminRemoveRole(h); await loadRoles() } catch (e: any) { alert(e.message) }
+  }
   const runInvestigation = async () => {
     const h = invHandle.trim().replace(/^@/, '')
     if (!h) return
@@ -57,13 +78,14 @@ export default function Admin() {
       else if (tab === 'watchlist') setData(await api.adminWatchlist())
       else if (tab === 'users') setData(await api.adminUsers(q))
       else if (tab === 'admins') { await loadAdmins(); setData([]) }
+      else if (tab === 'roles') { await loadRoles(); setData([]) }
       else if (tab === 'audit') setData(await api.adminAudit())
     } catch { setData([]) } finally { setLoading(false) }
   }
   useEffect(() => { loadStats() }, [])
   useEffect(() => { load() }, [tab])
 
-  if (user && !user.is_admin) return <Navigate to="/" replace />
+  if (user && !user.is_admin && !(user as any).can_moderate) return <Navigate to="/" replace />
 
   const act = async (id: string, action: string) => {
     let reason = ''
@@ -161,7 +183,7 @@ export default function Admin() {
         </div>
 
         <div className="flex gap-1 bg-panel border border-edge rounded-xl p-1 overflow-x-auto max-w-full">
-          {TABS.map(t => (
+          {visibleTabs.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`shrink-0 whitespace-nowrap flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg ${tab === t.key ? 'bg-brand text-white' : 'text-slate-400 hover:text-white'}`}>
               <t.icon className="h-4 w-4" />{t.label}
@@ -176,7 +198,48 @@ export default function Admin() {
 
         {loading ? <div className="py-16 grid place-items-center text-slate-500"><Loader2 className="h-6 w-6 animate-spin" /></div> : (
           <div className="space-y-2">
-            {data.length === 0 && tab !== 'admins' && tab !== 'investigate' && <p className="text-center text-slate-500 py-10">Nothing here.</p>}
+            {data.length === 0 && tab !== 'admins' && tab !== 'investigate' && tab !== 'roles' && <p className="text-center text-slate-500 py-10">Nothing here.</p>}
+
+            {tab === 'roles' && (
+              <div className="space-y-4">
+                <div className="bg-panel border border-edge rounded-2xl p-4">
+                  <div className="text-sm font-medium mb-2">Assign a staff role</div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input value={assignHandle} onChange={e => setAssignHandle(e.target.value)} onKeyDown={e => e.key === 'Enter' && doAssign()}
+                      placeholder="@handle" className="flex-1 bg-ink border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand" />
+                    <select value={assignRole} onChange={e => setAssignRole(e.target.value)}
+                      className="bg-ink border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand">
+                      {isSuper && <option value="co_admin">Co-Admin (pink)</option>}
+                      <option value="moderator">Moderator (red)</option>
+                      <option value="first_tester">First Tester (blue)</option>
+                    </select>
+                    <button onClick={doAssign} className="px-4 py-2.5 rounded-xl bg-brand font-medium">Assign</button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">Role-holders become verified. Co-Admins have full admin access; only a Super Admin can add or remove Co-Admins.{!isSuper && ' (You are a Co-Admin — you can assign Moderators and First Testers.)'}</p>
+                </div>
+
+                {roles.length === 0 && <p className="text-center text-slate-500 py-6">No staff roles assigned yet.</p>}
+                {roles.map((m: any) => (
+                  <div key={m.id} className="bg-panel border border-edge rounded-2xl p-3 flex items-center gap-3">
+                    <div className="h-9 w-9 rounded-full bg-white/5 grid place-items-center overflow-hidden shrink-0">
+                      {m.avatar_url ? <img src={m.avatar_url} className="h-full w-full object-cover" /> : <RoleBadge role={m.role} size={22} />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium truncate flex items-center gap-1.5">
+                        {m.display_name || m.handle}
+                        <RoleBadge role={m.role} size={16} />
+                      </div>
+                      <div className="text-xs text-slate-500 truncate">#{m.handle} · <span className={ROLE_META[m.role]?.color}>{ROLE_META[m.role]?.label || m.role}</span></div>
+                    </div>
+                    {m.protected
+                      ? <span className="inline-flex items-center gap-1 text-[10px] bg-amber-500/15 text-amber-300 px-1.5 py-0.5 rounded-full shrink-0"><Crown className="h-3 w-3" />protected</span>
+                      : (m.role === 'co_admin' && !isSuper)
+                        ? <span className="text-[10px] text-slate-600 shrink-0">super only</span>
+                        : <button onClick={() => doRemoveRole(m.handle)} className="shrink-0 h-8 w-8 grid place-items-center rounded-lg text-slate-500 hover:text-rose-300 hover:bg-white/5"><Trash2 className="h-4 w-4" /></button>}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {tab === 'admins' && (
               <div className="space-y-4">

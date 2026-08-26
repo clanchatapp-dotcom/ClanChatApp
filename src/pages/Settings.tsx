@@ -359,7 +359,7 @@ export default function Settings() {
         {/* Account actions */}
         <section className="bg-panel border border-edge rounded-2xl p-5 space-y-3">
           <h2 className="font-semibold text-slate-300">Account</h2>
-          {user?.is_admin && (
+          {(user?.is_admin || (user as any)?.can_moderate) && (
             <button onClick={() => nav('/admin')}
               className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-gradient-to-r from-brand/20 to-violet-600/10 border border-brand/40 hover:border-brand transition">
               <ShieldCheck className="h-5 w-5 text-brand" />

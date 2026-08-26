@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { Avatar, timeAgo, Linkify } from '../lib/ui'
 import PostCard from '../components/PostCard'
+import RoleBadge from '../components/RoleBadge'
 import { useAuth } from '../lib/auth'
 import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera, Trash2, Ban, VolumeX, ShieldOff, Plus, MessagesSquare, Send, X, Pin } from 'lucide-react'
 
@@ -107,9 +108,10 @@ export default function Profile() {
         </div>
         <h1 className="mt-5 text-3xl sm:text-4xl font-extrabold flex items-center gap-2">
           #{p.handle}
-          {p.account_type === 'verified' && <Check className="h-5 w-5 text-brand bg-brand/20 rounded-full p-0.5" />}
+          <RoleBadge role={p.role} size={26} />
+          {p.account_type === 'verified' && !p.role && <Check className="h-5 w-5 text-brand bg-brand/20 rounded-full p-0.5" />}
         </h1>
-        <div className="mt-1 text-lg text-slate-400">{p.display_name}</div>
+        <div className="mt-1 text-lg text-slate-400 flex items-center gap-1.5">{p.display_name}</div>
         {p.real_name && <div className="text-sm text-slate-500">{p.real_name}</div>}
 
         <div className="mt-4 flex items-center gap-2 text-slate-500 uppercase tracking-wide text-sm">
@@ -229,6 +231,7 @@ function WallTab({ handle }: { handle: string }) {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <Link to={`/u/${w.author?.handle}`} className="font-semibold hover:underline">{w.author?.display_name}</Link>
+              <RoleBadge role={w.author?.role} size={15} />
               <span className="text-xs text-slate-500">{timeAgo(w.created_at)}</span>
               {w.can_delete && <button onClick={() => remove(w.id)} className="ml-auto text-slate-500 hover:text-rose-400"><Trash2 className="h-4 w-4" /></button>}
             </div>
