@@ -103,6 +103,7 @@ export default function Messages() {
   const [gifs, setGifs] = useState<any[]>([])
   const [gifQ, setGifQ] = useState('')
   const [viewOnce, setViewOnce] = useState(false)
+  const [noSave, setNoSave] = useState(false)
   const [viewer, setViewer] = useState<{ url: string; type: string } | null>(null)
   const [uploadingImg, setUploadingImg] = useState(false)
   const imgRef = useRef<HTMLInputElement | null>(null)
@@ -110,16 +111,16 @@ export default function Messages() {
   const searchGifs = async (query: string) => { setGifQ(query); try { setGifs(await api.giphySearch(query)) } catch {} }
   const sendGif = async (url: string) => {
     if (!handle) return; setGifOpen(false)
-    try { const m = await api.sendDmMedia(handle, url, 'image', undefined, undefined, viewOnce); if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) }; setViewOnce(false) } catch {}
+    try { const m = await api.sendDmMedia(handle, url, 'image', undefined, undefined, viewOnce, !noSave); if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) }; setViewOnce(false); setNoSave(false) } catch {}
   }
   const onImgPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f || !handle) return
     setUploadingImg(true)
     try {
       const { signed_url } = await api.upload(f)
-      const m = await api.sendDmMedia(handle, signed_url, 'image', undefined, undefined, viewOnce)
+      const m = await api.sendDmMedia(handle, signed_url, 'image', undefined, undefined, viewOnce, !noSave)
       if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) }
-      setViewOnce(false)
+      setViewOnce(false); setNoSave(false)
     } catch (err: any) { alert(err.message || 'Could not send photo') }
     setUploadingImg(false); if (imgRef.current) imgRef.current.value = ''
   }
@@ -259,9 +260,14 @@ export default function Messages() {
                           : m.media_type === 'audio' && m.media_url
                             ? <audio src={m.media_url} controls className="max-w-[220px] h-9" />
                             : m.media_url
-                              ? <img src={m.media_url} className="rounded-lg max-h-64" />
+                              ? <img src={m.media_url} draggable={m.allow_save === false ? false : undefined}
+                                  onContextMenu={m.allow_save === false ? (e => e.preventDefault()) : undefined}
+                                  className={`rounded-lg max-h-64 ${m.allow_save === false ? 'select-none pointer-events-none' : ''}`} />
                               : <Linkify text={m.text} />}
                     </div>
+                    {m.allow_save === false && m.media_url && !m.mine && (
+                      <div className="flex items-center gap-1 text-[10px] text-rose-300 mt-0.5"><Lock className="h-3 w-3" />Saving blocked</div>
+                    )}
                   </div>
                 ))}
                 <div ref={endRef} />
@@ -292,6 +298,10 @@ export default function Messages() {
                     <button type="button" onClick={() => setViewOnce(v => !v)} title="Send as one-time (disappearing) media"
                       className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${viewOnce ? 'bg-orange-500 text-white' : 'bg-white/10 hover:bg-white/20 text-slate-300'}`}>
                       <Flame className="h-5 w-5" />
+                    </button>
+                    <button type="button" onClick={() => setNoSave(v => !v)} title="Block saving/downloading this media"
+                      className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${noSave ? 'bg-rose-500 text-white' : 'bg-white/10 hover:bg-white/20 text-slate-300'}`}>
+                      <Lock className="h-5 w-5" />
                     </button>
                     <input value={text} onChange={e => setText(e.target.value)} placeholder={recording ? 'Recording…' : 'Message (encrypted)…'} disabled={recording}
                       className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand disabled:opacity-60" />

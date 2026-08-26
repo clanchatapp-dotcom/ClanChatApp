@@ -579,6 +579,7 @@ class DMSend(BaseModel):
     media_type: Optional[str] = None  # audio | image
     duration: Optional[float] = None
     view_once: Optional[bool] = False  # disappearing media: recipient may open it a single time
+    allow_save: Optional[bool] = True   # if False, recipient can't save/download the media
 
 class TokenReq(BaseModel):
     room: str
@@ -1774,18 +1775,19 @@ async def dm_history(handle: str, u: dict = Depends(get_current_user)):
     room = dm_room(u['id'], other['id'])
     out = []
     async for m in db.dms.find({'room': room}).sort('created_at', 1).limit(300):
-        deleted = bool(m.get('deleted'))
+        # Silently hide messages that were deleted or one-time media that's already been viewed.
+        if m.get('deleted') or (m.get('view_once') and m.get('view_once_viewed')):
+            continue
         mine = m['sender_id'] == u['id']
         vo = bool(m.get('view_once'))
-        vo_viewed = bool(m.get('view_once_viewed'))
-        # Disappearing media: never expose the URL in history — it's fetched once via the /view endpoint.
-        media_url = None if (deleted or vo) else m.get('media_url')
+        media_url = None if vo else m.get('media_url')
         out.append({'id': m['id'], 'sender_id': m['sender_id'],
-                    'text': 'This message was deleted' if deleted else dec(m['content_enc']),
+                    'text': dec(m['content_enc']),
                     'media_url': media_url,
                     'media_type': m.get('media_type'), 'duration': m.get('duration'),
-                    'view_once': vo, 'view_once_viewed': vo_viewed,
-                    'pinned': bool(m.get('pinned')), 'deleted': deleted,
+                    'view_once': vo, 'view_once_viewed': False,
+                    'allow_save': m.get('allow_save', True),
+                    'pinned': bool(m.get('pinned')), 'deleted': False,
                     'created_at': m['created_at'], 'mine': mine})
     await mark_read('dm', room, u['id'])  # opening a thread marks it read
     is_self = other['id'] == u['id']
@@ -1809,18 +1811,19 @@ async def dm_send(handle: str, body: DMSend, u: dict = Depends(get_current_user)
     if not text and not body.media_url:
         raise HTTPException(400, 'Empty message')
     view_once = bool(body.view_once) and bool(body.media_url)  # only meaningful with media
+    allow_save = bool(body.allow_save) and not view_once  # view-once media is never savable
     room = dm_room(u['id'], other['id'])
     doc = {'id': str(uuid.uuid4()), 'room': room, 'participants': [u['id'], other['id']],
            'sender_id': u['id'], 'content_enc': enc(text),
            'media_url': body.media_url, 'media_type': body.media_type, 'duration': body.duration,
-           'view_once': view_once, 'view_once_viewed': False,
+           'view_once': view_once, 'view_once_viewed': False, 'allow_save': allow_save,
            'pinned': False, 'created_at': datetime.now(timezone.utc).isoformat()}
     await db.dms.insert_one(dict(doc))
     # In WS + response, disappearing media never carries the URL — the recipient fetches it once via /view.
     wire_media = None if view_once else body.media_url
     msg = {'id': doc['id'], 'sender_id': u['id'], 'text': text, 'media_url': wire_media,
            'media_type': body.media_type, 'duration': body.duration,
-           'view_once': view_once, 'view_once_viewed': False, 'created_at': doc['created_at']}
+           'view_once': view_once, 'view_once_viewed': False, 'allow_save': allow_save, 'created_at': doc['created_at']}
     await manager.broadcast(room, {'type': 'dm', 'message': msg})
     if other['id'] != u['id']:
         preview = '🎤 Voice message' if body.media_type == 'audio' else ('📷 Photo' if body.media_url else (text or '')[:100])
