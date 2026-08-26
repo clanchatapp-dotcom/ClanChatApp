@@ -15,6 +15,7 @@ const TABS = [
   { key: 'watchlist', label: 'Watchlist', icon: Bookmark },
   { key: 'investigate', label: 'Investigate', icon: Eye, full: true },
   { key: 'users', label: 'Users', icon: Users },
+  { key: 'dmaccess', label: 'DM Access', icon: Lock, full: true },
   { key: 'roles', label: 'Roles', icon: Crown, full: true },
   { key: 'admins', label: 'Admins', icon: UserCog, full: true },
   { key: 'audit', label: 'Audit log', icon: ScrollText, full: true },
@@ -60,6 +61,21 @@ export default function Admin() {
     if (!confirm(`Remove @${h}'s role?`)) return
     try { await api.adminRemoveRole(h); await loadRoles() } catch (e: any) { alert(e.message) }
   }
+  const [dmAccess, setDmAccess] = useState<any>({ as_super: false, allow_coadmin_dms: false, requests: [] })
+  const [reqHandle, setReqHandle] = useState('')
+  const loadDmAccess = async () => { try { setDmAccess(await api.dmAccessList()) } catch {} }
+  const toggleCoDms = async (enabled: boolean) => {
+    try { await api.setCoadminDms(enabled); await loadDmAccess() } catch (e: any) { alert(e.message) }
+  }
+  const requestDmAccess = async () => {
+    const h = reqHandle.trim().replace(/^[#@]/, '')
+    if (!h) return
+    try { await api.dmAccessRequest(h); setReqHandle(''); await loadDmAccess(); alert('Request sent to the Super Admin.') }
+    catch (e: any) { alert(e.message) }
+  }
+  const decideDmAccess = async (id: string, decision: 'approve' | 'deny') => {
+    try { await api.dmAccessDecide(id, decision); await loadDmAccess() } catch (e: any) { alert(e.message) }
+  }
   const runInvestigation = async () => {
     const h = invHandle.trim().replace(/^@/, '')
     if (!h) return
@@ -79,6 +95,7 @@ export default function Admin() {
       else if (tab === 'users') setData(await api.adminUsers(q))
       else if (tab === 'admins') { await loadAdmins(); setData([]) }
       else if (tab === 'roles') { await loadRoles(); setData([]) }
+      else if (tab === 'dmaccess') { await loadDmAccess(); setData([]) }
       else if (tab === 'audit') setData(await api.adminAudit())
     } catch { setData([]) } finally { setLoading(false) }
   }
@@ -110,6 +127,9 @@ export default function Admin() {
     await api.adminWatch(handle, r || 'under review'); await load(); await loadStats()
   }
   const unwatch = async (handle: string) => { await api.adminUnwatch(handle); await load(); await loadStats() }
+  const setAcct = async (handle: string, t: string) => {
+    try { await api.adminSetAccountType(handle, t); await load() } catch (e: any) { alert(e.message) }
+  }
   const addNote = async (handle: string) => {
     const n = window.prompt(`Add a private admin note about #${handle}:`, '')
     if (!n) return
@@ -198,7 +218,63 @@ export default function Admin() {
 
         {loading ? <div className="py-16 grid place-items-center text-slate-500"><Loader2 className="h-6 w-6 animate-spin" /></div> : (
           <div className="space-y-2">
-            {data.length === 0 && tab !== 'admins' && tab !== 'investigate' && tab !== 'roles' && <p className="text-center text-slate-500 py-10">Nothing here.</p>}
+            {data.length === 0 && tab !== 'admins' && tab !== 'investigate' && tab !== 'roles' && tab !== 'dmaccess' && <p className="text-center text-slate-500 py-10">Nothing here.</p>}
+
+            {tab === 'dmaccess' && (
+              <div className="space-y-4">
+                {dmAccess.as_super ? (
+                  <>
+                    <div className="bg-panel border border-edge rounded-2xl p-4 flex items-center gap-3">
+                      <Lock className="h-5 w-5 text-brand shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium">Allow Co-Admins to view my DMs</div>
+                        <div className="text-xs text-slate-500">When off, a Co-Admin must request one-time permission each time.</div>
+                      </div>
+                      <button onClick={() => toggleCoDms(!dmAccess.allow_coadmin_dms)}
+                        className={`h-7 w-12 rounded-full p-0.5 transition shrink-0 ${dmAccess.allow_coadmin_dms ? 'bg-emerald-500' : 'bg-white/15'}`}>
+                        <span className={`block h-6 w-6 rounded-full bg-white transition ${dmAccess.allow_coadmin_dms ? 'translate-x-5' : ''}`} />
+                      </button>
+                    </div>
+                    <div className="text-sm font-medium text-slate-300">Requests to view your DMs</div>
+                    {dmAccess.requests.length === 0 && <p className="text-center text-slate-500 py-6">No requests.</p>}
+                    {dmAccess.requests.map((r: any) => (
+                      <div key={r.id} className="bg-panel border border-edge rounded-2xl p-3 flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium truncate">{r.requester_name || r.requester_handle} <span className="text-slate-500 text-sm">#{r.requester_handle}</span></div>
+                          <div className="text-xs text-slate-500">{timeAgo(r.created_at)} · <span className={r.status === 'approved' ? 'text-emerald-400' : r.status === 'denied' ? 'text-rose-400' : 'text-amber-400'}>{r.status}</span>{r.status === 'approved' && (r.used ? ' · used' : ' · unused (one-time)')}</div>
+                        </div>
+                        {r.status === 'pending' && <>
+                          <button onClick={() => decideDmAccess(r.id, 'approve')} className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 text-xs flex items-center gap-1"><Check className="h-3 w-3" />Approve</button>
+                          <button onClick={() => decideDmAccess(r.id, 'deny')} className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 text-xs flex items-center gap-1"><X className="h-3 w-3" />Deny</button>
+                        </>}
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    <div className="bg-panel border border-edge rounded-2xl p-4">
+                      <div className="text-sm font-medium mb-2">Request permission to view a Super Admin's DMs</div>
+                      <div className="flex gap-2">
+                        <input value={reqHandle} onChange={e => setReqHandle(e.target.value)} onKeyDown={e => e.key === 'Enter' && requestDmAccess()}
+                          placeholder="@super-admin-handle" className="flex-1 bg-ink border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand" />
+                        <button onClick={requestDmAccess} className="px-4 py-2.5 rounded-xl bg-brand font-medium">Request</button>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-2">Approved requests grant one-time access. The Super Admin is notified and can approve or deny.</p>
+                    </div>
+                    <div className="text-sm font-medium text-slate-300">Your requests</div>
+                    {dmAccess.requests.length === 0 && <p className="text-center text-slate-500 py-6">No requests yet.</p>}
+                    {dmAccess.requests.map((r: any) => (
+                      <div key={r.id} className="bg-panel border border-edge rounded-2xl p-3 flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium truncate">#{r.target_handle}</div>
+                          <div className="text-xs text-slate-500">{timeAgo(r.created_at)} · <span className={r.status === 'approved' ? 'text-emerald-400' : r.status === 'denied' ? 'text-rose-400' : 'text-amber-400'}>{r.status}</span>{r.status === 'approved' && (r.used ? ' · used' : ' · ready (one-time)')}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
 
             {tab === 'roles' && (
               <div className="space-y-4">
@@ -442,6 +518,12 @@ export default function Admin() {
                   ? <button onClick={() => unwatch(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Unwatch</button>
                   : <button onClick={() => watch(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-brand/10 text-brand text-xs flex items-center gap-1"><Bookmark className="h-3 w-3" />Watch</button>}
                 <button onClick={() => addNote(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs flex items-center gap-1"><StickyNote className="h-3 w-3" />Note</button>
+                <select value={u.account_type} onChange={e => setAcct(u.handle, e.target.value)} title="Account tier"
+                  className="px-2 py-1.5 rounded-lg bg-ink border border-edge text-xs outline-none focus:border-brand">
+                  <option value="free">Free</option>
+                  <option value="premium">Premium</option>
+                  <option value="verified">Verified</option>
+                </select>
                 {u.flagged && <button onClick={() => viewDms(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-brand/15 text-brand text-xs flex items-center gap-1"><Eye className="h-3 w-3" />View DMs</button>}
                 <button onClick={() => strike(u.handle, true)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Warn</button>
                 <button onClick={() => strike(u.handle, false)} className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 text-xs">Strike</button>

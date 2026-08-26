@@ -100,6 +100,14 @@ def effective_role(prof: dict) -> Optional[str]:
     return None
 
 
+# Account tiers. 'standard' is the legacy default and is treated as 'free'.
+ACCOUNT_TYPES = {'free', 'premium', 'verified'}
+
+def acct_type(prof: dict) -> str:
+    t = (prof or {}).get('account_type') or 'free'
+    return 'free' if t == 'standard' else t
+
+
 # NSFW threshold: any label >= this (or safe=false) queues media for admin review.
 NSFW_THRESHOLD = 0.70
 _NSFW_SYS = (
@@ -339,8 +347,9 @@ async def ensure_profile(sub: str, email: Optional[str], name: Optional[str],
     prof = {
         'id': sub, 'handle': handle, 'display_name': display, 'real_name': None,
         'email': email, 'bio': '', 'links': [], 'avatar_url': avatar,
-        'account_type': 'standard', 'follow_mode': 'open', 'dm_open': True,
+        'account_type': 'verified' if grant_admin else 'free', 'follow_mode': 'open', 'dm_open': True,
         'is_admin': grant_admin, 'role': 'admin' if grant_admin else 'user',
+        'allow_coadmin_dms': False,
         'dob': dob, 'is_minor': (age is not None and age < 18),
         'created_at': datetime.now(timezone.utc).isoformat(),
     }
@@ -408,7 +417,7 @@ async def hidden_author_ids(viewer: str) -> set:
 
 async def relation_slim(prof: dict) -> dict:
     return {'id': prof['id'], 'handle': prof['handle'], 'display_name': prof['display_name'],
-            'avatar_url': prof.get('avatar_url'), 'account_type': prof.get('account_type', 'standard'),
+            'avatar_url': prof.get('avatar_url'), 'account_type': acct_type(prof),
             'role': effective_role(prof)}
 
 async def can_view(viewer: str, post: dict) -> bool:
@@ -451,7 +460,7 @@ async def add_activity(user_id: str, typ: str, actor: dict, text: str, post_id=N
     await db.activity.insert_one({
         'id': str(uuid.uuid4()), 'user_id': user_id, 'type': typ,
         'actor_handle': actor['handle'], 'actor_name': actor['display_name'],
-        'actor_id': actor['id'], 'actor_role': effective_role(actor), 'text': text, 'post_id': post_id,
+        'actor_id': actor['id'], 'actor_role': effective_role(actor), 'actor_account_type': acct_type(actor), 'text': text, 'post_id': post_id,
         'created_at': datetime.now(timezone.utc).isoformat(), 'read': False,
     })
 
@@ -466,7 +475,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
     out = {
         'id': prof['id'], 'handle': prof['handle'], 'display_name': prof['display_name'],
         'bio': prof.get('bio', ''), 'links': prof.get('links', []),
-        'avatar_url': prof.get('avatar_url'), 'account_type': prof.get('account_type', 'standard'),
+        'avatar_url': prof.get('avatar_url'), 'account_type': acct_type(prof),
         'role': effective_role(prof),
         'follow_mode': prof.get('follow_mode', 'open'), 'dm_open': prof.get('dm_open', True),
         'is_self': is_self,
@@ -483,6 +492,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         out['followers_count'] = followers_count  # private: owner only
         out['is_admin'] = is_admin_user(prof)
         out['can_moderate'] = effective_role(prof) in MOD_ROLES
+        out['allow_coadmin_dms'] = bool(prof.get('allow_coadmin_dms'))
         out['strikes'] = prof.get('strikes', 0)
         _minor = bool(prof.get('is_minor'))
         _cz = {**COMFORT_ZONE_DEFAULTS, **(prof.get('comfort_zone') or {})}
@@ -548,7 +558,7 @@ async def post_out(p: dict, viewer_id: str) -> dict:
         'comment_count': await db.comments.count_documents({'post_id': p['id']}),
         'author': {'id': author['id'], 'handle': author['handle'],
                    'display_name': author['display_name'], 'avatar_url': author.get('avatar_url'),
-                   'account_type': author.get('account_type', 'standard'),
+                   'account_type': acct_type(author),
                    'role': effective_role(author)} if author else None,
         'is_mine': p['author_id'] == viewer_id,
     }
@@ -1795,7 +1805,7 @@ async def dm_threads(u: dict = Depends(get_current_user)):
         room = dm_room(u['id'], oid)
         since = await read_marker('dm', room, u['id'])
         seen[oid] = {'user': {'id': prof['id'], 'handle': prof['handle'],
-                              'display_name': prof['display_name'], 'avatar_url': prof.get('avatar_url'), 'role': effective_role(prof)},
+                              'display_name': prof['display_name'], 'avatar_url': prof.get('avatar_url'), 'role': effective_role(prof), 'account_type': acct_type(prof)},
                      'last': ('🎤 Voice message' if m.get('media_type') == 'audio' else '📷 Photo' if m.get('media_url') else dec(m['content_enc'])[:80]), 'created_at': m['created_at'],
                      'mine': m['sender_id'] == u['id'],
                      'unread': await dm_unread_count(room, u['id'], since)}
@@ -1826,7 +1836,7 @@ async def dm_history(handle: str, u: dict = Depends(get_current_user)):
     await mark_read('dm', room, u['id'])  # opening a thread marks it read
     is_self = other['id'] == u['id']
     return {'peer': {'id': other['id'], 'handle': other['handle'],
-                     'display_name': other['display_name'], 'avatar_url': other.get('avatar_url'), 'role': effective_role(other)},
+                     'display_name': other['display_name'], 'avatar_url': other.get('avatar_url'), 'role': effective_role(other), 'account_type': acct_type(other)},
             'can_dm': await can_dm(u['id'], other['id']),
             'can_voice': is_self or await inner_perm(other['id'], u['id'], 'voice'),
             'can_call': is_self or await inner_perm(other['id'], u['id'], 'call'),
@@ -2696,7 +2706,7 @@ async def admin_list_roles(a: dict = Depends(require_admin)):
         if r:
             out.append({'id': p['id'], 'handle': p['handle'], 'display_name': p['display_name'],
                         'avatar_url': p.get('avatar_url'), 'email': p.get('email'), 'role': r,
-                        'account_type': p.get('account_type', 'standard'),
+                        'account_type': acct_type(p),
                         'protected': (p.get('email') or '').lower() in ADMIN_EMAILS})
     order = {'super_admin': 0, 'co_admin': 1, 'moderator': 2, 'first_tester': 3}
     out.sort(key=lambda x: order.get(x['role'], 9))
@@ -2741,9 +2751,128 @@ async def admin_remove_role(body: RoleRemoveBody, a: dict = Depends(require_admi
     if prof['id'] == a['id']:
         raise HTTPException(400, 'You cannot remove your own role')
     await db.profiles.update_one({'id': prof['id']},
-                                 {'$set': {'role': 'user', 'is_admin': False, 'account_type': 'standard'}})
+                                 {'$set': {'role': 'user', 'is_admin': False, 'account_type': 'free'}})
     await audit(a, 'remove_role', handle, f'was={current}')
     return {'ok': True, 'handle': handle}
+
+
+# ----------------------------- Account tier (free / premium / verified) -----------------------------
+
+class AccountTypeBody(BaseModel):
+    account_type: str
+
+
+@app.post('/api/admin/users/{handle}/account-type')
+async def admin_set_account_type(handle: str, body: AccountTypeBody, a: dict = Depends(require_admin)):
+    """Manually set a user's account tier. Billing isn't wired yet, so the owner sets
+    premium/verified by hand. Valid values: free, premium, verified."""
+    t = (body.account_type or '').strip().lower()
+    if t not in ACCOUNT_TYPES:
+        raise HTTPException(400, 'Invalid account type (free, premium or verified)')
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    await db.profiles.update_one({'id': prof['id']}, {'$set': {'account_type': t}})
+    await audit(a, 'set_account_type', handle, f'account_type={t}')
+    return {'ok': True, 'handle': handle, 'account_type': t}
+
+
+# ----------------------------- Co-Admin DM access guard -----------------------------
+# Co-Admins have full admin access EXCEPT viewing a Super Admin's DMs, which requires
+# either the Super Admin's global toggle to be ON, or a one-time approved request.
+
+class CoDmToggle(BaseModel):
+    enabled: bool
+
+class DmAccessRequest(BaseModel):
+    handle: str  # the Super Admin whose DMs the Co-Admin wants to view
+
+
+async def super_dm_access_ok(actor: dict, target: dict) -> bool:
+    """Whether `actor` may view `target`'s DMs. Only relevant when target is a Super Admin
+    and actor is a different, non-super staff member (i.e. a Co-Admin)."""
+    if effective_role(target) != 'super_admin':
+        return True                      # target isn't a super admin -> normal rules
+    if target['id'] == actor['id']:
+        return True                      # viewing your own
+    if effective_role(actor) == 'super_admin':
+        return True                      # super admins can view each other
+    if target.get('allow_coadmin_dms'):
+        return True                      # global toggle ON
+    grant = await db.dm_access.find_one({
+        'requester_id': actor['id'], 'target_id': target['id'],
+        'status': 'approved', 'used': False})
+    if grant:
+        # one-time consume
+        await db.dm_access.update_one({'id': grant['id']},
+                                      {'$set': {'used': True, 'used_at': datetime.now(timezone.utc).isoformat()}})
+        return True
+    return False
+
+
+@app.post('/api/admin/settings/coadmin-dms')
+async def set_coadmin_dms(body: CoDmToggle, a: dict = Depends(require_admin)):
+    """Super Admin toggles whether Co-Admins may view their DMs without asking each time."""
+    if effective_role(a) != 'super_admin':
+        raise HTTPException(403, 'Only a Super Admin can change this setting')
+    await db.profiles.update_one({'id': a['id']}, {'$set': {'allow_coadmin_dms': bool(body.enabled)}})
+    return {'ok': True, 'allow_coadmin_dms': bool(body.enabled)}
+
+
+@app.post('/api/admin/dm-access/request')
+async def dm_access_request(body: DmAccessRequest, a: dict = Depends(require_admin)):
+    """A Co-Admin requests one-time permission to view a specific Super Admin's DMs."""
+    if effective_role(a) == 'super_admin':
+        raise HTTPException(400, 'Super Admins already have access')
+    handle = body.handle.strip().lstrip('#@')
+    target = await db.profiles.find_one({'handle': handle})
+    if not target:
+        raise HTTPException(404, 'User not found')
+    if effective_role(target) != 'super_admin':
+        raise HTTPException(400, 'DM-access requests are only needed for Super Admins')
+    existing = await db.dm_access.find_one({'requester_id': a['id'], 'target_id': target['id'], 'status': 'pending'})
+    if existing:
+        return {'ok': True, 'status': 'pending', 'id': existing['id']}
+    doc = {'id': str(uuid.uuid4()), 'requester_id': a['id'], 'requester_handle': a['handle'],
+           'requester_name': a['display_name'], 'target_id': target['id'], 'target_handle': target['handle'],
+           'status': 'pending', 'used': False, 'created_at': datetime.now(timezone.utc).isoformat()}
+    await db.dm_access.insert_one(dict(doc))
+    await add_activity(target['id'], 'dm_access_request', a, 'requested permission to view your DMs')
+    await audit(a, 'dm_access_request', target['handle'], '')
+    return {'ok': True, 'status': 'pending', 'id': doc['id']}
+
+
+@app.get('/api/admin/dm-access')
+async def dm_access_list(a: dict = Depends(require_admin)):
+    """Super Admin: requests targeting me. Co-Admin: my own requests."""
+    is_super = effective_role(a) == 'super_admin'
+    q = {'target_id': a['id']} if is_super else {'requester_id': a['id']}
+    out = []
+    async for r in db.dm_access.find(q, {'_id': 0}).sort('created_at', -1).limit(100):
+        out.append(r)
+    return {'as_super': is_super, 'allow_coadmin_dms': bool(a.get('allow_coadmin_dms')), 'requests': out}
+
+
+@app.post('/api/admin/dm-access/{req_id}/{decision}')
+async def dm_access_decide(req_id: str, decision: str, a: dict = Depends(require_admin)):
+    """Super Admin approves or denies a Co-Admin's DM-access request targeting them."""
+    if decision not in ('approve', 'deny'):
+        raise HTTPException(400, 'Invalid decision')
+    r = await db.dm_access.find_one({'id': req_id})
+    if not r:
+        raise HTTPException(404, 'Request not found')
+    if r['target_id'] != a['id']:
+        raise HTTPException(403, 'Only the Super Admin who was asked can decide this request')
+    new_status = 'approved' if decision == 'approve' else 'denied'
+    await db.dm_access.update_one({'id': req_id}, {'$set': {'status': new_status, 'used': False,
+                                                            'decided_at': datetime.now(timezone.utc).isoformat()}})
+    requester = await db.profiles.find_one({'id': r['requester_id']})
+    if requester:
+        await add_activity(requester['id'], 'dm_access_decision', a,
+                           f'{"approved" if decision == "approve" else "denied"} your DM-access request')
+    await audit(a, f'dm_access_{new_status}', r.get('requester_handle', ''), '')
+    return {'ok': True, 'status': new_status}
+
 
 
 @app.get('/api/admin/reports')
@@ -2800,7 +2929,7 @@ async def admin_users(q: str = '', a: dict = Depends(require_mod)):
     out = []
     async for p in db.profiles.find(query, {'_id': 0}).sort('created_at', -1).limit(100):
         out.append({'id': p['id'], 'handle': p['handle'], 'display_name': p['display_name'],
-                    'email': p.get('email'), 'account_type': p.get('account_type', 'standard'),
+                    'email': p.get('email'), 'account_type': acct_type(p),
                     'strikes': p.get('strikes', 0), 'suspended_until': p.get('suspended_until'),
                     'banned': p.get('banned', False), 'is_admin': is_admin_user(p),
                     'flagged': p.get('flagged', False), 'flag_reason': p.get('flag_reason'),
@@ -2870,6 +2999,8 @@ async def admin_view_dms(handle: str, a: dict = Depends(require_admin)):
     prof = await db.profiles.find_one({'handle': handle})
     if not prof:
         raise HTTPException(404, 'User not found')
+    if not await super_dm_access_ok(a, prof):
+        raise HTTPException(403, "This is a Super Admin's account. You need their permission to view these DMs — send a request from the DM Access tab.")
     if not prof.get('flagged'):
         raise HTTPException(403, 'Account must be flagged for suspicious activity before DMs can be reviewed')
 
@@ -2902,6 +3033,8 @@ async def admin_investigate(handle: str, a: dict = Depends(require_admin)):
     prof = await db.profiles.find_one({'handle': handle})
     if not prof:
         raise HTTPException(404, 'User not found')
+    if not await super_dm_access_ok(a, prof):
+        raise HTTPException(403, "This is a Super Admin's account. You need their permission to investigate — send a request from the DM Access tab.")
     if not (prof.get('flagged') or prof.get('watchlisted')):
         raise HTTPException(403, 'Subject must be Watchlisted or Flagged (documented basis) before a silent investigation can run')
     uid = prof['id']

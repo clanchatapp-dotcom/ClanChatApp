@@ -4,6 +4,7 @@ import { Trash2, Flag, MessageCircle, Send, CornerDownRight, SmilePlus, Sparkles
 import { api } from '../lib/api'
 import { Avatar, TIER, TierKey, timeAgo, Linkify } from '../lib/ui'
 import RoleBadge from './RoleBadge'
+import AccountBadge from './AccountBadge'
 
 const REPORT_CATS = ['harassment', 'hate', 'self_harm', 'inappropriate', 'unlabelled_ai', 'impersonation', 'underage', 'spam', 'csam', 'other']
 const RX: Record<string, string> = { like: '👍', love: '❤️', haha: '😂', wow: '😮', sad: '😢', angry: '😡' }
@@ -78,6 +79,7 @@ export default function PostCard({ post, onDelete }: { post: any; onDelete?: (id
           <div className="flex items-center gap-2 flex-wrap">
             <Link to={`/u/${a.handle}`} className="font-semibold hover:underline">{a.display_name}</Link>
             <RoleBadge role={a.role} size={17} />
+            <AccountBadge type={a.account_type} role={a.role} size={16} />
             <span className="text-slate-500 text-sm">#{a.handle}</span>
             <span className="text-slate-600 text-sm">· {timeAgo(post.created_at)}</span>
             {pinned && <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-brand/40 bg-brand/10 text-brand"><Pin className="h-3 w-3" />Pinned</span>}
@@ -254,6 +256,7 @@ function Comment({ c, onReply, onDelete }: { c: any; onReply?: () => void; onDel
         <div className="bg-ink border border-edge rounded-2xl px-3 py-2">
           <Link to={`/u/${a.handle}`} className="text-sm font-medium hover:underline">{a.display_name}</Link>
           <RoleBadge role={(a as any).role} size={14} className="ml-1" />
+          <AccountBadge type={(a as any).account_type} role={(a as any).role} size={13} className="ml-0.5" />
           {c.restricted && <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-400 border border-amber-500/40 rounded-full px-1.5 py-0.5">Restricted · only visible to them</span>}
           <p className="text-sm whitespace-pre-wrap break-words"><Linkify text={c.text} /></p>
         </div>

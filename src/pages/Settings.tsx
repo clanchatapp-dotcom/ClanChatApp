@@ -4,6 +4,8 @@ import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, L
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Avatar } from '../lib/ui'
+import AccountBadge, { ACCOUNT_META } from '../components/AccountBadge'
+import RoleBadge, { ROLE_META } from '../components/RoleBadge'
 import { applyTheme, ACCENTS } from '../lib/theme'
 
 function Toggle({ on, onChange, disabled, accent = 'brand' }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; accent?: 'brand' | 'amber' }) {
@@ -359,6 +361,18 @@ export default function Settings() {
         {/* Account actions */}
         <section className="bg-panel border border-edge rounded-2xl p-5 space-y-3">
           <h2 className="font-semibold text-slate-300">Account</h2>
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-ink border border-edge">
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-slate-500">Your plan</div>
+              <div className="font-medium flex items-center gap-1.5">
+                {(user as any)?.role
+                  ? <><RoleBadge role={(user as any).role} size={18} /><span className={ROLE_META[(user as any).role]?.color}>{ROLE_META[(user as any).role]?.label}</span></>
+                  : <><AccountBadge type={(user as any)?.account_type} size={18} /><span className={ACCOUNT_META[(user as any)?.account_type || 'free']?.color}>{ACCOUNT_META[(user as any)?.account_type || 'free']?.label}</span></>}
+              </div>
+            </div>
+            {((user as any)?.account_type || 'free') === 'free' && !(user as any)?.role &&
+              <span className="text-xs text-slate-500">Upgrades coming soon</span>}
+          </div>
           {(user?.is_admin || (user as any)?.can_moderate) && (
             <button onClick={() => nav('/admin')}
               className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-gradient-to-r from-brand/20 to-violet-600/10 border border-brand/40 hover:border-brand transition">

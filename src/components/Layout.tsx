@@ -8,6 +8,7 @@ import OnboardingTour from './OnboardingTour'
 import CallModal from './CallModal'
 import IncomingCallScreen, { IncomingCall } from './IncomingCallScreen'
 import RoleBadge from './RoleBadge'
+import AccountBadge from './AccountBadge'
 
 const NAV = [
   { to: '/', icon: Home, label: 'My Feed', end: true },
@@ -113,7 +114,7 @@ export default function Layout() {
         </button>
         <div className="mt-auto flex items-center gap-3 p-2 rounded-xl hover:bg-white/5">
           <Avatar id={user?.id || ''} name={user?.display_name || ''} url={user?.avatar_url} size={38} />
-          <div className="min-w-0 flex-1"><div className="font-medium truncate flex items-center gap-1.5">{user?.display_name}<RoleBadge role={(user as any)?.role} size={14} /></div><div className="text-xs text-slate-500 truncate">#{user?.handle}</div></div>
+          <div className="min-w-0 flex-1"><div className="font-medium truncate flex items-center gap-1.5">{user?.display_name}<RoleBadge role={(user as any)?.role} size={14} /><AccountBadge type={(user as any)?.account_type} role={(user as any)?.role} size={13} /></div><div className="text-xs text-slate-500 truncate">#{user?.handle}</div></div>
           <button onClick={logout} className="h-8 w-8 grid place-items-center rounded-lg hover:bg-white/10 text-slate-400"><LogOut className="h-4 w-4" /></button>
         </div>
       </aside>
