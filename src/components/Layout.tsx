@@ -1,10 +1,12 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Home, Search, MessageCircle, Bell, User, LogOut, Sparkles, PenSquare, Shield, Settings, Film, Users2, Users } from 'lucide-react'
 import { useAuth } from '../lib/auth'
-import { api } from '../lib/api'
+import { api, getToken, wsUserUrl } from '../lib/api'
 import { Avatar } from '../lib/ui'
 import OnboardingTour from './OnboardingTour'
+import CallModal from './CallModal'
+import IncomingCallScreen, { IncomingCall } from './IncomingCallScreen'
 
 const NAV = [
   { to: '/', icon: Home, label: 'My Feed', end: true },
@@ -35,6 +37,50 @@ export default function Layout() {
     tick(); const id = setInterval(tick, 20000)
     return () => clearInterval(id)
   }, [])
+
+  // Incoming-call ringing: app-wide personal WebSocket channel.
+  const [incoming, setIncoming] = useState<IncomingCall | null>(null)
+  const [activeCall, setActiveCall] = useState<{ room: string; peer?: string } | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  useEffect(() => {
+    if (!user) return
+    let stop = false
+    const connect = () => {
+      const t = getToken(); if (!t || stop) return
+      let ws: WebSocket
+      try { ws = new WebSocket(wsUserUrl(t)) } catch { return }
+      wsRef.current = ws
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data)
+          if (m.type === 'incoming_call') {
+            setActiveCall(cur => { if (cur) return cur; setIncoming({ room: m.room, media: m.media || 'video', from: m.from }); return cur })
+          } else if (m.type === 'call_cancelled') {
+            setIncoming(cur => (cur && cur.room === m.room ? null : cur))
+          }
+        } catch { /* ignore */ }
+      }
+      ws.onclose = () => { if (!stop) setTimeout(connect, 2000) }
+      ws.onerror = () => { try { ws.close() } catch {} }
+    }
+    connect()
+    return () => { stop = true; try { wsRef.current?.close() } catch {} }
+  }, [user?.id])
+
+  const acceptCall = async () => {
+    if (!incoming) return
+    const c = incoming
+    setIncoming(null)
+    try { await api.callAccept(c.from.handle, c.room) } catch {}
+    setActiveCall({ room: c.room })
+    nav('/messages')
+  }
+  const declineCall = async () => {
+    if (!incoming) return
+    const c = incoming
+    setIncoming(null)
+    try { await api.callDecline(c.from.handle, c.room) } catch {}
+  }
 
   const linkCls = (active: boolean) =>
     `flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium transition ${active ? 'bg-brand/15 text-white border border-brand/30' : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'}`
@@ -128,6 +174,15 @@ export default function Layout() {
 
       {/* One-time welcome + Comfort-Zone setup for new sign-ups (after DOB is set) */}
       {needsOnboarding && <OnboardingTour user={user} onDone={() => refresh()} />}
+
+      {/* Incoming call ring (app-wide) */}
+      {incoming && !activeCall && (
+        <IncomingCallScreen call={incoming} onAccept={acceptCall} onDecline={declineCall} />
+      )}
+      {/* Active call room after accepting an incoming call */}
+      {activeCall && (
+        <CallModal room={activeCall.room} peer={activeCall.peer} onClose={() => setActiveCall(null)} />
+      )}
     </div>
   )
 }

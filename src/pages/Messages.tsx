@@ -49,7 +49,8 @@ export default function Messages() {
           }
           if (d.type === 'dm_deleted') setMsgs(p => p.map(m => m.id === d.id ? { ...m, deleted: true, media_url: null, text: 'This message was deleted' } : m))
           if (d.type === 'dm_pin') setMsgs(p => p.map(m => m.id === d.id ? { ...m, pinned: d.pinned } : m))
-          if (d.type === 'dm_viewed') setMsgs(p => p.map(m => m.id === d.id ? { ...m, view_once_viewed: true } : m)) } catch {}
+          if (d.type === 'dm_viewed') setMsgs(p => p.map(m => m.id === d.id ? { ...m, view_once_viewed: true } : m))
+          if (d.type === 'call_declined') { setCall(null); alert(`@${d.from} declined the call`) } } catch {}
       }
       ws.onclose = () => { if (!stop) setTimeout(connect, 1500) }
     }
@@ -104,25 +105,41 @@ export default function Messages() {
   const [gifQ, setGifQ] = useState('')
   const [viewOnce, setViewOnce] = useState(false)
   const [noSave, setNoSave] = useState(false)
+  // Media selected but not yet sent — the "final step" sheet lets the user pick
+  // one-time / no-save options before it actually goes out (keeps composer clean).
+  const [pending, setPending] = useState<{ url: string; media_type: string } | null>(null)
   const [viewer, setViewer] = useState<{ url: string; type: string } | null>(null)
   const [uploadingImg, setUploadingImg] = useState(false)
   const imgRef = useRef<HTMLInputElement | null>(null)
   const openGif = async () => { setGifOpen(o => !o); if (!gifOpen && gifs.length === 0) { try { setGifs(await api.giphySearch('')) } catch {} } }
   const searchGifs = async (query: string) => { setGifQ(query); try { setGifs(await api.giphySearch(query)) } catch {} }
-  const sendGif = async (url: string) => {
-    if (!handle) return; setGifOpen(false)
-    try { const m = await api.sendDmMedia(handle, url, 'image', undefined, undefined, viewOnce, !noSave); if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) }; setViewOnce(false); setNoSave(false) } catch {}
+  // Picking a GIF no longer sends immediately — it opens the media-options sheet.
+  const sendGif = (url: string) => {
+    if (!handle) return
+    setGifOpen(false); setViewOnce(false); setNoSave(false)
+    setPending({ url, media_type: 'image' })
   }
+  // Picking a photo uploads it, then opens the media-options sheet (does NOT send yet).
   const onImgPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f || !handle) return
     setUploadingImg(true)
     try {
       const { signed_url } = await api.upload(f)
-      const m = await api.sendDmMedia(handle, signed_url, 'image', undefined, undefined, viewOnce, !noSave)
-      if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) }
       setViewOnce(false); setNoSave(false)
-    } catch (err: any) { alert(err.message || 'Could not send photo') }
+      setPending({ url: signed_url, media_type: 'image' })
+    } catch (err: any) { alert(err.message || 'Could not upload photo') }
     setUploadingImg(false); if (imgRef.current) imgRef.current.value = ''
+  }
+  // Final step: actually send the pending media with the chosen privacy options.
+  const confirmSendMedia = async () => {
+    if (!handle || !pending) return
+    setBusy(true)
+    try {
+      const m = await api.sendDmMedia(handle, pending.url, pending.media_type, undefined, undefined, viewOnce, !noSave)
+      if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) }
+      setPending(null); setViewOnce(false); setNoSave(false)
+    } catch (e: any) { alert(e.message || 'Could not send media') }
+    setBusy(false)
   }
   const openViewOnce = async (id: string) => {
     if (!handle) return
@@ -140,12 +157,63 @@ export default function Messages() {
 
   const callRoom = handle && user ? `dm-${[user.handle, handle].sort().join('-')}` : ''
   const isSelf = !!handle && handle === user?.handle
+
+  // Start an outgoing call: ring the peer (their app shows an incoming-call screen)
+  // then open the LiveKit room on our side.
+  const startCall = async (media: 'audio' | 'video') => {
+    if (!handle || isSelf || !callRoom) return
+    setCall(callRoom)
+    try { await api.callRing(handle, callRoom, media) }
+    catch (e: any) { setCall(null); alert(e?.message || 'Could not start the call') }
+  }
+
   const selfThread = threads.find(t => t.user.handle === user?.handle)
   const otherThreads = threads.filter(t => t.user.handle !== user?.handle)
 
   return (
     <div className="flex h-screen">
       {call && <CallModal room={call} peer={handle && handle !== user?.handle ? handle : undefined} onClose={() => setCall(null)} />}
+      {/* Final-step media options sheet: pick one-time / no-save before sending. */}
+      {pending && (
+        <div className="fixed inset-0 z-[72] bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center" onClick={() => !busy && setPending(null)}>
+          <div onClick={e => e.stopPropagation()}
+            className="w-full sm:max-w-md bg-panel border-t sm:border border-edge rounded-t-2xl sm:rounded-2xl p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
+            <div className="flex items-center justify-between mb-3">
+              <span className="font-semibold">Send media</span>
+              <button onClick={() => !busy && setPending(null)} className="h-8 w-8 grid place-items-center rounded-lg hover:bg-white/10"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="rounded-xl overflow-hidden bg-black grid place-items-center max-h-64 mb-4">
+              <img src={pending.url} alt="preview" className="max-h-64 w-auto object-contain" />
+            </div>
+            <button type="button" onClick={() => setViewOnce(v => !v)}
+              className={`w-full flex items-center gap-3 p-3 rounded-xl border mb-2 text-left transition ${viewOnce ? 'border-orange-500/60 bg-orange-500/10' : 'border-edge bg-white/5 hover:bg-white/10'}`}>
+              <span className={`h-9 w-9 grid place-items-center rounded-lg shrink-0 ${viewOnce ? 'bg-orange-500 text-white' : 'bg-white/10 text-slate-300'}`}><Flame className="h-5 w-5" /></span>
+              <span className="flex-1 min-w-0">
+                <span className="block font-medium">One-time view</span>
+                <span className="block text-xs text-slate-400">Disappears after they open it once</span>
+              </span>
+              <span className={`h-6 w-11 rounded-full p-0.5 transition ${viewOnce ? 'bg-orange-500' : 'bg-white/15'}`}>
+                <span className={`block h-5 w-5 rounded-full bg-white transition ${viewOnce ? 'translate-x-5' : ''}`} />
+              </span>
+            </button>
+            <button type="button" onClick={() => !viewOnce && setNoSave(v => !v)} disabled={viewOnce}
+              className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition ${(noSave || viewOnce) ? 'border-rose-500/60 bg-rose-500/10' : 'border-edge bg-white/5 hover:bg-white/10'} ${viewOnce ? 'opacity-70 cursor-not-allowed' : ''}`}>
+              <span className={`h-9 w-9 grid place-items-center rounded-lg shrink-0 ${(noSave || viewOnce) ? 'bg-rose-500 text-white' : 'bg-white/10 text-slate-300'}`}><Lock className="h-5 w-5" /></span>
+              <span className="flex-1 min-w-0">
+                <span className="block font-medium">Block saving</span>
+                <span className="block text-xs text-slate-400">{viewOnce ? 'Always on for one-time media' : 'They can’t save or download it'}</span>
+              </span>
+              <span className={`h-6 w-11 rounded-full p-0.5 transition ${(noSave || viewOnce) ? 'bg-rose-500' : 'bg-white/15'}`}>
+                <span className={`block h-5 w-5 rounded-full bg-white transition ${(noSave || viewOnce) ? 'translate-x-5' : ''}`} />
+              </span>
+            </button>
+            <button type="button" onClick={confirmSendMedia} disabled={busy}
+              className="mt-4 w-full py-3 rounded-xl bg-gradient-to-r from-brand to-violet-600 font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
+              {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />} Send
+            </button>
+          </div>
+        </div>
+      )}
       {viewer && (
         <div className="fixed inset-0 z-[70] bg-black flex flex-col">
           <div className="flex items-center justify-between px-4 h-14 border-b border-edge shrink-0">
@@ -213,8 +281,8 @@ export default function Messages() {
                   {screenshotProtectionAvailable() ? 'Encrypted · screenshots blocked' : 'Encrypted'}
                 </div>
                 {!isSelf && (thread.can_call ? <>
-                  <button onClick={() => setCall(callRoom)} title="Voice call" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Phone className="h-4 w-4" /></button>
-                  <button onClick={() => setCall(callRoom)} title="Video call" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Video className="h-4 w-4" /></button>
+                  <button onClick={() => startCall('audio')} title="Voice call" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Phone className="h-4 w-4" /></button>
+                  <button onClick={() => startCall('video')} title="Video call" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10"><Video className="h-4 w-4" /></button>
                 </> : (
                   <div title="This person has turned off calls from you" className="flex items-center gap-1 text-slate-600">
                     <span className="h-9 w-9 grid place-items-center opacity-40 cursor-not-allowed"><Phone className="h-4 w-4" /></span>
@@ -283,11 +351,6 @@ export default function Messages() {
                       </div>
                     </div>
                   )}
-                  {viewOnce && (
-                    <div className="px-3 pt-2 -mb-1 flex items-center gap-1.5 text-xs text-orange-300">
-                      <Flame className="h-3.5 w-3.5" /> One-time mode: the next photo/GIF disappears after it's opened once
-                    </div>
-                  )}
                   <form onSubmit={send} className="p-3 flex gap-2 items-center">
                     <input ref={imgRef} type="file" accept="image/*" hidden onChange={onImgPick} />
                     <button type="button" onClick={() => imgRef.current?.click()} disabled={uploadingImg} title="Send a photo"
@@ -295,14 +358,6 @@ export default function Messages() {
                       {uploadingImg ? <Loader2 className="h-5 w-5 animate-spin" /> : <ImageIcon className="h-5 w-5" />}
                     </button>
                     <button type="button" onClick={openGif} className={`h-11 px-2 grid place-items-center rounded-xl text-xs font-bold shrink-0 ${gifOpen ? 'bg-brand text-white' : 'bg-white/10 hover:bg-white/20'}`}>GIF</button>
-                    <button type="button" onClick={() => setViewOnce(v => !v)} title="Send as one-time (disappearing) media"
-                      className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${viewOnce ? 'bg-orange-500 text-white' : 'bg-white/10 hover:bg-white/20 text-slate-300'}`}>
-                      <Flame className="h-5 w-5" />
-                    </button>
-                    <button type="button" onClick={() => setNoSave(v => !v)} title="Block saving/downloading this media"
-                      className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${noSave ? 'bg-rose-500 text-white' : 'bg-white/10 hover:bg-white/20 text-slate-300'}`}>
-                      <Lock className="h-5 w-5" />
-                    </button>
                     <input value={text} onChange={e => setText(e.target.value)} placeholder={recording ? 'Recording…' : 'Message (encrypted)…'} disabled={recording}
                       className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand disabled:opacity-60" />
                     <button type="button" onClick={recording ? stopRec : startRec} disabled={busy || !(isSelf || thread.can_voice)}

@@ -2150,6 +2150,20 @@ async def activity(u: dict = Depends(get_current_user)):
             break
     return out
 
+@app.delete('/api/activity/{activity_id}')
+async def delete_activity(activity_id: str, u: dict = Depends(get_current_user)):
+    """Delete a single activity/notification (only the owner's own item)."""
+    res = await db.activity.delete_one({'id': activity_id, 'user_id': u['id']})
+    if res.deleted_count == 0:
+        raise HTTPException(404, 'Activity not found')
+    return {'ok': True}
+
+@app.delete('/api/activity')
+async def clear_activity(u: dict = Depends(get_current_user)):
+    """Clear all of the current user's activity/notifications."""
+    res = await db.activity.delete_many({'user_id': u['id']})
+    return {'ok': True, 'deleted': res.deleted_count}
+
 @app.get('/api/follow-requests')
 async def follow_requests(u: dict = Depends(get_current_user)):
     out = []
@@ -2206,6 +2220,83 @@ async def livekit_token(body: TokenReq, u: dict = Depends(get_current_user)):
              .with_grants(lk_api.VideoGrants(room_join=True, room=room,
                                              can_publish=True, can_subscribe=True)))
     return {'server_url': LIVEKIT_URL, 'participant_token': token.to_jwt(), 'room': room}
+
+
+# ----------------------------- Call signaling (ringing) -----------------------------
+
+class CallSignal(BaseModel):
+    peer: str                       # handle of the other party
+    room: str                       # shared LiveKit room name
+    media: Optional[str] = 'video'  # 'audio' | 'video'
+
+
+@app.post('/api/call/ring')
+async def call_ring(body: CallSignal, u: dict = Depends(get_current_user)):
+    """Ring a peer: notify their personal channel (and push) that a call is incoming.
+    Enforces the same safety/permission barriers as the LiveKit token endpoint."""
+    other = await db.profiles.find_one({'handle': body.peer})
+    if not other:
+        raise HTTPException(404, 'User not found')
+    if other['id'] == u['id']:
+        raise HTTPException(400, "You can't call yourself")
+    if await is_blocked_between(u['id'], other['id']):
+        raise HTTPException(403, 'Call not available with this user')
+    if await adult_minor_barrier(u['id'], other['id']):
+        raise HTTPException(403, 'Call not available with this user')
+    if not await inner_perm(other['id'], u['id'], 'call'):
+        raise HTTPException(403, 'This person has turned off calls from you')
+    caller = await db.profiles.find_one({'id': u['id']}) or u
+    payload = {
+        'type': 'incoming_call',
+        'room': body.room,
+        'media': body.media or 'video',
+        'from': {
+            'handle': u['handle'],
+            'display_name': caller.get('display_name') or u['handle'],
+            'avatar_url': caller.get('avatar_url'),
+        },
+    }
+    await manager.broadcast('user:' + other['id'], payload)
+    # Best-effort push so an offline/backgrounded recipient still gets pinged.
+    await push_to_user(other['id'], 'Incoming call',
+                       f"@{u['handle']} is calling you",
+                       {'type': 'call', 'room': body.room, 'from': u['handle']})
+    return {'ok': True}
+
+
+@app.post('/api/call/cancel')
+async def call_cancel(body: CallSignal, u: dict = Depends(get_current_user)):
+    """Caller hangs up before the peer answers — stop the ring on their side."""
+    other = await db.profiles.find_one({'handle': body.peer})
+    if not other:
+        raise HTTPException(404, 'User not found')
+    await manager.broadcast('user:' + other['id'],
+                            {'type': 'call_cancelled', 'room': body.room, 'from': u['handle']})
+    return {'ok': True}
+
+
+@app.post('/api/call/decline')
+async def call_decline(body: CallSignal, u: dict = Depends(get_current_user)):
+    """Peer declines — tell the caller so they can stop waiting."""
+    other = await db.profiles.find_one({'handle': body.peer})
+    if not other:
+        raise HTTPException(404, 'User not found')
+    evt = {'type': 'call_declined', 'room': body.room, 'from': u['handle']}
+    await manager.broadcast('user:' + other['id'], evt)
+    # Also hit the shared DM room so a caller with the chat open reacts immediately.
+    await manager.broadcast(dm_room(u['id'], other['id']), evt)
+    return {'ok': True}
+
+
+@app.post('/api/call/accept')
+async def call_accept(body: CallSignal, u: dict = Depends(get_current_user)):
+    """Peer accepts — tell the caller so their UI can transition into the room."""
+    other = await db.profiles.find_one({'handle': body.peer})
+    if not other:
+        raise HTTPException(404, 'User not found')
+    await manager.broadcast('user:' + other['id'],
+                            {'type': 'call_accepted', 'room': body.room, 'from': u['handle']})
+    return {'ok': True}
 
 
 # ----------------------------- Push notifications (FCM) -----------------------------
@@ -2324,6 +2415,27 @@ async def ws_group(ws: WebSocket, gid: str):
     if not g or me_id not in g['members']:
         await ws.close(code=1008); return
     room = 'group:' + gid
+    await manager.connect(room, ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(room, ws)
+    except Exception:
+        manager.disconnect(room, ws)
+
+
+@app.websocket('/api/ws/user')
+async def ws_user(ws: WebSocket):
+    """Personal per-user channel, connected app-wide while signed in.
+    Used to deliver incoming-call rings and other user-scoped events."""
+    token = ws.query_params.get('token')
+    try:
+        claims = decode_jwt(token) if token else None
+        me_id = claims['sub']
+    except Exception:
+        await ws.close(code=1008); return
+    room = 'user:' + me_id
     await manager.connect(room, ws)
     try:
         while True:

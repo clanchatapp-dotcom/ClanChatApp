@@ -151,6 +151,8 @@ export const api = {
   dmHistory: (h: string) => req(`/dms/${h}`),
   dmSend: (h: string, text: string) => req(`/dms/${h}`, { method: 'POST', body: j({ text }) }),
   activity: () => req('/activity'),
+  deleteActivity: (id: string) => req(`/activity/${id}`, { method: 'DELETE' }),
+  clearActivity: () => req('/activity', { method: 'DELETE' }),
   unread: () => req('/unread'),
   groups: () => req('/groups'),
   createGroup: (name: string, members: string[]) => req('/groups', { method: 'POST', body: j({ name, members }) }),
@@ -161,6 +163,10 @@ export const api = {
   removeGroupMember: (id: string, handle: string) => req(`/groups/${id}/members/${handle}`, { method: 'DELETE' }),
   deleteGroup: (id: string) => req(`/groups/${id}`, { method: 'DELETE' }),
   livekitToken: (room: string, peer?: string) => req('/livekit/token', { method: 'POST', body: j(peer ? { room, peer } : { room }) }),
+  callRing: (peer: string, room: string, media: 'audio' | 'video' = 'video') => req('/call/ring', { method: 'POST', body: j({ peer, room, media }) }),
+  callCancel: (peer: string, room: string) => req('/call/cancel', { method: 'POST', body: j({ peer, room }) }),
+  callDecline: (peer: string, room: string) => req('/call/decline', { method: 'POST', body: j({ peer, room }) }),
+  callAccept: (peer: string, room: string) => req('/call/accept', { method: 'POST', body: j({ peer, room }) }),
   registerPush: (token: string, platform = 'android') => req('/push/register', { method: 'POST', body: j({ token, platform }) }),
   unregisterPush: (token: string) => req(`/push/register/${encodeURIComponent(token)}`, { method: 'DELETE' }),
   upload: (file: File) => { const fd = new FormData(); fd.append('file', file); return req('/upload', { method: 'POST', body: fd }) },
@@ -208,4 +214,12 @@ export function wsGroupUrl(id: string, token: string) {
   if (API_BASE) { try { const u = new URL(API_BASE); host = u.host; secure = u.protocol === 'https:' } catch {} }
   const proto = secure ? 'wss' : 'ws'
   return `${proto}://${host}/api/ws/group/${id}?token=${encodeURIComponent(token)}`
+}
+
+export function wsUserUrl(token: string) {
+  let host = window.location.host
+  let secure = window.location.protocol === 'https:'
+  if (API_BASE) { try { const u = new URL(API_BASE); host = u.host; secure = u.protocol === 'https:' } catch {} }
+  const proto = secure ? 'wss' : 'ws'
+  return `${proto}://${host}/api/ws/user?token=${encodeURIComponent(token)}`
 }
