@@ -133,6 +133,29 @@ export default function Messages() {
     } catch (e: any) { alert(e?.message || 'Could not send sticker') }
   }
   const removeSticker = async (id: string) => { try { await api.deleteSticker(id); await loadStickers() } catch {} }
+  // Accept a sticker/image coming from the phone keyboard, clipboard or a drag-drop
+  // (this is how keyboard stickers reach a web/WebView app) and send it as a sticker.
+  const sendBlobSticker = async (file: File) => {
+    if (!handle || !file || !file.type.startsWith('image/')) return
+    try {
+      const { signed_url } = await api.upload(file)
+      await sendSticker(signed_url)
+    } catch (e: any) { alert(e?.message || 'Could not send that sticker') }
+  }
+  const onComposerPaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items || []
+    for (const it of items as any) {
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        const f = it.getAsFile()
+        if (f) { e.preventDefault(); sendBlobSticker(f) }
+        return
+      }
+    }
+  }
+  const onComposerDrop = (e: React.DragEvent) => {
+    const f = e.dataTransfer?.files?.[0]
+    if (f && f.type.startsWith('image/')) { e.preventDefault(); sendBlobSticker(f) }
+  }
   const editNickname = async () => {
     if (!thread?.peer) return
     const cur = thread.peer.nickname || ''
@@ -413,7 +436,7 @@ export default function Messages() {
                       </div>
                     </div>
                   )}
-                  <form onSubmit={send} className="p-3 flex gap-2 items-center">
+                  <form onSubmit={send} onDrop={onComposerDrop} onDragOver={e => e.preventDefault()} className="p-3 flex gap-2 items-center">
                     <input ref={imgRef} type="file" accept="image/*" hidden onChange={onImgPick} />
                     <button type="button" onClick={() => imgRef.current?.click()} disabled={uploadingImg} title="Send a photo"
                       className="h-11 w-11 grid place-items-center rounded-xl bg-white/10 hover:bg-white/20 shrink-0 disabled:opacity-50">
@@ -423,7 +446,7 @@ export default function Messages() {
                     <input ref={stickerRef} type="file" accept="image/*" hidden onChange={onStickerUpload} />
                     <button type="button" onClick={() => { setStickerOpen(o => !o); setGifOpen(false) }} title="Stickers"
                       className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${stickerOpen ? 'bg-brand text-white' : 'bg-white/10 hover:bg-white/20'}`}><Smile className="h-5 w-5" /></button>
-                    <input value={text} onChange={e => setText(e.target.value)} placeholder={recording ? 'Recording…' : 'Message (encrypted)…'} disabled={recording}
+                    <input value={text} onChange={e => setText(e.target.value)} onPaste={onComposerPaste} placeholder={recording ? 'Recording…' : 'Message or paste a sticker…'} disabled={recording}
                       className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand disabled:opacity-60" />
                     <button type="button" onClick={recording ? stopRec : startRec} disabled={busy || !(isSelf || thread.can_voice)}
                       title={!(isSelf || thread.can_voice) ? 'This person has turned off voice notes from you' : 'Record a voice message'}
