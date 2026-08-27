@@ -493,6 +493,18 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         out['is_admin'] = is_admin_user(prof)
         out['can_moderate'] = effective_role(prof) in MOD_ROLES
         out['allow_coadmin_dms'] = bool(prof.get('allow_coadmin_dms'))
+        # Username-change cooldown (once every 60 days)
+        _hc = prof.get('handle_changed_at')
+        out['handle_changed_at'] = _hc
+        _next = None
+        if _hc:
+            try:
+                _next_dt = datetime.fromisoformat(_hc) + timedelta(days=60)
+                if datetime.now(timezone.utc) < _next_dt:
+                    _next = _next_dt.isoformat()
+            except Exception:
+                _next = None
+        out['handle_change_available_at'] = _next  # null = can change now
         out['strikes'] = prof.get('strikes', 0)
         _minor = bool(prof.get('is_minor'))
         _cz = {**COMFORT_ZONE_DEFAULTS, **(prof.get('comfort_zone') or {})}
@@ -872,6 +884,45 @@ async def change_password(body: ChangePassword, u: dict = Depends(get_current_us
     salt = secrets.token_hex(16)
     await db.auth.update_one({'user_id': u['id']}, {'$set': {'salt': salt, 'hash': _pw_hash(body.new_password, salt)}})
     return {'ok': True}
+
+class HandleUpdate(BaseModel):
+    handle: str
+
+HANDLE_COOLDOWN_DAYS = 60
+
+@app.post('/api/profile/handle')
+async def change_handle(body: HandleUpdate, u: dict = Depends(get_current_user)):
+    """Change your #username. Allowed once every 60 days."""
+    new_h = slugify_handle(body.handle)
+    if len(new_h) < 3:
+        raise HTTPException(400, 'Username must be at least 3 letters/numbers (a–z, 0–9)')
+    if contains_banned(new_h):
+        raise HTTPException(400, 'That username isn’t allowed. Please choose another.')
+    if new_h == u['handle']:
+        raise HTTPException(400, 'That’s already your username.')
+    # 60-day cooldown
+    last = u.get('handle_changed_at')
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            nxt = last_dt + timedelta(days=HANDLE_COOLDOWN_DAYS)
+            now = datetime.now(timezone.utc)
+            if now < nxt:
+                days = (nxt - now).days + 1
+                raise HTTPException(400, f'You can change your username again in {days} day{"s" if days != 1 else ""}.')
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    # uniqueness (case-insensitive via normalized slug — handles are already lowercase slugs)
+    taken = await db.profiles.find_one({'handle': new_h, 'id': {'$ne': u['id']}})
+    if taken:
+        raise HTTPException(409, 'That username is taken. Please choose another.')
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.profiles.update_one({'id': u['id']},
+                                 {'$set': {'handle': new_h, 'handle_changed_at': now_iso}})
+    return {'ok': True, 'handle': new_h, 'handle_changed_at': now_iso}
+
 
 @app.put('/api/profile')
 async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user)):
