@@ -53,6 +53,11 @@ export default function Settings() {
   const [savedName, setSavedName] = useState(false)
   const [realName, setRealName] = useState('')
   const [savedRN, setSavedRN] = useState(false)
+  const [uname, setUname] = useState('')
+  const [unameBusy, setUnameBusy] = useState(false)
+  const [unameErr, setUnameErr] = useState<string | null>(null)
+  const [bio, setBio] = useState('')
+  const [savedBio, setSavedBio] = useState(false)
   const [curPw, setCurPw] = useState('')
   const [newPw, setNewPw] = useState('')
   const [confPw, setConfPw] = useState('')
@@ -62,7 +67,7 @@ export default function Settings() {
   const [deleting, setDeleting] = useState(false)
 
   const load = async () => {
-    try { const me = await api.me(); setP(me); setName(me.display_name || ''); setRealName(me.real_name || '') } catch {}
+    try { const me = await api.me(); setP(me); setName(me.display_name || ''); setRealName(me.real_name || ''); setUname(me.handle || ''); setBio(me.bio || '') } catch {}
     setLoading(false)
   }
   useEffect(() => { load() }, [])
@@ -117,6 +122,24 @@ export default function Settings() {
     setSaving(null)
   }
 
+  const saveHandle = async () => {
+    const h = uname.trim().replace(/^[#@]/, '').toLowerCase()
+    setUnameErr(null)
+    if (!h || h === p?.handle || h.length < 3) return
+    setUnameBusy(true)
+    try { await api.changeHandle(h); await refresh(); await load() }
+    catch (e: any) { setUnameErr(e?.message || 'Could not change username') }
+    finally { setUnameBusy(false) }
+  }
+
+  const saveBio = async () => {
+    if (bio === (p?.bio || '')) return
+    setSaving('bio')
+    try { await api.updateProfile({ bio }); await refresh(); setP((prev: any) => ({ ...prev, bio })); setSavedBio(true); setTimeout(() => setSavedBio(false), 1500) }
+    catch (e: any) { alert(e?.message || 'Could not save bio') }
+    setSaving(null)
+  }
+
   const doDelete = async () => {
     setDeleting(true)
     try { await api.deleteAccount() } catch {}
@@ -154,6 +177,28 @@ export default function Settings() {
               <div className="text-xs text-slate-500 truncate">#{p?.handle}</div>
             </div>
           </div>
+
+          <label className="block text-sm text-slate-400 mb-1.5">Username</label>
+          <div className="flex gap-2">
+            <div className="flex-1 flex items-center bg-black/40 border border-edge rounded-xl px-3 focus-within:border-brand/60">
+              <span className="text-slate-500">#</span>
+              <input value={uname} onChange={e => { setUname(e.target.value.replace(/[^A-Za-z0-9]/g, '').toLowerCase()); setUnameErr(null) }}
+                maxLength={20} disabled={!!p?.handle_change_available_at} placeholder="username"
+                className="flex-1 bg-transparent py-2.5 outline-none disabled:opacity-60" />
+            </div>
+            <button onClick={saveHandle}
+              disabled={unameBusy || !!p?.handle_change_available_at || uname === p?.handle || uname.length < 3}
+              className="px-4 rounded-xl bg-brand font-medium disabled:opacity-40 flex items-center gap-1.5">
+              {unameBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}Change
+            </button>
+          </div>
+          {unameErr
+            ? <p className="text-xs text-rose-400 mt-1.5">{unameErr}</p>
+            : p?.handle_change_available_at
+              ? <p className="text-xs text-amber-400/80 mt-1.5">You can change your username again on {new Date(p.handle_change_available_at).toLocaleDateString()}.</p>
+              : <p className="text-xs text-slate-500 mt-1.5">Once every 60 days. Letters and numbers only.</p>}
+
+          <div className="h-px bg-edge my-4" />
 
           <label className="block text-sm text-slate-400 mb-1.5">Display name</label>
           <div className="flex gap-2">
@@ -206,6 +251,18 @@ export default function Settings() {
                 <option value="followers">Followers</option>
                 <option value="public">Everyone</option>
               </select>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <label className="block text-sm text-slate-400 mb-1.5">Bio <span className="text-slate-600">({(bio || '').length}/{p?.limits?.bio || 150})</span></label>
+            <textarea value={bio} onChange={e => setBio(e.target.value)} rows={3} maxLength={p?.limits?.bio || 150}
+              placeholder="Add a bio…" className="w-full bg-black/40 border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand/60" />
+            <div className="flex justify-end mt-2">
+              <button onClick={saveBio} disabled={saving === 'bio' || bio === (p?.bio || '')}
+                className="px-4 py-2 rounded-xl bg-brand font-medium disabled:opacity-40 flex items-center gap-1.5">
+                {saving === 'bio' ? <Loader2 className="h-4 w-4 animate-spin" /> : savedBio ? <Check className="h-4 w-4" /> : null}{savedBio ? 'Saved' : 'Save bio'}
+              </button>
             </div>
           </div>
 

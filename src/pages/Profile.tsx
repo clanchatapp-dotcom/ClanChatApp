@@ -6,7 +6,7 @@ import PostCard from '../components/PostCard'
 import RoleBadge from '../components/RoleBadge'
 import AccountBadge, { ACCOUNT_META } from '../components/AccountBadge'
 import { useAuth } from '../lib/auth'
-import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera, Trash2, Ban, VolumeX, ShieldOff, Plus, MessagesSquare, Send, X, Pin } from 'lucide-react'
+import { ArrowLeft, MoreHorizontal, ShoppingBag, Lock, Loader2, Check, Link as LinkIcon, Camera, Trash2, Ban, VolumeX, ShieldOff, Plus, MessagesSquare, Send, X, Pin, Settings as SettingsIcon } from 'lucide-react'
 
 const TABS = ['media', 'wall', 'boards', 'audio'] as const
 type Tab = typeof TABS[number]
@@ -94,8 +94,8 @@ export default function Profile() {
           <ArrowLeft className="h-5 w-5" /> <span className="text-lg">Feed</span>
         </button>
         <div className="relative">
-          <button onClick={() => p.is_self ? setEditing(e => !e) : setMenuOpen(o => !o)} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10 text-slate-300">
-            <MoreHorizontal className="h-5 w-5" />
+          <button onClick={() => p.is_self ? nav('/settings') : setMenuOpen(o => !o)} title={p.is_self ? 'Settings' : 'More options'} className="h-9 w-9 grid place-items-center rounded-lg hover:bg-white/10 text-slate-300">
+            {p.is_self ? <SettingsIcon className="h-5 w-5" /> : <MoreHorizontal className="h-5 w-5" />}
           </button>
           {!p.is_self && menuOpen && (
             <>
@@ -145,41 +145,13 @@ export default function Profile() {
           <div className="mt-2 text-sm text-slate-500">{p.followers_count} follower{p.followers_count === 1 ? '' : 's'} · <span className="text-slate-600">private</span></div>
         )}
 
-        {/* Edit (own) */}
-        {editing && p.is_self && (
-          <div className="mt-4 w-full max-w-md space-y-3">
-            <div className="text-left">
-              <label className="text-xs text-slate-500">Username</label>
-              <div className="flex items-center gap-2 mt-1">
-                <div className="flex-1 flex items-center bg-ink border border-edge rounded-xl px-3 focus-within:border-brand">
-                  <span className="text-slate-500">#</span>
-                  <input value={uname} onChange={e => setUname(e.target.value.replace(/[^A-Za-z0-9]/g, '').toLowerCase())}
-                    maxLength={20} disabled={!!p.handle_change_available_at}
-                    placeholder="username" className="flex-1 bg-transparent py-2 outline-none disabled:opacity-60" />
-                </div>
-                <button onClick={saveHandle} disabled={unameBusy || !!p.handle_change_available_at || uname === p.handle || uname.length < 3}
-                  className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
-                  {unameBusy ? 'Saving…' : 'Change'}
-                </button>
-              </div>
-              {p.handle_change_available_at
-                ? <p className="text-xs text-amber-400/80 mt-1">You can change your username again on {new Date(p.handle_change_available_at).toLocaleDateString()}.</p>
-                : <p className="text-xs text-slate-500 mt-1">You can change your username once every 60 days. Letters and numbers only.</p>}
-            </div>
-            <textarea value={bio} onChange={e => setBio(e.target.value)} rows={2} maxLength={p.limits?.bio || 150}
-              placeholder="Add a bio…" className="w-full bg-ink border border-edge rounded-xl px-3 py-2 outline-none focus:border-brand text-left" />
-            <div className="flex justify-center gap-2">
-              <button onClick={saveBio} className="px-5 py-2 rounded-full bg-brand font-medium">Save bio</button>
-              <button onClick={() => setEditing(false)} className="px-5 py-2 rounded-full border border-edge">Cancel</button>
-            </div>
-          </div>
-        )}
+        {/* Edit (own) — moved to Settings > Account */}
 
         {/* Action pills */}
         {!editing && (
           <div className="mt-6 flex flex-col items-center gap-3 w-full">
             {p.is_self ? (
-              <button onClick={() => setEditing(true)} className="px-8 py-2.5 rounded-full border border-edge font-medium hover:bg-white/5">Edit profile</button>
+              <button onClick={() => nav('/settings')} className="px-8 py-2.5 rounded-full border border-edge font-medium hover:bg-white/5">Edit profile</button>
             ) : (
               <>
                 <div className="flex items-center justify-center gap-3">
