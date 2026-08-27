@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, User as UserIcon, AlertTriangle, Lock, Flame, Sparkles, MessageSquare, Swords, Pill, Eye, KeyRound, Sun, Moon, Type, Bell, Users2, ChevronRight, Palette } from 'lucide-react'
+import { Settings as SettingsIcon, ShieldCheck, MessageCircle, LogOut, Trash2, Loader2, Check, Plus, User as UserIcon, AlertTriangle, Lock, Flame, Sparkles, MessageSquare, Swords, Pill, Eye, KeyRound, Sun, Moon, Type, Bell, Users2, ChevronRight, Palette } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Avatar } from '../lib/ui'
@@ -58,6 +58,8 @@ export default function Settings() {
   const [unameErr, setUnameErr] = useState<string | null>(null)
   const [bio, setBio] = useState('')
   const [savedBio, setSavedBio] = useState(false)
+  const [links, setLinks] = useState<string[]>([])
+  const [savedLinks, setSavedLinks] = useState(false)
   const [curPw, setCurPw] = useState('')
   const [newPw, setNewPw] = useState('')
   const [confPw, setConfPw] = useState('')
@@ -67,7 +69,7 @@ export default function Settings() {
   const [deleting, setDeleting] = useState(false)
 
   const load = async () => {
-    try { const me = await api.me(); setP(me); setName(me.display_name || ''); setRealName(me.real_name || ''); setUname(me.handle || ''); setBio(me.bio || '') } catch {}
+    try { const me = await api.me(); setP(me); setName(me.display_name || ''); setRealName(me.real_name || ''); setUname(me.handle || ''); setBio(me.bio || ''); setLinks(Array.isArray(me.links) ? me.links : []) } catch {}
     setLoading(false)
   }
   useEffect(() => { load() }, [])
@@ -137,6 +139,14 @@ export default function Settings() {
     setSaving('bio')
     try { await api.updateProfile({ bio }); await refresh(); setP((prev: any) => ({ ...prev, bio })); setSavedBio(true); setTimeout(() => setSavedBio(false), 1500) }
     catch (e: any) { alert(e?.message || 'Could not save bio') }
+    setSaving(null)
+  }
+
+  const saveLinks = async () => {
+    const clean = links.map(l => l.trim()).filter(Boolean)
+    setSaving('links')
+    try { await api.updateProfile({ links: clean }); await refresh(); setP((prev: any) => ({ ...prev, links: clean })); setSavedLinks(true); setTimeout(() => setSavedLinks(false), 1500) }
+    catch (e: any) { alert(e?.message || 'Could not save links') }
     setSaving(null)
   }
 
@@ -264,6 +274,34 @@ export default function Settings() {
                 {saving === 'bio' ? <Loader2 className="h-4 w-4 animate-spin" /> : savedBio ? <Check className="h-4 w-4" /> : null}{savedBio ? 'Saved' : 'Save bio'}
               </button>
             </div>
+          </div>
+
+          <div className="mt-4">
+            {(() => { const max = p?.limits?.links || 3; const unlimited = max >= 9999; return (
+              <>
+                <label className="block text-sm text-slate-400 mb-1.5">Links <span className="text-slate-600">({unlimited ? `${links.length} · unlimited` : `${links.length}/${max}`})</span></label>
+                <div className="space-y-2">
+                  {links.map((l, i) => (
+                    <div key={i} className="flex gap-2">
+                      <input value={l} onChange={e => setLinks(ls => ls.map((x, j) => j === i ? e.target.value : x))}
+                        placeholder="https://your-link.com" className="flex-1 bg-black/40 border border-edge rounded-xl px-3 py-2.5 outline-none focus:border-brand/60" />
+                      <button onClick={() => setLinks(ls => ls.filter((_, j) => j !== i))} className="h-11 w-11 grid place-items-center rounded-xl bg-white/5 hover:bg-rose-500/15 text-rose-300"><Trash2 className="h-4 w-4" /></button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between mt-2">
+                  <button onClick={() => setLinks(ls => [...ls, ''])} disabled={!unlimited && links.length >= max}
+                    className="text-sm flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40">
+                    <Plus className="h-4 w-4" /> Add link
+                  </button>
+                  <button onClick={saveLinks} disabled={saving === 'links'}
+                    className="px-4 py-2 rounded-xl bg-brand font-medium disabled:opacity-40 flex items-center gap-1.5">
+                    {saving === 'links' ? <Loader2 className="h-4 w-4 animate-spin" /> : savedLinks ? <Check className="h-4 w-4" /> : null}{savedLinks ? 'Saved' : 'Save links'}
+                  </button>
+                </div>
+                {!unlimited && links.length >= max && <p className="text-xs text-amber-400/80 mt-1.5">You’ve reached your plan’s link limit. <button onClick={() => nav('/plans')} className="underline">Upgrade</button> for more.</p>}
+              </>
+            )})()}
           </div>
 
           <div className="mt-4">
