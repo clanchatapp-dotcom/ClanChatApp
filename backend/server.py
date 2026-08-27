@@ -406,6 +406,14 @@ async def in_inner(owner: str, member: str) -> bool:
     return bool(await db.inner.find_one({'owner_id': owner, 'member_id': member, 'status': 'accepted'}))
 
 
+async def nickname_for(owner_id: str, target_id: str) -> Optional[str]:
+    """The private nickname `owner` has set for `target` (Inner-Circle only). None if unset."""
+    if not owner_id or not target_id or owner_id == target_id:
+        return None
+    doc = await db.inner.find_one({'owner_id': owner_id, 'member_id': target_id, 'status': 'accepted'})
+    return ((doc or {}).get('nickname') or None)
+
+
 async def inner_perm(owner: str, member: str, key: str) -> bool:
     """Whether `member` may do `key` (dm|voice|call) toward `owner`. Only applies when
     member is in owner's Inner Circle; otherwise defaults to allowed (other gates handle it)."""
@@ -735,7 +743,7 @@ async def ensure_bucket():
             log.info('ensure_bucket update %s', upd.status_code)
 
 async def upload_and_sign(path: str, content: bytes, content_type: str,
-                          expires_in: int = 60 * 60 * 24 * 30) -> str:
+                          expires_in: int = 60 * 60 * 24 * 365 * 10) -> str:
     async with httpx.AsyncClient(timeout=120) as c:
         up = await c.post(f'{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}',
                           headers={**admin_headers(), 'Content-Type': content_type, 'x-upsert': 'true'},
@@ -1138,7 +1146,10 @@ async def my_inner(u: dict = Depends(get_current_user)):
     out = []
     async for r in db.inner.find({'owner_id': u['id'], 'status': 'accepted'}):
         p = await db.profiles.find_one({'id': r['member_id']}, {'_id': 0})
-        if p: out.append(await public_profile(p, u['id']))
+        if p:
+            pp = await public_profile(p, u['id'])
+            pp['nickname'] = r.get('nickname') or None
+            out.append(pp)
     return out
 
 
@@ -1275,6 +1286,64 @@ async def set_inner_perms(handle: str, body: InnerPerms, u: dict = Depends(get_c
     await db.inner.update_one({'id': doc['id']} if doc.get('id') else {'owner_id': u['id'], 'member_id': member['id']},
                               {'$set': {'perms': perms}})
     return {'ok': True, 'perms': perms}
+
+
+class NicknameBody(BaseModel):
+    nickname: Optional[str] = ''
+
+
+@app.put('/api/inner/{handle}/nickname')
+async def set_inner_nickname(handle: str, body: NicknameBody, u: dict = Depends(get_current_user)):
+    """Set a PRIVATE nickname for one of your Inner-Circle members (only you see it).
+    Send an empty string to clear it."""
+    member = await db.profiles.find_one({'handle': handle})
+    if not member:
+        raise HTTPException(404, 'User not found')
+    doc = await db.inner.find_one({'owner_id': u['id'], 'member_id': member['id'], 'status': 'accepted'})
+    if not doc:
+        raise HTTPException(403, 'You can only nickname people in your Inner Circle')
+    nick = (body.nickname or '').strip()[:40]
+    if nick and contains_banned(nick):
+        raise HTTPException(400, 'That nickname isn’t allowed. Please choose another.')
+    await db.inner.update_one({'id': doc['id']} if doc.get('id') else {'owner_id': u['id'], 'member_id': member['id']},
+                              {'$set': {'nickname': nick}})
+    return {'ok': True, 'nickname': nick}
+
+
+# ----------------------------- Custom stickers (personal pack) -----------------------------
+
+class StickerBody(BaseModel):
+    url: str
+
+MAX_STICKERS = 100
+
+@app.get('/api/stickers')
+async def list_stickers(u: dict = Depends(get_current_user)):
+    out = []
+    async for s in db.stickers.find({'user_id': u['id']}, {'_id': 0}).sort('created_at', -1):
+        out.append(s)
+    return out
+
+@app.post('/api/stickers')
+async def add_sticker(body: StickerBody, u: dict = Depends(get_current_user)):
+    """Register an uploaded image as a personal sticker (upload the file via /api/upload first)."""
+    url = (body.url or '').strip()
+    if not url:
+        raise HTTPException(400, 'Missing sticker image')
+    count = await db.stickers.count_documents({'user_id': u['id']})
+    if count >= MAX_STICKERS:
+        raise HTTPException(400, f'You can keep up to {MAX_STICKERS} stickers. Delete some first.')
+    doc = {'id': str(uuid.uuid4()), 'user_id': u['id'], 'url': url,
+           'created_at': datetime.now(timezone.utc).isoformat()}
+    await db.stickers.insert_one(dict(doc))
+    return doc
+
+@app.delete('/api/stickers/{sticker_id}')
+async def delete_sticker(sticker_id: str, u: dict = Depends(get_current_user)):
+    res = await db.stickers.delete_one({'id': sticker_id, 'user_id': u['id']})
+    if res.deleted_count == 0:
+        raise HTTPException(404, 'Sticker not found')
+    return {'ok': True}
 
 
 
@@ -1915,7 +1984,7 @@ async def dm_threads(u: dict = Depends(get_current_user)):
         room = dm_room(u['id'], oid)
         since = await read_marker('dm', room, u['id'])
         seen[oid] = {'user': {'id': prof['id'], 'handle': prof['handle'],
-                              'display_name': prof['display_name'], 'avatar_url': prof.get('avatar_url'), 'role': effective_role(prof), 'account_type': acct_type(prof)},
+                              'display_name': prof['display_name'], 'avatar_url': prof.get('avatar_url'), 'role': effective_role(prof), 'account_type': acct_type(prof), 'nickname': await nickname_for(u['id'], prof['id'])},
                      'last': ('🎤 Voice message' if m.get('media_type') == 'audio' else '📷 Photo' if m.get('media_url') else dec(m['content_enc'])[:80]), 'created_at': m['created_at'],
                      'mine': m['sender_id'] == u['id'],
                      'unread': await dm_unread_count(room, u['id'], since)}
@@ -1946,8 +2015,9 @@ async def dm_history(handle: str, u: dict = Depends(get_current_user)):
     await mark_read('dm', room, u['id'])  # opening a thread marks it read
     is_self = other['id'] == u['id']
     return {'peer': {'id': other['id'], 'handle': other['handle'],
-                     'display_name': other['display_name'], 'avatar_url': other.get('avatar_url'), 'role': effective_role(other), 'account_type': acct_type(other)},
+                     'display_name': other['display_name'], 'avatar_url': other.get('avatar_url'), 'role': effective_role(other), 'account_type': acct_type(other), 'nickname': await nickname_for(u['id'], other['id'])},
             'can_dm': await can_dm(u['id'], other['id']),
+            'peer_is_inner': await in_inner(u['id'], other['id']),
             'can_voice': is_self or await inner_perm(other['id'], u['id'], 'voice'),
             'can_call': is_self or await inner_perm(other['id'], u['id'], 'call'),
             'messages': out}

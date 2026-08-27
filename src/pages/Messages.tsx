@@ -7,7 +7,7 @@ import CallModal from '../components/CallModal'
 import RoleBadge from '../components/RoleBadge'
 import AccountBadge from '../components/AccountBadge'
 import { secureOn, secureOff, screenshotProtectionAvailable } from '../lib/privacyScreen'
-import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark, Trash2, Pin, Mic, Square, Users, ChevronRight, Eye, Flame, Image as ImageIcon, X } from 'lucide-react'
+import { Send, Phone, Video, Lock, ArrowLeft, Loader2, Bookmark, Trash2, Pin, Mic, Square, Users, ChevronRight, Eye, Flame, Image as ImageIcon, X, Smile, Pencil, Plus } from 'lucide-react'
 
 export default function Messages() {
   const { handle } = useParams()
@@ -110,6 +110,41 @@ export default function Messages() {
   // Media selected but not yet sent — the "final step" sheet lets the user pick
   // one-time / no-save options before it actually goes out (keeps composer clean).
   const [pending, setPending] = useState<{ url: string; media_type: string } | null>(null)
+  // Stickers (WhatsApp-style personal pack)
+  const [stickers, setStickers] = useState<any[]>([])
+  const [stickerOpen, setStickerOpen] = useState(false)
+  const [uploadingSticker, setUploadingSticker] = useState(false)
+  const stickerRef = useRef<HTMLInputElement | null>(null)
+  const loadStickers = async () => { try { setStickers(await api.listStickers()) } catch {} }
+  useEffect(() => { loadStickers() }, [])
+  const onStickerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return
+    setUploadingSticker(true)
+    try { const { signed_url } = await api.upload(f); await api.addSticker(signed_url); await loadStickers() }
+    catch (err: any) { alert(err.message || 'Could not add sticker') }
+    setUploadingSticker(false); if (stickerRef.current) stickerRef.current.value = ''
+  }
+  const sendSticker = async (url: string) => {
+    if (!handle) return
+    setStickerOpen(false)
+    try {
+      const m = await api.sendDmMedia(handle, url, 'sticker', undefined, undefined, false, true)
+      if (!seen.current.has(m.id)) { seen.current.add(m.id); setMsgs(p => [...p, m]) }
+    } catch (e: any) { alert(e?.message || 'Could not send sticker') }
+  }
+  const removeSticker = async (id: string) => { try { await api.deleteSticker(id); await loadStickers() } catch {} }
+  const editNickname = async () => {
+    if (!thread?.peer) return
+    const cur = thread.peer.nickname || ''
+    const next = window.prompt(`Private nickname for ${thread.peer.display_name} (only you see it). Leave blank to clear.`, cur)
+    if (next === null) return
+    const nick = next.trim()
+    try {
+      await api.setNickname(thread.peer.handle, nick)
+      setThread((t: any) => t ? { ...t, peer: { ...t.peer, nickname: nick || null } } : t)
+      setThreads(ts => ts.map(t => t.user?.handle === thread.peer.handle ? { ...t, user: { ...t.user, nickname: nick || null } } : t))
+    } catch (e: any) { alert(e.message || 'Could not set nickname') }
+  }
   const [viewer, setViewer] = useState<{ url: string; type: string } | null>(null)
   const [uploadingImg, setUploadingImg] = useState(false)
   const imgRef = useRef<HTMLInputElement | null>(null)
@@ -254,7 +289,7 @@ export default function Messages() {
               className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 text-left ${handle === t.user.handle ? 'bg-white/5' : ''}`}>
               <Avatar id={t.user.id} name={t.user.display_name} url={t.user.avatar_url} />
               <div className="min-w-0 flex-1">
-                <div className="font-medium truncate flex items-center gap-1.5">{t.user.display_name}<RoleBadge role={t.user.role} size={14} /><AccountBadge type={t.user.account_type} role={t.user.role} size={13} /></div>
+                <div className="font-medium truncate flex items-center gap-1.5">{t.user.nickname || t.user.display_name}<RoleBadge role={t.user.role} size={14} /><AccountBadge type={t.user.account_type} role={t.user.role} size={13} /></div>
                 <div className="text-sm text-slate-500 truncate">{t.mine ? 'You: ' : ''}{t.last}</div>
               </div>
               {t.unread > 0 && <span className="shrink-0 min-w-[20px] h-5 px-1.5 rounded-full bg-rose-500 text-white text-xs grid place-items-center font-bold">{t.unread > 99 ? '99+' : t.unread}</span>}
@@ -275,8 +310,10 @@ export default function Messages() {
                   ? <div className="h-[38px] w-[38px] rounded-full bg-gradient-to-br from-brand to-violet-600 grid place-items-center shrink-0"><Bookmark className="h-5 w-5 text-white" /></div>
                   : <Avatar id={thread.peer.id} name={thread.peer.display_name} url={thread.peer.avatar_url} size={38} />}
                 <div className="flex-1 min-w-0">
-                  <div className="font-semibold truncate flex items-center gap-1.5">{isSelf ? 'Me, Myself & I' : thread.peer.display_name}{!isSelf && <RoleBadge role={thread.peer.role} size={15} />}{!isSelf && <AccountBadge type={thread.peer.account_type} role={thread.peer.role} size={14} />}</div>
-                  <div className="text-xs text-slate-500 truncate">{isSelf ? 'Your private space · only you can see this' : `#${thread.peer.handle}`}</div>
+                  <div className="font-semibold truncate flex items-center gap-1.5">{isSelf ? 'Me, Myself & I' : (thread.peer.nickname || thread.peer.display_name)}{!isSelf && <RoleBadge role={thread.peer.role} size={15} />}{!isSelf && <AccountBadge type={thread.peer.account_type} role={thread.peer.role} size={14} />}{!isSelf && thread.peer_is_inner && (
+                    <button onClick={editNickname} title="Set a private nickname" className="text-slate-500 hover:text-brand ml-0.5"><Pencil className="h-3.5 w-3.5" /></button>
+                  )}</div>
+                  <div className="text-xs text-slate-500 truncate">{isSelf ? 'Your private space · only you can see this' : (thread.peer.nickname ? `@${thread.peer.handle}` : `#${thread.peer.handle}`)}</div>
                 </div>
                 <div className="flex items-center gap-1 text-xs text-emerald-400 mr-2">
                   <Lock className="h-3 w-3" />
@@ -315,10 +352,12 @@ export default function Messages() {
                       <button onClick={() => togglePin(m.id)} title={m.pinned ? 'Unpin' : 'Pin'}
                         className={`opacity-0 group-hover:opacity-100 transition ${m.pinned ? 'text-amber-400 opacity-100' : 'text-slate-500 hover:text-amber-400'}`}><Pin className="h-3.5 w-3.5" /></button>
                     )}
-                    <div className={`max-w-[75%] rounded-2xl px-4 py-2 ${m.deleted ? 'bg-white/5 border border-edge text-slate-500 italic' : m.mine ? 'bg-gradient-to-br from-brand to-violet-600 text-white rounded-br-sm' : 'bg-white/5 border border-edge rounded-bl-sm'}`}>
+                    <div className={`max-w-[75%] ${(!m.deleted && m.media_type === 'sticker' && m.media_url) ? '' : `rounded-2xl px-4 py-2 ${m.deleted ? 'bg-white/5 border border-edge text-slate-500 italic' : m.mine ? 'bg-gradient-to-br from-brand to-violet-600 text-white rounded-br-sm' : 'bg-white/5 border border-edge rounded-bl-sm'}`}`}>
                       {m.pinned && !m.deleted && <Pin className="h-3 w-3 inline mr-1 opacity-70" />}
                       {m.deleted
                         ? m.text
+                        : (m.media_type === 'sticker' && m.media_url)
+                          ? <img src={m.media_url} className="max-h-36 w-auto object-contain drop-shadow" draggable={false} />
                         : m.view_once
                           ? (m.mine
                               ? <span className="flex items-center gap-1.5 text-sm opacity-90"><Flame className="h-4 w-4" />{m.view_once_viewed ? 'Opened' : 'One-time photo · sent'}</span>
@@ -344,6 +383,27 @@ export default function Messages() {
               </div>
               {thread.can_dm ? (
                 <div className="border-t border-edge relative">
+                  {stickerOpen && (
+                    <div className="absolute bottom-full left-0 right-0 bg-panel2 border-t border-edge p-3 max-h-72 overflow-y-auto">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium">Your stickers</span>
+                        <button onClick={() => stickerRef.current?.click()} disabled={uploadingSticker}
+                          className="text-xs flex items-center gap-1 px-2 py-1 rounded-lg bg-brand/20 text-brand hover:bg-brand/30 disabled:opacity-50">
+                          {uploadingSticker ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}Add
+                        </button>
+                      </div>
+                      {stickers.length === 0
+                        ? <p className="text-center text-slate-500 text-sm py-6">No stickers yet. Tap “Add” to upload an image from your phone.</p>
+                        : <div className="grid grid-cols-4 gap-2">
+                            {stickers.map(s => (
+                              <div key={s.id} className="relative group">
+                                <img src={s.url} onClick={() => sendSticker(s.url)} className="rounded-lg cursor-pointer h-20 w-full object-contain bg-white/5 hover:ring-2 ring-brand p-1" />
+                                <button onClick={() => removeSticker(s.id)} className="absolute -top-1.5 -right-1.5 h-5 w-5 grid place-items-center rounded-full bg-rose-600 text-white opacity-0 group-hover:opacity-100 transition"><X className="h-3 w-3" /></button>
+                              </div>
+                            ))}
+                          </div>}
+                    </div>
+                  )}
                   {gifOpen && (
                     <div className="absolute bottom-full left-0 right-0 bg-panel2 border-t border-edge p-3 max-h-72 overflow-y-auto">
                       <input autoFocus value={gifQ} onChange={e => searchGifs(e.target.value)} placeholder="Search GIFs (powered by GIPHY)…"
@@ -360,6 +420,9 @@ export default function Messages() {
                       {uploadingImg ? <Loader2 className="h-5 w-5 animate-spin" /> : <ImageIcon className="h-5 w-5" />}
                     </button>
                     <button type="button" onClick={openGif} className={`h-11 px-2 grid place-items-center rounded-xl text-xs font-bold shrink-0 ${gifOpen ? 'bg-brand text-white' : 'bg-white/10 hover:bg-white/20'}`}>GIF</button>
+                    <input ref={stickerRef} type="file" accept="image/*" hidden onChange={onStickerUpload} />
+                    <button type="button" onClick={() => { setStickerOpen(o => !o); setGifOpen(false) }} title="Stickers"
+                      className={`h-11 w-11 grid place-items-center rounded-xl shrink-0 ${stickerOpen ? 'bg-brand text-white' : 'bg-white/10 hover:bg-white/20'}`}><Smile className="h-5 w-5" /></button>
                     <input value={text} onChange={e => setText(e.target.value)} placeholder={recording ? 'Recording…' : 'Message (encrypted)…'} disabled={recording}
                       className="flex-1 bg-ink border border-edge rounded-xl px-4 py-3 outline-none focus:border-brand disabled:opacity-60" />
                     <button type="button" onClick={recording ? stopRec : startRec} disabled={busy || !(isSelf || thread.can_voice)}

@@ -1,4 +1,5 @@
 import { Globe, Users, Lock } from 'lucide-react'
+import { useState, useEffect } from 'react'
 
 export const TIER = {
   public: { label: 'Public', icon: Globe, text: 'text-emerald-400', bg: 'bg-emerald-500/15', ring: 'border-emerald-500/30', dot: 'bg-emerald-400' },
@@ -22,7 +23,16 @@ export function timeAgo(iso: string) {
 }
 
 export function Avatar({ id, name, url, size = 40 }: { id: string; name: string; url?: string | null; size?: number }) {
-  if (url) return <img src={url} alt={name} style={{ width: size, height: size }} className="rounded-full object-cover shrink-0" />
+  const [failed, setFailed] = useState(false)
+  // Reset the error state if the url changes (e.g. after uploading a new photo)
+  useEffect(() => { setFailed(false) }, [url])
+  if (url && !failed) {
+    return (
+      <img src={url} alt={name} style={{ width: size, height: size }}
+        onError={() => setFailed(true)}
+        className="rounded-full object-cover shrink-0 bg-white/5" />
+    )
+  }
   return (
     <div style={{ width: size, height: size, fontSize: size * 0.36 }}
       className={`rounded-full shrink-0 grid place-items-center font-bold text-white bg-gradient-to-br ${gradFor(id)}`}>
