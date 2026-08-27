@@ -30,6 +30,8 @@ export default function Profile() {
     setLoading(true)
     try {
       const prof = await api.getUser(handle!)
+      // If we arrived via an old username, update the URL to the current one.
+      if (prof?.handle && handle && prof.handle !== handle) { nav(`/u/${prof.handle}`, { replace: true }); return }
       setP(prof); setBio(prof.bio || ''); setUname(prof.handle || '')
       setPosts(await api.getUserPosts(handle!))
     } catch { setP(null) } finally { setLoading(false) }
@@ -164,7 +166,7 @@ export default function Profile() {
                 ? <p className="text-xs text-amber-400/80 mt-1">You can change your username again on {new Date(p.handle_change_available_at).toLocaleDateString()}.</p>
                 : <p className="text-xs text-slate-500 mt-1">You can change your username once every 60 days. Letters and numbers only.</p>}
             </div>
-            <textarea value={bio} onChange={e => setBio(e.target.value)} rows={2} maxLength={150}
+            <textarea value={bio} onChange={e => setBio(e.target.value)} rows={2} maxLength={p.limits?.bio || 150}
               placeholder="Add a bio…" className="w-full bg-ink border border-edge rounded-xl px-3 py-2 outline-none focus:border-brand text-left" />
             <div className="flex justify-center gap-2">
               <button onClick={saveBio} className="px-5 py-2 rounded-full bg-brand font-medium">Save bio</button>

@@ -107,6 +107,32 @@ def acct_type(prof: dict) -> str:
     t = (prof or {}).get('account_type') or 'free'
     return 'free' if t == 'standard' else t
 
+MB = 1024 * 1024
+# Per-tier perks from the product spec (§15). Upload caps are practical ceilings
+# ("unlimited" tiers still bounded by storage limits at the infra layer).
+TIER_LIMITS = {
+    'free':     {'pinned': 3, 'bio': 150, 'links': 3,
+                 'image': 50 * MB, 'video': 500 * MB, 'audio': 100 * MB, 'doc': 100 * MB},
+    'premium':  {'pinned': 6, 'bio': 300, 'links': 8,
+                 'image': 500 * MB, 'video': 2048 * MB, 'audio': 1024 * MB, 'doc': 2048 * MB},
+    'verified': {'pinned': 6, 'bio': 300, 'links': 9999,
+                 'image': 500 * MB, 'video': 4096 * MB, 'audio': 4096 * MB, 'doc': 2048 * MB},
+}
+
+def tier_limits(prof: dict) -> dict:
+    return TIER_LIMITS.get(acct_type(prof), TIER_LIMITS['free'])
+
+def media_kind(content_type: str) -> str:
+    ct = (content_type or '').lower()
+    if ct.startswith('image/'):
+        return 'image'
+    if ct.startswith('video/'):
+        return 'video'
+    if ct.startswith('audio/'):
+        return 'audio'
+    return 'doc'
+
+
 
 # NSFW threshold: any label >= this (or safe=false) queues media for admin review.
 NSFW_THRESHOLD = 0.70
@@ -505,6 +531,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
             except Exception:
                 _next = None
         out['handle_change_available_at'] = _next  # null = can change now
+        out['limits'] = tier_limits(prof)
         out['strikes'] = prof.get('strikes', 0)
         _minor = bool(prof.get('is_minor'))
         _cz = {**COMFORT_ZONE_DEFAULTS, **(prof.get('comfort_zone') or {})}
@@ -536,7 +563,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
             out['real_name'] = rn
     # Pinned posts ribbon (up to 3), respecting tier visibility for the viewer.
     pinned = []
-    for pid in (prof.get('pinned_post_ids', []) or [])[:3]:
+    for pid in (prof.get('pinned_post_ids', []) or [])[:tier_limits(prof).get('pinned', 3)]:
         pp = await db.posts.find_one({'id': pid})
         if pp and await can_view(viewer_id, pp):
             po = await post_out(pp, viewer_id)
@@ -919,16 +946,34 @@ async def change_handle(body: HandleUpdate, u: dict = Depends(get_current_user))
     if taken:
         raise HTTPException(409, 'That username is taken. Please choose another.')
     now_iso = datetime.now(timezone.utc).isoformat()
+    old_h = u['handle']
     await db.profiles.update_one({'id': u['id']},
                                  {'$set': {'handle': new_h, 'handle_changed_at': now_iso}})
+    # Handle history: remember the old handle so old @mentions/links still resolve,
+    # and free the new handle from any stale history entry.
+    await db.handle_history.delete_many({'handle': new_h})
+    await db.handle_history.update_one(
+        {'handle': old_h},
+        {'$set': {'handle': old_h, 'user_id': u['id'], 'changed_at': now_iso}},
+        upsert=True)
     return {'ok': True, 'handle': new_h, 'handle_changed_at': now_iso}
 
 
 @app.put('/api/profile')
 async def update_profile(body: ProfileUpdate, u: dict = Depends(get_current_user)):
     upd = {k: v for k, v in body.dict().items() if v is not None}
+    lim = tier_limits(u)
     if 'display_name' in upd and contains_banned(upd['display_name']):
         raise HTTPException(400, 'That display name isn’t allowed. Please choose another.')
+    if 'bio' in upd:
+        if len(upd['bio']) > lim['bio']:
+            raise HTTPException(400, f'Bio is limited to {lim["bio"]} characters on your plan.')
+    if 'links' in upd:
+        links = [l for l in (upd['links'] or []) if isinstance(l, str) and l.strip()]
+        if len(links) > lim['links']:
+            n = lim['links']
+            raise HTTPException(400, f'You can add up to {n} links on your plan.' if n < 9999 else 'Too many links.')
+        upd['links'] = links
     if 'follow_mode' in upd and upd['follow_mode'] not in ('open', 'approval'):
         upd.pop('follow_mode')
     if 'real_name_visibility' in upd and upd['real_name_visibility'] not in ('private', 'inner', 'followers', 'public'):
@@ -994,9 +1039,22 @@ async def incr_deleted(n: int = 1):
 
 # ----------------------------- Profiles / social graph -----------------------------
 
+async def resolve_profile(handle: str, projection=None):
+    """Find a profile by current handle, falling back to a past handle (handle history)
+    so old @mentions and profile links still resolve to the same person."""
+    h = slugify_handle(handle)
+    prof = await db.profiles.find_one({'handle': h}, projection) if projection else await db.profiles.find_one({'handle': h})
+    if prof:
+        return prof
+    hist = await db.handle_history.find_one({'handle': h}, sort=[('changed_at', -1)])
+    if hist:
+        return await db.profiles.find_one({'id': hist['user_id']}, projection) if projection else await db.profiles.find_one({'id': hist['user_id']})
+    return None
+
+
 @app.get('/api/users/{handle}')
 async def get_user(handle: str, u: dict = Depends(get_current_user)):
-    prof = await db.profiles.find_one({'handle': handle}, {'_id': 0})
+    prof = await resolve_profile(handle, {'_id': 0})
     if not prof:
         raise HTTPException(404, 'User not found')
     if prof['id'] != u['id'] and await is_blocked_between(u['id'], prof['id']):
@@ -1005,7 +1063,7 @@ async def get_user(handle: str, u: dict = Depends(get_current_user)):
 
 @app.get('/api/users/{handle}/posts')
 async def user_posts(handle: str, u: dict = Depends(get_current_user)):
-    prof = await db.profiles.find_one({'handle': handle})
+    prof = await resolve_profile(handle)
     if not prof:
         raise HTTPException(404, 'User not found')
     out = []
@@ -1645,8 +1703,9 @@ async def pin_post(post_id: str, u: dict = Depends(get_current_user)):
         pins.remove(post_id)
         pinned = False
     else:
-        if len(pins) >= 3:
-            raise HTTPException(400, 'You can pin up to 3 posts — unpin one first.')
+        max_pins = tier_limits(prof).get('pinned', 3)
+        if len(pins) >= max_pins:
+            raise HTTPException(400, f'You can pin up to {max_pins} posts on your plan — unpin one first.')
         pins.insert(0, post_id)
         pinned = True
     await db.profiles.update_one({'id': u['id']}, {'$set': {'pinned_post_ids': pins}})
@@ -2273,8 +2332,12 @@ async def follow_requests(u: dict = Depends(get_current_user)):
 @app.post('/api/upload')
 async def upload(u: dict = Depends(get_current_user), file: UploadFile = File(...)):
     data = await file.read()
-    if len(data) > 50 * 1024 * 1024:
-        raise HTTPException(413, 'File too large (max 50MB)')
+    kind = media_kind(file.content_type or '')
+    limit = tier_limits(u).get(kind, 50 * MB)
+    if len(data) > limit:
+        mb = limit // MB
+        tier = acct_type(u)
+        raise HTTPException(413, f'File too large for your {tier} plan ({kind} limit {mb}MB). Upgrade for larger uploads.')
     ext = (file.filename or 'file').split('.')[-1][:8]
     path = f"{u['id']}/{uuid.uuid4().hex}.{ext}"
     ctype = file.content_type or 'application/octet-stream'
