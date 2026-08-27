@@ -11,7 +11,7 @@ import RoleBadge from './RoleBadge'
 import AccountBadge from './AccountBadge'
 
 const NAV = [
-  { to: '/', icon: Home, label: 'My Feed', end: true },
+  { to: '/', icon: Home, label: 'Feed', end: true },
   { to: '/search', icon: Search, label: 'Discover' },
   { to: '/messages', icon: MessageCircle, label: 'Messages' },
   { to: '/activity', icon: Bell, label: 'Activity' },
