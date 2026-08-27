@@ -129,6 +129,11 @@ export default function Profile() {
           <AccountBadge type={p.account_type} role={p.role} size={24} />
         </h1>
         <div className="mt-1 text-lg text-slate-400 flex items-center gap-1.5">{p.display_name}</div>
+        {p.creator_safety_flag && !p.is_self && (
+          <div className="mt-3 w-full max-w-md mx-auto text-sm bg-orange-500/10 border border-orange-500/40 text-orange-200 rounded-xl px-3 py-2">
+            This account has a history of upheld harassment or abusive behaviour. Please exercise caution.
+          </div>
+        )}
         {p.real_name && <div className="text-sm text-slate-500">{p.real_name}</div>}
 
         <div className="mt-4 flex items-center gap-2 text-slate-500 uppercase tracking-wide text-sm">

@@ -511,6 +511,7 @@ async def public_profile(prof: dict, viewer_id: str) -> dict:
         'bio': prof.get('bio', ''), 'links': prof.get('links', []),
         'avatar_url': prof.get('avatar_url'), 'account_type': acct_type(prof),
         'role': effective_role(prof),
+        'creator_safety_flag': bool(prof.get('creator_safety_flag')),
         'follow_mode': prof.get('follow_mode', 'open'), 'dm_open': prof.get('dm_open', True),
         'is_self': is_self,
         'follow_status': following['status'] if following else None,
@@ -2683,8 +2684,9 @@ class ReportIn(BaseModel):
     note: Optional[str] = ''
 
 class ActionIn(BaseModel):
-    action: str  # dismiss | remove_content | warn_user | strike_user
+    action: str  # dismiss | remove_content | warn_user | strike_user | uphold
     reason: Optional[str] = ''
+    severe: Optional[bool] = False  # zero-tolerance (threats/violence/targeted harassment)
 
 class StrikeIn(BaseModel):
     reason: str
@@ -2717,6 +2719,50 @@ async def _resolve_target_user(target_type: str, target_id: str) -> Optional[dic
         if p:
             return await db.profiles.find_one({'id': p['author_id']}, {'_id': 0})
     return None
+
+async def apply_upheld(prof: dict, category: str, admin: dict, reason: str = '', severe: bool = False):
+    """Increment a user's upheld-report count and auto-apply the Creator Support ladder:
+       1 reminder · 3 Creator-Safety flag · 5 = 7-day suspension + rules re-accept ·
+       7 = 30-day suspension + final warning · 10 = permanent ban.
+       Threats/violence/recurring targeted harassment (severe) OR csam/underage =
+       automatic termination, no appeal."""
+    now = datetime.now(timezone.utc)
+    zero_tolerance = bool(severe) or category in ('csam', 'underage')
+    count = prof.get('upheld_reports', 0) + 1
+    upd = {'upheld_reports': count, 'last_upheld_at': now.isoformat(), 'last_reason': reason or category}
+
+    if zero_tolerance:
+        upd.update({'banned': True, 'no_appeal': True, 'termination_reason': reason or category})
+        await db.profiles.update_one({'id': prof['id']}, {'$set': upd})
+        await add_activity(prof['id'], 'strike', admin, 'Account terminated (zero-tolerance) — no appeal.')
+        await audit(admin, 'terminate_no_appeal', prof['handle'], reason or category)
+        return {'upheld_reports': count, 'stage': 'terminated_no_appeal', 'banned': True}
+
+    stage = f'upheld_{count}'
+    msg = None
+    if count == 1:
+        msg = 'Please be mindful of your conduct. Continued violations may result in restrictions.'
+    elif count == 3:
+        upd['creator_safety_flag'] = True
+        msg = 'A Creator Safety flag has been added to your account due to a history of upheld reports.'
+    elif count == 5:
+        upd['suspended_until'] = (now + timedelta(days=7)).isoformat()
+        upd['rules_reaccept_required'] = True
+        msg = '7-day suspension. You must re-accept the rules to continue. Further violations carry harsher penalties.'
+    elif count == 7:
+        upd['suspended_until'] = (now + timedelta(days=30)).isoformat()
+        upd['final_warning'] = True
+        msg = '30-day suspension. This is your final warning.'
+    elif count >= 10:
+        upd['banned'] = True
+        stage = 'upheld_permanent_ban'
+        msg = 'Your account has been permanently banned after repeated upheld reports.'
+
+    await db.profiles.update_one({'id': prof['id']}, {'$set': upd})
+    await add_activity(prof['id'], 'strike', admin, msg or f'Upheld report #{count} recorded.')
+    await audit(admin, stage, prof['handle'], reason or category)
+    return {'upheld_reports': count, 'stage': stage, 'message': msg}
+
 
 async def apply_strike(prof: dict, reason: str, admin: dict, soft: bool = False):
     now = datetime.now(timezone.utc)
@@ -3094,6 +3140,12 @@ async def admin_action(report_id: str, body: ActionIn, a: dict = Depends(require
             raise HTTPException(404, 'Target user not found')
         result.update(await apply_strike(prof, body.reason or r['category'], a, soft=(body.action == 'warn_user')))
         await db.reports.update_one({'id': report_id}, {'$set': {'status': 'actioned'}})
+    elif body.action == 'uphold':
+        prof = await _resolve_target_user(r['target_type'], r['target_id'])
+        if not prof:
+            raise HTTPException(404, 'Target user not found')
+        result.update(await apply_upheld(prof, r['category'], a, body.reason or r['category'], severe=bool(body.severe)))
+        await db.reports.update_one({'id': report_id}, {'$set': {'status': 'upheld'}})
     else:
         raise HTTPException(400, 'Unknown action')
     return {'ok': True, **result}
@@ -3115,6 +3167,8 @@ async def admin_users(q: str = '', a: dict = Depends(require_mod)):
         out.append({'id': p['id'], 'handle': p['handle'], 'display_name': p['display_name'],
                     'email': p.get('email'), 'account_type': acct_type(p),
                     'strikes': p.get('strikes', 0), 'suspended_until': p.get('suspended_until'),
+                    'upheld_reports': p.get('upheld_reports', 0), 'creator_safety_flag': p.get('creator_safety_flag', False),
+                    'no_appeal': p.get('no_appeal', False), 'final_warning': p.get('final_warning', False),
                     'banned': p.get('banned', False), 'is_admin': is_admin_user(p),
                     'flagged': p.get('flagged', False), 'flag_reason': p.get('flag_reason'),
                     'watchlisted': p.get('watchlisted', False), 'watch_reason': p.get('watch_reason'),
@@ -3136,6 +3190,24 @@ async def admin_unsuspend(handle: str, a: dict = Depends(require_mod)):
     await db.profiles.update_one({'id': prof['id']}, {'$set': {'strikes': 0, 'banned': False},
                                                        '$unset': {'suspended_until': '', 'last_reason': ''}})
     await audit(a, 'unsuspend', handle, '')
+    return {'ok': True}
+
+@app.post('/api/admin/users/{handle}/clear-strikes')
+async def admin_clear_strikes(handle: str, a: dict = Depends(require_admin)):
+    """Rehabilitation / successful appeal: wipe strikes, upheld reports and safety flags.
+    Intended for the '12 months of good behaviour' appeal. Super/Co-Admin only.
+    Does NOT lift a zero-tolerance (no_appeal) termination."""
+    prof = await db.profiles.find_one({'handle': handle})
+    if not prof:
+        raise HTTPException(404, 'User not found')
+    if prof.get('no_appeal'):
+        raise HTTPException(403, 'This account was terminated under zero-tolerance and cannot be appealed.')
+    await db.profiles.update_one({'id': prof['id']}, {
+        '$set': {'strikes': 0, 'upheld_reports': 0, 'creator_safety_flag': False,
+                 'final_warning': False, 'rules_reaccept_required': False, 'banned': False},
+        '$unset': {'suspended_until': '', 'last_reason': ''}})
+    await add_activity(prof['id'], 'strike', a, 'Your record has been cleared following review of good behaviour.')
+    await audit(a, 'clear_strikes', handle, '')
     return {'ok': True}
 
 @app.get('/api/admin/audit')

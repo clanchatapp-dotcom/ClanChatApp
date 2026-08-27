@@ -104,10 +104,15 @@ export default function Admin() {
 
   if (user && !user.is_admin && !(user as any).can_moderate) return <Navigate to="/" replace />
 
-  const act = async (id: string, action: string) => {
+  const act = async (id: string, action: string, severe = false) => {
     let reason = ''
     if (action !== 'dismiss') reason = window.prompt(`Reason for "${action.replace('_', ' ')}"?`, '') || ''
-    await api.adminAction(id, action, reason); await load(); await loadStats()
+    if (action === 'uphold' && severe && !window.confirm('Zero-tolerance: this permanently terminates the account with NO appeal. Continue?')) return
+    await api.adminAction(id, action, reason, severe); await load(); await loadStats()
+  }
+  const clearRecord = async (handle: string) => {
+    if (!window.confirm(`Clear @${handle}'s strikes & upheld reports (12-month rehab)?`)) return
+    try { await api.adminClearStrikes(handle); await load(); await loadStats() } catch (e: any) { alert(e.message) }
   }
   const strike = async (handle: string, soft: boolean) => {
     const reason = window.prompt(soft ? 'Soft warning message:' : 'Strike reason:', '') || ''
@@ -378,6 +383,8 @@ export default function Admin() {
                   <button onClick={() => act(r.id, 'remove_content')} className="px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 text-sm flex items-center gap-1"><Trash2 className="h-3.5 w-3.5" />Remove content</button>
                   <button onClick={() => act(r.id, 'warn_user')} className="px-3 py-1.5 rounded-lg bg-white/5 text-sm">Soft warn</button>
                   <button onClick={() => act(r.id, 'strike_user')} className="px-3 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 text-sm flex items-center gap-1"><Ban className="h-3.5 w-3.5" />Strike</button>
+                  <button onClick={() => act(r.id, 'uphold')} className="px-3 py-1.5 rounded-lg bg-orange-500/20 text-orange-300 text-sm font-medium">Uphold</button>
+                  <button onClick={() => act(r.id, 'uphold', true)} className="px-3 py-1.5 rounded-lg bg-red-600/25 text-red-300 text-sm font-medium flex items-center gap-1"><Ban className="h-3.5 w-3.5" />Uphold · terminate</button>
                 </div>
               </div>
             ))}
@@ -508,8 +515,10 @@ export default function Admin() {
                     {u.watchlisted && <span className="text-xs bg-brand/20 text-brand px-1.5 rounded flex items-center gap-1"><Bookmark className="h-3 w-3" />watch</span>}
                     {u.banned && <span className="text-xs bg-rose-500/20 text-rose-300 px-1.5 rounded">banned</span>}
                     {u.suspended_until && !u.banned && <span className="text-xs bg-amber-500/20 text-amber-300 px-1.5 rounded">suspended</span>}
+                    {u.creator_safety_flag && <span className="text-xs bg-orange-500/20 text-orange-300 px-1.5 rounded">creator-safety</span>}
+                    {u.no_appeal && <span className="text-xs bg-red-600/25 text-red-300 px-1.5 rounded">no appeal</span>}
                   </div>
-                  <div className="text-xs text-slate-500">#{u.handle} · {u.account_type} · strikes: {u.strikes}{u.flag_reason ? ` · ${u.flag_reason}` : ''}</div>
+                  <div className="text-xs text-slate-500">#{u.handle} · {u.account_type} · strikes: {u.strikes} · upheld: {u.upheld_reports || 0}{u.flag_reason ? ` · ${u.flag_reason}` : ''}</div>
                 </div>
                 {u.flagged
                   ? <button onClick={() => unflag(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Unflag</button>
@@ -528,6 +537,8 @@ export default function Admin() {
                 <button onClick={() => strike(u.handle, true)} className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Warn</button>
                 <button onClick={() => strike(u.handle, false)} className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 text-xs">Strike</button>
                 {(u.suspended_until || u.banned) && <button onClick={() => unsuspend(u.handle)} className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 text-xs flex items-center gap-1"><Check className="h-3 w-3" />Restore</button>}
+                {isFull && (u.strikes > 0 || u.upheld_reports > 0 || u.creator_safety_flag) && !u.no_appeal &&
+                  <button onClick={() => clearRecord(u.handle)} title="12-month rehab: clear record" className="px-2.5 py-1.5 rounded-lg bg-white/5 text-xs">Clear record</button>}
               </div>
             ))}
 
