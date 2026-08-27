@@ -156,6 +156,20 @@ export default function Messages() {
     const f = e.dataTransfer?.files?.[0]
     if (f && f.type.startsWith('image/')) { e.preventDefault(); sendBlobSticker(f) }
   }
+  // Native bridge: StickerWebView (Android) fires this DOM event when the system
+  // keyboard commits a sticker/GIF. Convert the data URL to a file and send it.
+  useEffect(() => {
+    const onKbSticker = (e: any) => {
+      const dataUrl: string = e?.detail
+      if (!dataUrl || !handle) return
+      fetch(dataUrl).then(r => r.blob()).then(b => {
+        const ext = ((b.type.split('/')[1] || 'png').split('+')[0])
+        sendBlobSticker(new File([b], `sticker.${ext}`, { type: b.type || 'image/png' }))
+      }).catch(() => {})
+    }
+    window.addEventListener('clanKeyboardSticker', onKbSticker as any)
+    return () => window.removeEventListener('clanKeyboardSticker', onKbSticker as any)
+  }, [handle])
   const editNickname = async () => {
     if (!thread?.peer) return
     const cur = thread.peer.nickname || ''
