@@ -151,9 +151,6 @@ export default function Layout() {
         <NavLink to={`/u/${user?.handle}`} className={({ isActive }) => `flex flex-col items-center gap-1 text-xs ${isActive ? 'text-brand' : 'text-slate-400'}`}>
           <User className="h-5 w-5" />Me
         </NavLink>
-        <NavLink to="/settings" className={({ isActive }) => `flex flex-col items-center gap-1 text-xs ${isActive ? 'text-brand' : 'text-slate-400'}`}>
-          <Settings className="h-5 w-5" />Settings
-        </NavLink>
       </nav>
 
       {/* One-time DOB gate (e.g. Google sign-ups have no DOB yet) */}
