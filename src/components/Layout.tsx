@@ -136,8 +136,6 @@ export default function Layout() {
 
       {/* Main */}
       <main className="flex-1 min-w-0 min-h-0 h-full border-x border-edge overflow-hidden pb-[calc(5.25rem+env(safe-area-inset-bottom))] md:pb-0">
-        <Outlet />
-      </main>
 
       {/* Trending rail */}
       <aside className="hidden xl:block w-72 shrink-0 p-4">
